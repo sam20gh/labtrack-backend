@@ -14,6 +14,15 @@ app.get('/api/test-results', (req, res) => {
         { id: 5, testName: 'Vitamin B', status: 'High' }
     ]);
 });
+app.get('/api/user', (req, res) => {
+    res.json({
+        id: 1,
+        name: "John Doe",
+        email: "johndoe@example.com",
+        phone: "+1 234 567 890",
+        avatar: "https://i.pravatar.cc/150?img=3" // Placeholder image
+    });
+});
 
 const PORT = 5002;
 app.listen(PORT, () => {
