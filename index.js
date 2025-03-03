@@ -26,5 +26,5 @@ app.get('/api/user', (req, res) => {
 
 const PORT = 5002;
 app.listen(PORT, () => {
-    console.log(`Server running on http://192.168.1.105:${PORT}`);
+    console.log(`Server running on http://10.0.6.113:${PORT}`);
 });
