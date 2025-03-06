@@ -4,6 +4,9 @@ const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
 const app = express();
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken'); // Ensure you have this installed via npm
+const SECRET_KEY =  process.env.SECRET_KEY || 'hhblFy8fKaNxxMTLFHcYrhgavhsAudU2'; // Replace with a secure secret in .env
+require('dotenv').config();
 
 app.use(cors()); // Enable CORS
 app.use(express.json()); // Allow JSON parsing
@@ -70,7 +73,20 @@ mongoose.connect('mongodb://localhost:27017/labtrack', {
 });
 
 
+const authenticateToken = (req, res, next) => {
+    const token = req.header('Authorization')?.split(' ')[1]; // Extract token after "Bearer"
+    if (!token) return res.status(401).json({ message: 'Access Denied: No Token Provided' });
 
+    try {
+        console.log('Verifying Token:', token);
+        const verified = jwt.verify(token, SECRET_KEY); // ✅ Ensure same secret is used
+        req.user = verified;
+        next();
+    } catch (err) {
+        console.error('Token Verification Error:', err);
+        res.status(403).json({ message: 'Invalid Token' });
+    }
+};
 
 app.get('/api/test-results', (req, res) => {
     res.json([
@@ -91,8 +107,6 @@ app.get('/api/users', async (req, res) => {
 });
 // Login API
 app.post('/api/users/login', async (req, res) => {
-    console.log('Login Attempt:', req.body); // Log received data
-
     try {
         const { username, password } = req.body;
 
@@ -105,16 +119,20 @@ app.post('/api/users/login', async (req, res) => {
             return res.status(400).json({ message: 'Invalid username or password' });
         }
 
-        // Compare entered password with stored hashed password
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(400).json({ message: 'Invalid username or password' });
         }
 
+        const token = jwt.sign({ id: user._id }, SECRET_KEY, { expiresIn: '1h' }); // ✅ Use the same SECRET_KEY
+
+        console.log('Generated Token:', token); // ✅ Debugging
+
         res.json({
             message: 'Login successful',
+            token,
             user: {
-                _id: user._id, 
+                _id: user._id,
                 firstName: user.firstName,
                 lastName: user.lastName,
                 username: user.username,
@@ -128,33 +146,8 @@ app.post('/api/users/login', async (req, res) => {
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 });
-app.get('/api/users/me', async (req, res) => {
-    try {
-        // Extract user ID from token (assuming you are using JWT authentication)
-        const token = req.headers.authorization?.split(' ')[1];
-        if (!token) {
-            return res.status(401).json({ message: 'Unauthorized' });
-        }
 
-        const decoded = jwt.verify(token, 'your_secret_key'); // Decode JWT
-        const user = await User.findById(decoded.userId); // Fetch user by ID
 
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        res.json({
-            firstName: user.firstName,
-            lastName: user.lastName,
-            username: user.username,
-            email: user.email,
-            phone: user.phone,
-            dob: user.dob,
-        });
-    } catch (error) {
-        res.status(500).json({ message: 'Server error', error: error.message });
-    }
-});
 app.get('/api/users/:id', async (req, res) => {
     try {
         const user = await User.findById(req.params.id);
@@ -167,9 +160,38 @@ app.get('/api/users/:id', async (req, res) => {
         res.status(500).json({ message: 'Error fetching user', error: error.message });
     }
 });
+// Middleware to authenticate users
+
+
+
+
+// **Update User Profile**
+app.put('/api/users/update', authenticateToken, async (req, res) => {
+    const { firstName, lastName, username, email, dob } = req.body;
+    const userId = req.user.id; // Extracted from JWT token
+
+    try {
+        let user = await User.findById(userId);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        // Update user details
+        user.firstName = firstName || user.firstName;
+        user.lastName = lastName || user.lastName;
+        user.username = username || user.username;
+        user.email = email || user.email;
+        user.dob = dob || user.dob;
+
+        await user.save();
+        res.json(user);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
 
 
 const PORT = 5002;
 app.listen(PORT, () => {
-    console.log(`Server running on http://192.168.1.104:${PORT}`);
+    console.log(`Server running on http://192.168.1.103:${PORT}`);
 });
