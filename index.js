@@ -5,7 +5,7 @@ const bodyParser = require('body-parser');
 const app = express();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken'); // Ensure you have this installed via npm
-const SECRET_KEY =  process.env.SECRET_KEY || 'hhblFy8fKaNxxMTLFHcYrhgavhsAudU2'; // Replace with a secure secret in .env
+const SECRET_KEY = process.env.SECRET_KEY || 'hhblFy8fKaNxxMTLFHcYrhgavhsAudU2'; // Replace with a secure secret in .env
 require('dotenv').config();
 
 app.use(cors()); // Enable CORS
@@ -17,11 +17,11 @@ app.use(bodyParser.json()); // Allow JSON parsing
 mongoose.connect('mongodb://localhost:27017/labtrack', {
     useNewUrlParser: true,
     useUnifiedTopology: true
-  }).then(() => console.log('MongoDB connected'))
+}).then(() => console.log('MongoDB connected'))
     .catch(err => console.log(err));
-  
-  // User Schema
-  const UserSchema = new mongoose.Schema({
+
+// User Schema
+const UserSchema = new mongoose.Schema({
     firstName: String,
     lastName: String,
     username: { type: String, unique: true, required: true },
@@ -31,11 +31,11 @@ mongoose.connect('mongodb://localhost:27017/labtrack', {
     password: { type: String, required: true }
 });
 
-  
-  const User = mongoose.model('User', UserSchema);
-  
-  // Signup API
-  app.post('/api/users/signup', async (req, res) => {
+
+const User = mongoose.model('User', UserSchema);
+
+// Signup API
+app.post('/api/users/signup', async (req, res) => {
     console.log('Received Data:', req.body); // Log received data
 
     try {
@@ -193,5 +193,5 @@ app.put('/api/users/update', authenticateToken, async (req, res) => {
 
 const PORT = 5002;
 app.listen(PORT, () => {
-    console.log(`Server running on http://192.168.1.103:${PORT}`);
+    console.log(`Server running on http://10.0.6.113:${PORT}`);
 });
