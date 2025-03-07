@@ -90,11 +90,105 @@ const authenticateToken = (req, res, next) => {
 
 app.get('/api/test-results', (req, res) => {
     res.json([
-        { id: 1, testName: 'Iron', status: 'Normal' },
-        { id: 2, testName: 'Cholestrol', status: 'High' },
-        { id: 3, testName: 'Vitamin D', status: 'Pending' },
-        { id: 4, testName: 'Vitamin A', status: 'Normal' },
-        { id: 5, testName: 'Vitamin B', status: 'High' }
+        {
+            "patient": {
+                "user_id": "67c6360d94be7fb517cd292b",
+                "name": "Jane Doe",
+                "age": 35,
+                "gender": "Female",
+                "date_of_test": "2025-03-05",
+                "lab_name": "MediLab Diagnostics",
+                "test_type": "Full Blood Count (FBC)"
+            },
+            "results": {
+                "White Blood Cell Count (WBC)": {
+                    "value": 6.8,
+                    "unit": "x10^9/L",
+                    "reference_range": "4.5-11.0",
+                    "status": "Normal"
+                },
+                "Red Blood Cell Count (RBC)": {
+                    "value": 4.9,
+                    "unit": "x10^12/L",
+                    "reference_range": "4.1-5.1",
+                    "status": "Normal"
+                },
+                "Hemoglobin (HGB)": {
+                    "value": 14.8,
+                    "unit": "g/dL",
+                    "reference_range": "12-16",
+                    "status": "Normal"
+                },
+                "Hematocrit (HCT)": {
+                    "value": 44.5,
+                    "unit": "%",
+                    "reference_range": "36-45",
+                    "status": "Normal"
+                },
+                "Mean Corpuscular Volume (MCV)": {
+                    "value": 90.2,
+                    "unit": "fL",
+                    "reference_range": "80-100",
+                    "status": "Normal"
+                },
+                "Mean Corpuscular Hemoglobin (MCH)": {
+                    "value": 31.1,
+                    "unit": "pg",
+                    "reference_range": "26-34",
+                    "status": "Normal"
+                },
+                "Mean Corpuscular Hemoglobin Concentration (MCHC)": {
+                    "value": 34.5,
+                    "unit": "g/dL",
+                    "reference_range": "33-37",
+                    "status": "Normal"
+                },
+                "Red Cell Distribution Width (RDW)": {
+                    "value": 12.7,
+                    "unit": "%",
+                    "reference_range": "11.5-14.5",
+                    "status": "Normal"
+                },
+                "Platelet Count (PLT)": {
+                    "value": 270,
+                    "unit": "x10^9/L",
+                    "reference_range": "150-350",
+                    "status": "Normal"
+                },
+                "Neutrophils": {
+                    "value": 56,
+                    "unit": "%",
+                    "reference_range": "50-62",
+                    "status": "Normal"
+                },
+                "Lymphocytes": {
+                    "value": 34,
+                    "unit": "%",
+                    "reference_range": "24-40",
+                    "status": "Normal"
+                },
+                "Monocytes": {
+                    "value": 5,
+                    "unit": "%",
+                    "reference_range": "3-7",
+                    "status": "Normal"
+                },
+                "Eosinophils": {
+                    "value": 2,
+                    "unit": "%",
+                    "reference_range": "0-3",
+                    "status": "High"
+                },
+                "Basophils": {
+                    "value": 0.6,
+                    "unit": "%",
+                    "reference_range": "0-1",
+                    "status": "High"
+                }
+            },
+            "interpretation": "All parameters are within the normal range. No signs of infection, anemia, or abnormal blood cell morphology detected. The patient appears to have a healthy blood profile."
+        }
+
     ]);
 });
 app.get('/api/users', async (req, res) => {
