@@ -27,7 +27,9 @@ const UserSchema = new mongoose.Schema({
     username: { type: String, unique: true, required: true },
     email: { type: String, unique: true, required: true },
     phone: String,
-    dob: Date,
+    dob: { type: String, required: true },
+    height: { type: Number, default: null },
+    weight: { type: Number, default: null },
     password: { type: String, required: true }
 });
 
@@ -53,15 +55,18 @@ app.post('/api/users/signup', async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
+        const formattedDOB = new Date(dob).toISOString().split('T')[0]; // Convert to YYYY-MM-DD
+
         const newUser = new User({
             firstName,
             lastName,
             username,
             email,
             phone,
-            dob,
+            dob: formattedDOB, // Store only YYYY-MM-DD format
             password: hashedPassword,
         });
+
 
         await newUser.save();
 
@@ -261,7 +266,7 @@ app.get('/api/users/:id', async (req, res) => {
 
 // **Update User Profile**
 app.put('/api/users/update', authenticateToken, async (req, res) => {
-    const { firstName, lastName, username, email, dob } = req.body;
+    const { firstName, lastName, username, email, dob, height, weight } = req.body; // Include height and weight
     const userId = req.user.id; // Extracted from JWT token
 
     try {
@@ -274,6 +279,8 @@ app.put('/api/users/update', authenticateToken, async (req, res) => {
         user.username = username || user.username;
         user.email = email || user.email;
         user.dob = dob || user.dob;
+        user.height = height !== undefined ? height : user.height; // Ensure height can be updated
+        user.weight = weight !== undefined ? weight : user.weight; // Ensure weight can be updated
 
         await user.save();
         res.json(user);
@@ -282,6 +289,7 @@ app.put('/api/users/update', authenticateToken, async (req, res) => {
         res.status(500).json({ message: 'Server error' });
     }
 });
+
 
 
 
