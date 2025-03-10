@@ -94,11 +94,18 @@ const authenticateToken = (req, res, next) => {
 };
 
 app.get('/api/test-results', (req, res) => {
-    res.json([
+    const { user_id } = req.query; // Get user_id from request query
+
+    if (!user_id) {
+        return res.status(400).json({ error: "User ID is required" });
+    }
+
+    // Sample test results (replace with database logic in production)
+    const testResults = [
         {
             "patient": {
-                "user_id": "67c6360d94be7fb517cd292b",
-                "name": "Jane Doe",
+                "user_id": "67ce1839dc9f49c58261185f",
+                "name": "Teyeye Oluwaseun",
                 "age": 35,
                 "gender": "Female",
                 "date_of_test": "2025-03-05",
@@ -106,96 +113,35 @@ app.get('/api/test-results', (req, res) => {
                 "test_type": "Full Blood Count (FBC)"
             },
             "results": {
-                "White Blood Cell Count (WBC)": {
-                    "value": 6.8,
-                    "unit": "x10^9/L",
-                    "reference_range": "4.5-11.0",
-                    "status": "Normal"
-                },
-                "Red Blood Cell Count (RBC)": {
-                    "value": 4.9,
-                    "unit": "x10^12/L",
-                    "reference_range": "4.1-5.1",
-                    "status": "Normal"
-                },
-                "Hemoglobin (HGB)": {
-                    "value": 14.8,
-                    "unit": "g/dL",
-                    "reference_range": "12-16",
-                    "status": "Normal"
-                },
-                "Hematocrit (HCT)": {
-                    "value": 44.5,
-                    "unit": "%",
-                    "reference_range": "36-45",
-                    "status": "Normal"
-                },
-                "Mean Corpuscular Volume (MCV)": {
-                    "value": 90.2,
-                    "unit": "fL",
-                    "reference_range": "80-100",
-                    "status": "Normal"
-                },
-                "Mean Corpuscular Hemoglobin (MCH)": {
-                    "value": 31.1,
-                    "unit": "pg",
-                    "reference_range": "26-34",
-                    "status": "Normal"
-                },
-                "Mean Corpuscular Hemoglobin Concentration (MCHC)": {
-                    "value": 34.5,
-                    "unit": "g/dL",
-                    "reference_range": "33-37",
-                    "status": "Normal"
-                },
-                "Red Cell Distribution Width (RDW)": {
-                    "value": 12.7,
-                    "unit": "%",
-                    "reference_range": "11.5-14.5",
-                    "status": "Normal"
-                },
-                "Platelet Count (PLT)": {
-                    "value": 270,
-                    "unit": "x10^9/L",
-                    "reference_range": "150-350",
-                    "status": "Normal"
-                },
-                "Neutrophils": {
-                    "value": 56,
-                    "unit": "%",
-                    "reference_range": "50-62",
-                    "status": "Normal"
-                },
-                "Lymphocytes": {
-                    "value": 34,
-                    "unit": "%",
-                    "reference_range": "24-40",
-                    "status": "Normal"
-                },
-                "Monocytes": {
-                    "value": 5,
-                    "unit": "%",
-                    "reference_range": "3-7",
-                    "status": "Normal"
-                },
-                "Eosinophils": {
-                    "value": 2,
-                    "unit": "%",
-                    "reference_range": "0-3",
-                    "status": "High"
-                },
-                "Basophils": {
-                    "value": 0.6,
-                    "unit": "%",
-                    "reference_range": "0-1",
-                    "status": "High"
-                }
+                "White Blood Cell Count (WBC)": { "value": 6.8, "unit": "x10^9/L", "reference_range": "4.5-11.0", "status": "Normal" },
+                "Red Blood Cell Count (RBC)": { "value": 4.9, "unit": "x10^12/L", "reference_range": "4.1-5.1", "status": "Normal" },
+                "Hemoglobin (HGB)": { "value": 14.8, "unit": "g/dL", "reference_range": "12-16", "status": "Normal" },
+                "Hematocrit (HCT)": { "value": 44.5, "unit": "%", "reference_range": "36-45", "status": "Normal" },
+                "Mean Corpuscular Volume (MCV)": { "value": 90.2, "unit": "fL", "reference_range": "80-100", "status": "Normal" },
+                "Mean Corpuscular Hemoglobin (MCH)": { "value": 31.1, "unit": "pg", "reference_range": "26-34", "status": "Normal" },
+                "Mean Corpuscular Hemoglobin Concentration (MCHC)": { "value": 34.5, "unit": "g/dL", "reference_range": "33-37", "status": "Normal" },
+                "Red Cell Distribution Width (RDW)": { "value": 12.7, "unit": "%", "reference_range": "11.5-14.5", "status": "Normal" },
+                "Platelet Count (PLT)": { "value": 270, "unit": "x10^9/L", "reference_range": "150-350", "status": "Normal" },
+                "Neutrophils": { "value": 56, "unit": "%", "reference_range": "50-62", "status": "Normal" },
+                "Lymphocytes": { "value": 34, "unit": "%", "reference_range": "24-40", "status": "Normal" },
+                "Monocytes": { "value": 5, "unit": "%", "reference_range": "3-7", "status": "Normal" },
+                "Eosinophils": { "value": 2, "unit": "%", "reference_range": "0-3", "status": "High" },
+                "Basophils": { "value": 0.6, "unit": "%", "reference_range": "0-1", "status": "High" }
             },
             "interpretation": "All parameters are within the normal range. No signs of infection, anemia, or abnormal blood cell morphology detected. The patient appears to have a healthy blood profile."
         }
+    ];
 
-    ]);
+    // Find the test result for the requested user_id
+    const userTestResult = testResults.find(test => test.patient.user_id === user_id);
+
+    if (!userTestResult) {
+        return res.status(404).json({ error: "No test results found for this user" });
+    }
+
+    res.json(userTestResult);
 });
+
 app.get('/api/users', async (req, res) => {
     try {
         const users = await User.find();
