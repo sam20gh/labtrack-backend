@@ -1,17 +1,19 @@
+require('dotenv').config();
+console.log('OPENAI_API_KEY:', process.env.OPENAI_API_KEY);
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
 const app = express();
+const deepseekRouter = require('./routes/deepseek'); // Use require for CommonJS modules
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken'); // Ensure you have this installed via npm
-const SECRET_KEY = process.env.SECRET_KEY || 'hhblFy8fKaNxxMTLFHcYrhgavhsAudU2'; // Replace with a secure secret in .env
-require('dotenv').config();
+const SECRET_KEY = process.env.SECRET_KEY; // Replace with a secure secret in .env
+
 
 app.use(cors()); // Enable CORS
 app.use(express.json()); // Allow JSON parsing
 app.use(bodyParser.json()); // Allow JSON parsing
-
 
 // Connect to MongoDB
 mongoose.connect('mongodb://localhost:27017/labtrack', {
@@ -28,26 +30,26 @@ const UserSchema = new mongoose.Schema({
     email: { type: String, unique: true, required: true },
     phone: String,
     dob: { type: String, required: true },
+    ender: { type: String, enum: ['Male', 'Female'] },
     height: { type: Number, default: null },
     weight: { type: Number, default: null },
     password: { type: String, required: true }
 });
 
-
 const User = mongoose.model('User', UserSchema);
 
 // Signup API
 app.post('/api/users/signup', async (req, res) => {
-    console.log('Received Data:', req.body); // Log received data
-
+    console.log('Received Data:', req.body);
     try {
-        const { firstName, lastName, username, email, phone, dob, password } = req.body;
+        // Include gender here
+        const { firstName, lastName, username, email, phone, dob, password, gender } = req.body;
 
         if (!firstName || !lastName || !username || !email || !phone || !dob || !password) {
             return res.status(400).json({ message: 'All fields are required' });
         }
 
-        const existingUser = await User.findOne({ $or: [{ email }, { username }] }); // Check for duplicate email or username
+        const existingUser = await User.findOne({ $or: [{ email }, { username }] });
         if (existingUser) {
             return res.status(400).json({ message: 'User already exists. Please log in.' });
         }
@@ -55,7 +57,7 @@ app.post('/api/users/signup', async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        const formattedDOB = new Date(dob).toISOString().split('T')[0]; // Convert to YYYY-MM-DD
+        const formattedDOB = new Date(dob).toISOString().split('T')[0];
 
         const newUser = new User({
             firstName,
@@ -63,20 +65,19 @@ app.post('/api/users/signup', async (req, res) => {
             username,
             email,
             phone,
-            dob: formattedDOB, // Store only YYYY-MM-DD format
+            dob: formattedDOB,
+            gender,  // Save gender
             password: hashedPassword,
         });
 
-
         await newUser.save();
 
-        res.status(201).json({ message: 'User registered successfully', user: { firstName, lastName, username, email, phone, dob } });
+        res.status(201).json({ message: 'User registered successfully', user: { firstName, lastName, username, email, phone, dob, gender } });
     } catch (error) {
         console.error('Signup Error:', error);
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 });
-
 
 const authenticateToken = (req, res, next) => {
     const token = req.header('Authorization')?.split(' ')[1]; // Extract token after "Bearer"
@@ -93,53 +94,59 @@ const authenticateToken = (req, res, next) => {
     }
 };
 
-app.get('/api/test-results', (req, res) => {
-    const { user_id } = req.query; // Get user_id from request query
+const TestResultSchema = new mongoose.Schema({
+    patient: {
+        user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        date_of_test: { type: String, required: true },
+        lab_name: { type: String, required: true },
+        test_type: { type: String, required: true }
+    },
+    results: { type: Object, required: true },
+    interpretation: { type: String, required: true }
+});
 
-    if (!user_id) {
-        return res.status(400).json({ error: "User ID is required" });
-    }
+const TestResult = mongoose.model('TestResult', TestResultSchema);
 
-    // Sample test results (replace with database logic in production)
-    const testResults = [
-        {
-            "patient": {
-                "user_id": "67ce1839dc9f49c58261185f",
-                "name": "Teyeye Oluwaseun",
-                "age": 35,
-                "gender": "Female",
-                "date_of_test": "2025-03-05",
-                "lab_name": "MediLab Diagnostics",
-                "test_type": "Full Blood Count (FBC)"
-            },
-            "results": {
-                "White Blood Cell Count (WBC)": { "value": 6.8, "unit": "x10^9/L", "reference_range": "4.5-11.0", "status": "Normal" },
-                "Red Blood Cell Count (RBC)": { "value": 4.9, "unit": "x10^12/L", "reference_range": "4.1-5.1", "status": "Normal" },
-                "Hemoglobin (HGB)": { "value": 14.8, "unit": "g/dL", "reference_range": "12-16", "status": "Normal" },
-                "Hematocrit (HCT)": { "value": 44.5, "unit": "%", "reference_range": "36-45", "status": "Normal" },
-                "Mean Corpuscular Volume (MCV)": { "value": 90.2, "unit": "fL", "reference_range": "80-100", "status": "Normal" },
-                "Mean Corpuscular Hemoglobin (MCH)": { "value": 31.1, "unit": "pg", "reference_range": "26-34", "status": "Normal" },
-                "Mean Corpuscular Hemoglobin Concentration (MCHC)": { "value": 34.5, "unit": "g/dL", "reference_range": "33-37", "status": "Normal" },
-                "Red Cell Distribution Width (RDW)": { "value": 12.7, "unit": "%", "reference_range": "11.5-14.5", "status": "Normal" },
-                "Platelet Count (PLT)": { "value": 270, "unit": "x10^9/L", "reference_range": "150-350", "status": "Normal" },
-                "Neutrophils": { "value": 56, "unit": "%", "reference_range": "50-62", "status": "Normal" },
-                "Lymphocytes": { "value": 34, "unit": "%", "reference_range": "24-40", "status": "Normal" },
-                "Monocytes": { "value": 5, "unit": "%", "reference_range": "3-7", "status": "Normal" },
-                "Eosinophils": { "value": 2, "unit": "%", "reference_range": "0-3", "status": "High" },
-                "Basophils": { "value": 0.6, "unit": "%", "reference_range": "0-1", "status": "High" }
-            },
-            "interpretation": "All parameters are within the normal range. No signs of infection, anemia, or abnormal blood cell morphology detected. The patient appears to have a healthy blood profile."
+// POST API to Add New Test Results
+app.post('/api/test-results', async (req, res) => {
+    try {
+        const { patient, results, interpretation } = req.body;
+
+        if (!patient || !patient.user_id || !patient.date_of_test || !patient.lab_name || !patient.test_type || !results) {
+            return res.status(400).json({ message: 'Missing required fields' });
         }
-    ];
 
-    // Find the test result for the requested user_id
-    const userTestResult = testResults.find(test => test.patient.user_id === user_id);
+        const newTestResult = new TestResult({
+            patient,
+            results,
+            interpretation
+        });
 
-    if (!userTestResult) {
-        return res.status(404).json({ error: "No test results found for this user" });
+        await newTestResult.save();
+        res.status(201).json({ message: 'Test result added successfully', testResult: newTestResult });
+    } catch (error) {
+        console.error('Error saving test result:', error);
+        res.status(500).json({ message: 'Server error', error: error.message });
     }
+});
 
-    res.json(userTestResult);
+app.get('/api/test-results', async (req, res) => {
+    try {
+        const { user_id } = req.query;
+        if (!user_id) {
+            return res.status(400).json({ message: 'User ID is required' });
+        }
+
+        const testResults = await TestResult.find({ 'patient.user_id': user_id });
+        if (!testResults || testResults.length === 0) {
+            return res.status(404).json({ message: 'No test results found for this user' });
+        }
+
+        res.json(testResults);
+    } catch (error) {
+        console.error('Error fetching test results:', error);
+        res.status(500).json({ message: 'Server error', error: error.message });
+    }
 });
 
 app.get('/api/users', async (req, res) => {
@@ -150,6 +157,7 @@ app.get('/api/users', async (req, res) => {
         res.status(500).json({ message: 'Error fetching users', error: error.message });
     }
 });
+
 // Login API
 app.post('/api/users/login', async (req, res) => {
     try {
@@ -192,7 +200,6 @@ app.post('/api/users/login', async (req, res) => {
     }
 });
 
-
 app.get('/api/users/:id', async (req, res) => {
     try {
         const user = await User.findById(req.params.id);
@@ -205,28 +212,24 @@ app.get('/api/users/:id', async (req, res) => {
         res.status(500).json({ message: 'Error fetching user', error: error.message });
     }
 });
-// Middleware to authenticate users
-
-
-
 
 // **Update User Profile**
 app.put('/api/users/update', authenticateToken, async (req, res) => {
-    const { firstName, lastName, username, email, dob, height, weight } = req.body; // Include height and weight
-    const userId = req.user.id; // Extracted from JWT token
-
+    // Include gender in the destructuring
+    const { firstName, lastName, username, email, dob, height, weight, gender } = req.body;
+    const userId = req.user.id;
     try {
         let user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found' });
 
-        // Update user details
         user.firstName = firstName || user.firstName;
         user.lastName = lastName || user.lastName;
         user.username = username || user.username;
         user.email = email || user.email;
         user.dob = dob || user.dob;
-        user.height = height !== undefined ? height : user.height; // Ensure height can be updated
-        user.weight = weight !== undefined ? weight : user.weight; // Ensure weight can be updated
+        user.height = height !== undefined ? height : user.height;
+        user.weight = weight !== undefined ? weight : user.weight;
+        user.gender = gender || user.gender; // Update gender
 
         await user.save();
         res.json(user);
@@ -236,8 +239,8 @@ app.put('/api/users/update', authenticateToken, async (req, res) => {
     }
 });
 
-
-
+// Mount DeepSeek API route
+app.use('/api/deepseek', deepseekRouter);
 
 const PORT = 5002;
 app.listen(PORT, () => {
