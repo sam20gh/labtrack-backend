@@ -5,6 +5,10 @@ const connectDB = require('./config/db');
 const userRoutes = require('./routes/userRoutes');
 const testResultRoutes = require('./routes/testResultRoutes');
 const deepseekRoutes = require('./routes/deepseekRoutes');
+const aiFeedbackRoutes = require('./routes/aifeedback');
+const professionalRoutes = require('./routes/professionalRoutes');
+const authRoutes = require('./routes/authRoutes');
+const imageRoutes = require('./routes/imageRoutes');
 
 
 const app = express();
@@ -16,6 +20,10 @@ connectDB();
 app.use('/api/users', userRoutes);
 app.use('/api/test-results', testResultRoutes);
 app.use('/api/deepseek', deepseekRoutes);
+app.use('/api/aifeedback', aiFeedbackRoutes);
+app.use('/api/professionals', professionalRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/images', imageRoutes);
 
 
 
