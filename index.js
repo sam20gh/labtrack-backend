@@ -9,7 +9,7 @@ const aiFeedbackRoutes = require('./routes/aifeedback');
 const professionalRoutes = require('./routes/professionalRoutes');
 const authRoutes = require('./routes/authRoutes');
 const imageRoutes = require('./routes/imageRoutes');
-
+const productRoutes = require('./routes/productRoutes');
 
 const app = express();
 app.use(cors());
@@ -25,6 +25,7 @@ app.use('/api/professionals', professionalRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/images', imageRoutes);
 
+app.use('/api/products', productRoutes);
 
 
 const PORT = process.env.PORT || 5002;
