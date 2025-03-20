@@ -5,7 +5,7 @@ const connectDB = async () => {
     // Fetch connection details from environment variables
     const username = encodeURIComponent(process.env.MONGO_USERNAME);
     const password = encodeURIComponent(process.env.MONGO_PASSWORD);
-    const clusterUrl = process.env.MONGO_CLUSTER_URL;  // e.g., cluster0.abcd123.mongodb.net
+    const clusterUrl = process.env.MONGO_CLUSTER_URL;
     const database = process.env.MONGO_DB_NAME || "labtrack";
 
     // Build the connection string
