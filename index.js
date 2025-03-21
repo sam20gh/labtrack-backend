@@ -10,6 +10,7 @@ const professionalRoutes = require('./routes/professionalRoutes');
 const authRoutes = require('./routes/authRoutes');
 const imageRoutes = require('./routes/imageRoutes');
 const productRoutes = require('./routes/productRoutes');
+const planRoutes = require('./routes/planRoutes');
 
 const app = express();
 app.use(cors());
@@ -24,7 +25,7 @@ app.use('/api/aifeedback', aiFeedbackRoutes);
 app.use('/api/professionals', professionalRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/images', imageRoutes);
-
+app.use('/api', planRoutes);
 app.use('/api/products', productRoutes);
 
 
