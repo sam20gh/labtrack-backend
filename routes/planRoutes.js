@@ -61,5 +61,29 @@ router.get('/plans/:userID', authenticateToken, async (req, res) => {
         res.status(500).json({ message: "Error retrieving health plans", error });
     }
 });
+router.delete('/plans/delete/:planID', authenticateToken, async (req, res) => {
+    try {
+        const { planID } = req.params;
 
+        console.log("🔍 Attempting to delete plan with ID:", planID);
+
+        const deletedPlan = await Plan.findByIdAndDelete(planID);
+
+        if (!deletedPlan) {
+            console.log("❌ No plan found with ID:", planID);
+            return res.status(404).json({ message: "Plan not found" });
+        }
+
+        console.log("🟢 Plan deleted successfully:", deletedPlan);
+
+        return res.json({
+            message: "Plan deleted successfully",
+            plan: deletedPlan
+        });
+
+    } catch (error) {
+        console.error("❌ Error deleting plan:", error);
+        res.status(500).json({ message: "Error deleting plan", error });
+    }
+});
 module.exports = router;
