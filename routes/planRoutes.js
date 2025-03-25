@@ -7,10 +7,10 @@ const {
     deletePlan
 } = require('../controllers/planController');
 
-const verifyToken = require('../middleware/auth'); // Auth middleware
+const authenticateToken = require('../middleware/authMiddleware'); // Auth middleware
 
-router.post('/create', verifyToken, createPlan);
-router.get('/:userId', verifyToken, getPlansByUser);
-router.delete('/delete/:planId', verifyToken, deletePlan);
+router.post('/create', authenticateToken, createPlan);
+router.get('/:userId', authenticateToken, getPlansByUser);
+router.delete('/delete/:planId', authenticateToken, deletePlan);
 
 module.exports = router;
