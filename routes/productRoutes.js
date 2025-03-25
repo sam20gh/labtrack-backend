@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const path = require('path');
 const productController = require('../controllers/productController');
+console.log("✅ productController loaded from:", require.resolve('../controllers/productController'));
+console.log("✅ keys:", Object.keys(productController));
 const { authenticateToken } = require('../middleware/authMiddleware');
 
 router.post('/', authenticateToken, productController.addProduct);

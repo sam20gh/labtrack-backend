@@ -39,6 +39,7 @@ const getPlansByUser = async (req, res) => {
         const formatted = plans.map(p => ({
             _id: p._id,
             createdAt: p.createdAt,
+            structured_plan: p.structured_plan || null,
             plan: p.plan || []
         }));
 
