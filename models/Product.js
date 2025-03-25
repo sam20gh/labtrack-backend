@@ -1,12 +1,12 @@
-const mongoose = require('mongoose');
+const express = require('express');
+const router = express.Router();
+const productController = require('../controllers/productController');
+const { authenticateToken } = require('../middleware/authMiddleware');
 
-const ProductSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    sku: { type: String, required: true, unique: true },
-    description: { type: String },
-    image: { type: String }, // URL from Cloudflare
-    type: { type: String },
-    price: { type: Number, required: true }
-});
+router.post('/', authenticateToken, productController.addProduct);
+router.get('/', authenticateToken, productController.getProducts); // ✅ Fixed
+router.get('/:id', authenticateToken, productController.getProduct);
+router.put('/:id', authenticateToken, productController.updateProduct);
+router.delete('/:id', authenticateToken, productController.deleteProduct);
 
-module.exports = mongoose.model('Product', ProductSchema);
+module.exports = router;
