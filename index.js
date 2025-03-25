@@ -25,7 +25,7 @@ app.use('/api/aifeedback', aiFeedbackRoutes);
 app.use('/api/professionals', professionalRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/images', imageRoutes);
-app.use('/api', planRoutes);
+app.use('/api/plans', planRoutes);
 app.use('/api/products', productRoutes);
 
 
