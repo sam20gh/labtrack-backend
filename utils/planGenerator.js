@@ -39,7 +39,8 @@ const generateUserPlan = (feedbackText, user, products, professionals) => {
                     year,
                     test,
                     productID: productMatch._id?.$oid || productMatch._id || null,
-                    productName: productMatch.name
+                    productName: productMatch.name,
+                    image: productMatch.image || null
                 };
             });
 
@@ -49,6 +50,7 @@ const generateUserPlan = (feedbackText, user, products, professionals) => {
                 frequency,
                 productID: productMatch._id?.$oid || productMatch._id || null,
                 productName: productMatch.name,
+                image: productMatch.image || null,
                 start_age: userAge,
                 occurrences
             });
@@ -75,6 +77,7 @@ const generateUserPlan = (feedbackText, user, products, professionals) => {
                 speciality,
                 professionalID: matchingProfessional._id?.$oid || matchingProfessional._id || null,
                 professionalName: matchingProfessional.firstname + " " + matchingProfessional.lastname,
+                professionalImage: matchingProfessional.profile_image || null,
                 scheduled_age,
                 year
             });
@@ -90,7 +93,8 @@ const generateUserPlan = (feedbackText, user, products, professionals) => {
                 age: o.age,
                 year: o.year,
                 productID: o.productID,
-                productName: o.productName
+                productName: o.productName,
+                image: o.image || null
             }));
         } else {
             return [{
@@ -99,7 +103,8 @@ const generateUserPlan = (feedbackText, user, products, professionals) => {
                 age: entry.scheduled_age,
                 year: entry.year,
                 professionalID: entry.professionalID,
-                professionalName: entry.professionalName
+                professionalName: entry.professionalName,
+                image: entry.professionalImage || null
             }];
         }
     }).sort((a, b) => a.age - b.age);
