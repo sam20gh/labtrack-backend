@@ -8,17 +8,28 @@ exports.signup = async (req, res) => {
     try {
         const { firstName, lastName, username, email, phone, dob, password, gender } = req.body;
 
-        if (!firstName || !lastName || !username || !email || !phone || !dob || !password || !gender) {
-            return res.status(400).json({ message: 'All fields are required' });
+        // Only email and password are required for initial signup
+        // Other fields can be added later via health questionnaire
+        if (!email || !password) {
+            return res.status(400).json({ message: 'Email and password are required' });
         }
 
-        const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+        // Use email as username if not provided
+        const effectiveUsername = username || email;
+
+        const existingUser = await User.findOne({ $or: [{ email }, { username: effectiveUsername }] });
         if (existingUser) return res.status(400).json({ message: 'User already exists. Please log in.' });
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
         const newUser = new User({
-            firstName, lastName, username, email, phone, dob, gender,
+            firstName: firstName || '',
+            lastName: lastName || '',
+            username: effectiveUsername,
+            email,
+            phone: phone || '',
+            dob: dob || '',
+            gender: gender || undefined,
             password: hashedPassword
         });
 
