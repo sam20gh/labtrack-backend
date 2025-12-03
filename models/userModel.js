@@ -106,13 +106,13 @@ const UserSchema = new mongoose.Schema({
     healthAssessment: {
         completedAt: { type: Date },
         isComplete: { type: Boolean, default: false },
-        
+
         // Mood tracking history
         moodHistory: [MoodEntrySchema],
-        
+
         // Habits (exercise, smoking, alcohol, etc.)
         habits: [HabitSchema],
-        
+
         // Daily calorie/nutrition goals and tracking
         nutritionGoals: {
             dailyCalorieGoal: { type: Number },
@@ -122,39 +122,39 @@ const UserSchema = new mongoose.Schema({
             dailyWaterGoal: { type: Number }
         },
         nutritionHistory: [NutritionEntrySchema],
-        
+
         // Current medications
         medications: [MedicationSchema],
-        
+
         // Known allergies
         allergies: [AllergySchema],
-        
+
         // Medical conditions (current and past)
         conditions: [ConditionSchema],
-        
+
         // Past checkups and scheduled appointments
         checkups: [CheckupSchema],
-        
+
         // Health analysis preferences and results
         analysisPreferences: {
             receiveAIRecommendations: { type: Boolean, default: true },
             focusAreas: [{ type: String }], // e.g., ["Heart Health", "Weight Management", "Mental Health"]
             geneticFactorsConsidered: { type: Boolean, default: false }
         },
-        
+
         // Personal health notes
         notes: [HealthNoteSchema],
-        
+
         // Voice recordings for health journaling
         voiceRecordings: [VoiceRecordingSchema],
-        
+
         // Family medical history
         familyHistory: [{
             condition: { type: String },
             relation: { type: String }, // e.g., "Mother", "Father", "Sibling"
             notes: { type: String }
         }],
-        
+
         // Lifestyle factors
         lifestyle: {
             smokingStatus: { type: String, enum: ['Never', 'Former', 'Current', 'Occasional'] },

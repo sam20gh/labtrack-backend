@@ -122,7 +122,7 @@ exports.updateHealthAssessment = async (req, res) => {
 
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
-            { 
+            {
                 healthAssessment: {
                     ...healthAssessment,
                     completedAt: new Date(),
@@ -487,7 +487,7 @@ exports.deleteHealthItem = async (req, res) => {
     try {
         const { field, itemId } = req.params;
         const validFields = ['medications', 'allergies', 'conditions', 'checkups', 'notes', 'voiceRecordings', 'moodHistory', 'nutritionHistory', 'habits', 'familyHistory'];
-        
+
         if (!validFields.includes(field)) {
             return res.status(400).json({ message: 'Invalid field specified' });
         }
