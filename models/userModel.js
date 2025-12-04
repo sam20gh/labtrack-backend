@@ -97,15 +97,19 @@ const UserSchema = new mongoose.Schema({
     email: { type: String, unique: true, required: true },
     phone: { type: String, default: '' },
     dob: { type: String, default: '' },
-    gender: { type: String, enum: ['Male', 'Female', null], default: null },
+    gender: { type: String, enum: ['Male', 'Female', 'Other', null], default: null },
     height: { type: Number, default: null },
     weight: { type: Number, default: null },
+    bloodType: { type: String, default: null }, // e.g., "A+", "O-", "AB+"
     password: { type: String, required: true },
 
     // Comprehensive Health Assessment Fields
     healthAssessment: {
         completedAt: { type: Date },
         isComplete: { type: Boolean, default: false },
+
+        // Health goals selected during assessment
+        healthGoals: [{ type: String }],
 
         // Mood tracking history
         moodHistory: [MoodEntrySchema],
@@ -160,9 +164,14 @@ const UserSchema = new mongoose.Schema({
             smokingStatus: { type: String, enum: ['Never', 'Former', 'Current', 'Occasional'] },
             alcoholConsumption: { type: String, enum: ['None', 'Occasional', 'Moderate', 'Heavy'] },
             exerciseFrequency: { type: String, enum: ['None', 'Light', 'Moderate', 'Active', 'Very Active'] },
+            exerciseTypes: [{ type: String }], // e.g., ["Running", "Swimming", "Yoga"]
             dietType: { type: String }, // e.g., "Vegetarian", "Vegan", "Keto", "Standard"
             occupation: { type: String },
-            stressLevel: { type: String, enum: ['Low', 'Moderate', 'High', 'Very High'] }
+            stressLevel: { type: String, enum: ['Low', 'Moderate', 'High', 'Very High'] },
+            fitnessLevel: { type: String }, // e.g., "Beginner", "Intermediate", "Advanced"
+            sleepQuality: { type: Number, min: 1, max: 5 },
+            sleepHoursPerNight: { type: Number },
+            checkupFrequency: { type: String } // e.g., "weekly", "monthly", "yearly"
         }
     }
 }, { timestamps: true });
