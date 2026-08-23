@@ -97,7 +97,9 @@ const UserSchema = new mongoose.Schema({
     firstName: { type: String, default: '' },
     lastName: { type: String, default: '' },
     username: { type: String, unique: true, required: true },
-    email: { type: String, unique: true, required: true },
+    // Lowercased on write: Supabase normalises emails, and a case mismatch here would
+    // create a duplicate account instead of linking (see KNOWN-ISSUES #25).
+    email: { type: String, unique: true, required: true, lowercase: true, trim: true },
     phone: { type: String, default: '' },
     dob: { type: String, default: '' },
     gender: { type: String, enum: ['Male', 'Female', 'Other', null], default: null },

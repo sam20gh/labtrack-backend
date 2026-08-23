@@ -99,7 +99,7 @@ exports.updateUser = async (req, res) => {
             updates.password = await bcrypt.hash(updates.password, 10);
         }
 
-        const updatedUser = await User.findByIdAndUpdate(req.params.id, updates, { new: true }).select('-password');
+        const updatedUser = await User.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true }).select('-password');
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
 
         res.json({ message: 'User updated successfully', user: updatedUser });
@@ -150,7 +150,7 @@ exports.updateHealthAssessment = async (req, res) => {
                     isComplete: true
                 }
             },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -169,7 +169,7 @@ exports.addMoodEntry = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { $push: { 'healthAssessment.moodHistory': moodEntry } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.moodHistory');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -188,7 +188,7 @@ exports.updateHabits = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.habits': habits },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.habits');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -207,7 +207,7 @@ exports.addNutritionEntry = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { $push: { 'healthAssessment.nutritionHistory': nutritionEntry } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.nutritionHistory');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -226,7 +226,7 @@ exports.updateNutritionGoals = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.nutritionGoals': nutritionGoals },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.nutritionGoals');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -245,7 +245,7 @@ exports.updateMedications = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.medications': medications },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.medications');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -264,7 +264,7 @@ exports.addMedication = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { $push: { 'healthAssessment.medications': medication } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.medications');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -283,7 +283,7 @@ exports.updateAllergies = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.allergies': allergies },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.allergies');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -302,7 +302,7 @@ exports.addAllergy = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { $push: { 'healthAssessment.allergies': allergy } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.allergies');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -321,7 +321,7 @@ exports.updateConditions = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.conditions': conditions },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.conditions');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -340,7 +340,7 @@ exports.addCondition = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { $push: { 'healthAssessment.conditions': condition } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.conditions');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -359,7 +359,7 @@ exports.addCheckup = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { $push: { 'healthAssessment.checkups': checkup } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.checkups');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -378,7 +378,7 @@ exports.updateCheckups = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.checkups': checkups },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.checkups');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -397,7 +397,7 @@ exports.updateAnalysisPreferences = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.analysisPreferences': analysisPreferences },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.analysisPreferences');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -416,7 +416,7 @@ exports.addHealthNote = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { $push: { 'healthAssessment.notes': note } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.notes');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -435,7 +435,7 @@ exports.updateHealthNotes = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.notes': notes },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.notes');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -454,7 +454,7 @@ exports.addVoiceRecording = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { $push: { 'healthAssessment.voiceRecordings': voiceRecording } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.voiceRecordings');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -473,7 +473,7 @@ exports.updateLifestyle = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.lifestyle': lifestyle },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.lifestyle');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -492,7 +492,7 @@ exports.updateFamilyHistory = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { 'healthAssessment.familyHistory': familyHistory },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('healthAssessment.familyHistory');
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });
@@ -516,7 +516,7 @@ exports.deleteHealthItem = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.params.id,
             { $pull: { [`healthAssessment.${field}`]: { _id: itemId } } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select(`healthAssessment.${field}`);
 
         if (!updatedUser) return res.status(404).json({ message: 'User not found' });

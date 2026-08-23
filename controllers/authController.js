@@ -76,7 +76,7 @@ exports.syncSupabaseUser = async (req, res) => {
         user = await User.findOneAndUpdate(
             { email: emailPattern },
             { $set: { supabaseId } },
-            { new: true }
+            { new: true, runValidators: true }
         ).select('-password');
         if (user) {
             console.log('🔗 Linked Supabase identity to existing account:', email);

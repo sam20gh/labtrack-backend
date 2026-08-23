@@ -11,6 +11,11 @@ const authRoutes = require('./routes/authRoutes');
 const imageRoutes = require('./routes/imageRoutes');
 const productRoutes = require('./routes/productRoutes');
 const planRoutes = require('./routes/planRoutes');
+const biomarkerRoutes = require('./routes/biomarkerRoutes');
+const dnaReportRoutes = require('./routes/dnaReportRoutes');
+const planItemRoutes = require('./routes/planItemRoutes');
+const orderRoutes = require('./routes/orderRoutes');
+const appointmentRoutes = require('./routes/appointmentRoutes');
 
 const app = express();
 app.use(cors());
@@ -27,6 +32,11 @@ app.use('/api/auth', authRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/plans', planRoutes);
 app.use('/api/products', productRoutes);
+app.use('/api/biomarkers', biomarkerRoutes);
+app.use('/api/dna-reports', dnaReportRoutes);
+app.use('/api/plan-items', planItemRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/appointments', appointmentRoutes);
 
 
 const PORT = process.env.PORT || 5002;
