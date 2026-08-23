@@ -31,7 +31,11 @@ exports.createProfessional = async (req, res) => {
         });
 
         await newProfessional.save();
-        res.status(201).json({ message: 'Professional created successfully', professional: newProfessional });
+
+        const created = newProfessional.toObject();
+        delete created.password;
+
+        res.status(201).json({ message: 'Professional created successfully', professional: created });
     } catch (error) {
         res.status(500).json({ message: 'Error creating professional', error: error.message });
     }
@@ -40,7 +44,7 @@ exports.createProfessional = async (req, res) => {
 // Get all professionals
 exports.getAllProfessionals = async (req, res) => {
     try {
-        const professionals = await Professional.find();
+        const professionals = await Professional.find().select('-password');
         res.status(200).json(professionals);
     } catch (error) {
         res.status(500).json({ message: 'Error retrieving professionals', error: error.message });
@@ -50,7 +54,7 @@ exports.getAllProfessionals = async (req, res) => {
 // Get a professional by ID
 exports.getProfessionalById = async (req, res) => {
     try {
-        const professional = await Professional.findById(req.params.id);
+        const professional = await Professional.findById(req.params.id).select('-password');
         if (!professional) {
             return res.status(404).json({ message: 'Professional not found' });
         }
@@ -67,7 +71,11 @@ exports.updateProfessional = async (req, res) => {
         if (updates.password) {
             updates.password = await bcrypt.hash(updates.password, 10);
         }
-        const updatedProfessional = await Professional.findByIdAndUpdate(req.params.id, updates, { new: true });
+        const updatedProfessional = await Professional.findByIdAndUpdate(
+            req.params.id,
+            updates,
+            { new: true, runValidators: true }
+        ).select('-password');
         if (!updatedProfessional) {
             return res.status(404).json({ message: 'Professional not found' });
         }

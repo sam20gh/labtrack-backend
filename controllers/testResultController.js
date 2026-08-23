@@ -21,8 +21,9 @@ exports.getTestResults = async (req, res) => {
         const { user_id } = req.query;
         if (!user_id) return res.status(400).json({ message: 'User ID is required' });
 
-        const testResults = await TestResult.find({ 'patient.user_id': user_id });
-        if (!testResults.length) return res.status(404).json({ message: 'No test results found' });
+        // Latest first; an empty history is a valid 200 with an empty array, not a 404
+        const testResults = await TestResult.find({ 'patient.user_id': user_id })
+            .sort({ 'patient.date_of_test': -1 });
 
         res.json(testResults);
     } catch (error) {

@@ -43,16 +43,19 @@ const extractHealthPlan = (feedback) => {
         healthPlan.lifestyle_recommendations.push("Limit alcohol consumption");
     }
 
+    // `speciality` MUST use the Professional.speciality enum spelling — planGenerator
+    // matches by substring, so practitioner nouns ("Oncologist") match no enum value
+    // ("Oncology") and the consultation is silently dropped from the plan.
     if (feedback.includes("Consult an Oncologist")) {
         healthPlan.specialist_consultations.push({
-            speciality: "Oncologist",
+            speciality: "Oncology",
             urgency: "Moderate"
         });
     }
 
     if (feedback.includes("Consult a Genetic Counselor")) {
         healthPlan.specialist_consultations.push({
-            speciality: "Genetic Counselor",
+            speciality: "Medical Genetics",
             urgency: "High"
         });
     }

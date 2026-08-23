@@ -34,7 +34,14 @@ exports.signup = async (req, res) => {
         });
 
         await newUser.save();
-        res.status(201).json({ message: 'User registered successfully', user: newUser });
+
+        // Issue a token immediately so the client has a usable session after signup
+        const token = jwt.sign({ id: newUser._id }, SECRET_KEY, { expiresIn: '24h' });
+
+        const userResponse = newUser.toObject();
+        delete userResponse.password;
+
+        res.status(201).json({ message: 'User registered successfully', token, user: userResponse });
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
     }
@@ -52,7 +59,10 @@ exports.login = async (req, res) => {
 
         const token = jwt.sign({ id: user._id }, SECRET_KEY, { expiresIn: '24h' });
 
-        res.json({ message: 'Login successful', token, user });
+        const userResponse = user.toObject();
+        delete userResponse.password;
+
+        res.json({ message: 'Login successful', token, user: userResponse });
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
     }

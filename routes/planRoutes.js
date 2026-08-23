@@ -7,9 +7,11 @@ const {
     deletePlan
 } = require('../controllers/planController');
 
-const { authenticateToken } = require('../middleware/authMiddleware'); // ✅ Correct
-router.post('/create', authenticateToken, createPlan); // ✅
-router.get('/:userId', authenticateToken, getPlansByUser);
-router.delete('/delete/:planId', authenticateToken, deletePlan);
+const { authenticateToken } = require('../middleware/authMiddleware');
+const { requireSelf, requirePlanOwner } = require('../middleware/ownership');
+
+router.post('/create', authenticateToken, createPlan);
+router.get('/:userId', authenticateToken, requireSelf('userId'), getPlansByUser);
+router.delete('/delete/:planId', authenticateToken, requirePlanOwner(), deletePlan);
 
 module.exports = router;

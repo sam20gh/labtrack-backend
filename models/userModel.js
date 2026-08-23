@@ -91,6 +91,9 @@ const NutritionEntrySchema = new mongoose.Schema({
 }, { _id: true });
 
 const UserSchema = new mongoose.Schema({
+    // Supabase auth user id (claims.sub). Sparse: legacy accounts have none until they
+    // first sign in through Supabase, at which point authMiddleware links by email.
+    supabaseId: { type: String, unique: true, sparse: true, default: undefined },
     firstName: { type: String, default: '' },
     lastName: { type: String, default: '' },
     username: { type: String, unique: true, required: true },
@@ -101,7 +104,12 @@ const UserSchema = new mongoose.Schema({
     height: { type: Number, default: null },
     weight: { type: Number, default: null },
     bloodType: { type: String, default: null }, // e.g., "A+", "O-", "AB+"
-    password: { type: String, required: true },
+    // Required only for legacy email/password accounts. Supabase-backed accounts hold no
+    // password here — Supabase owns the credential.
+    password: {
+        type: String,
+        required: function () { return !this.supabaseId; }
+    },
 
     // Comprehensive Health Assessment Fields
     healthAssessment: {
