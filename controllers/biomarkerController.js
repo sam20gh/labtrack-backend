@@ -18,6 +18,8 @@ const canonicalise = (name) =>
  */
 const persistMeasurements = async ({ userId, user, measurements, testResultId, source }) => {
     const saved = [];
+    /** Rows that could not be stored, so the caller can report partial success. */
+    const failed = [];
 
     for (const m of measurements) {
         // Convert to canonical name + unit BEFORE any range comparison. Skipping this would
@@ -36,25 +38,31 @@ const persistMeasurements = async ({ userId, user, measurements, testResultId, s
 
         const notes = [m.notes, norm.normalisationNote].filter(Boolean).join(' · ') || undefined;
 
-        saved.push(await Biomarker.create({
-            userId,
-            name: norm.name,
-            displayName: norm.displayName || m.name,
-            value: norm.value,
-            unit: norm.unit || evaluation.appliedRange?.unit || '',
-            measuredAt,
-            testResultId,
-            source: source || 'manual_entry',
-            flag: evaluation.flag,
-            appliedRange: evaluation.appliedRange,
-            reportedRange: m.reportedRange,
-            needsReview,
-            extractionConfidence: m.extractionConfidence,
-            notes,
-        }));
+        // Isolated per row: a single malformed measurement must not discard a whole report
+        try {
+            saved.push(await Biomarker.create({
+                userId,
+                name: norm.name,
+                displayName: norm.displayName || m.name,
+                value: norm.value,
+                unit: norm.unit || evaluation.appliedRange?.unit || '',
+                measuredAt,
+                testResultId,
+                source: source || 'manual_entry',
+                flag: evaluation.flag,
+                appliedRange: evaluation.appliedRange,
+                reportedRange: m.reportedRange,
+                needsReview,
+                extractionConfidence: m.extractionConfidence,
+                notes,
+            }));
+        } catch (error) {
+            console.error(`⚠️ Could not store "${m.name}":`, error.message);
+            failed.push({ name: m.name, value: m.value, unit: m.unit, reason: error.message });
+        }
     }
 
-    return saved;
+    return { saved, failed };
 };
 
 /** POST /api/biomarkers — record one or more measurements. */
@@ -76,7 +84,7 @@ exports.addBiomarkers = async (req, res) => {
             if (!owns) return res.status(404).json({ message: 'Test result not found' });
         }
 
-        const saved = await persistMeasurements({ userId, user, measurements, testResultId, source });
+        const { saved, failed } = await persistMeasurements({ userId, user, measurements, testResultId, source });
 
         if (testResultId) {
             await TestResult.findByIdAndUpdate(testResultId, {
@@ -85,7 +93,11 @@ exports.addBiomarkers = async (req, res) => {
             }, { runValidators: true });
         }
 
-        res.status(201).json({ message: `${saved.length} measurements recorded`, biomarkers: saved });
+        res.status(201).json({
+            message: `${saved.length} measurements recorded`,
+            biomarkers: saved,
+            failed,
+        });
     } catch (error) {
         console.error('❌ Error adding biomarkers:', error);
         res.status(500).json({ message: 'Error adding biomarkers', error: error.message });

@@ -21,8 +21,16 @@ const BiomarkerSchema = new mongoose.Schema({
     displayName: { type: String },
 
     value: { type: Number, required: true },
-    /** Canonical unit for this analyte, e.g. 'ng/mL', 'mmol/L', '%'. */
-    unit: { type: String, required: true },
+    /**
+     * Canonical unit for this analyte, e.g. 'ng/mL', 'mmol/L', '%'.
+     *
+     * NOT required: real reports contain analytes outside our catalogue, and calculated
+     * rows (ratios, indices) often print no unit at all. Such a measurement is stored with
+     * `flag: 'unknown'` and `needsReview: true` and is never range-evaluated, so an empty
+     * unit is honest rather than dangerous — whereas rejecting it discarded the entire
+     * report over one row.
+     */
+    unit: { type: String, default: '' },
 
     measuredAt: { type: Date, required: true },
 

@@ -110,7 +110,7 @@ const BIOMARKERS = {
     vitamin_d: {
         displayName: 'Vitamin D (25-OH)',
         unit: 'nmol/L',
-        aliases: ['vitamind', 'vitd', '25ohd', '25hydroxyvitamind', 'vitamind25oh'],
+        aliases: ['vitamind', 'vitd', '25ohd', '25hydroxyvitamind', 'vitamind25oh', '25ohvitamind', '25hydroxyd'],
         units: { 'nmol/l': 1, 'ng/ml': 2.496 },
     },
     vitamin_b12: {
@@ -143,9 +143,48 @@ for (const [canonical, def] of Object.entries(BIOMARKERS)) {
 
 /**
  * Resolve a reported analyte name to a canonical key.
+ *
+ * Exact slug matching alone is too brittle for real reports. Labs print composite names —
+ * "ALT (SGPT)", "AST (SGOT)", "Vitamin D, 25-OH", "Glucose, Fasting" — where the canonical
+ * term is only one component. A real Meridian-format PDF surfaced this: "ALT (SGPT)" fell
+ * through to an unrecognised analyte and was stored unflagged, despite both "alt" and
+ * "sgpt" being known aliases.
+ *
+ * Strategy, most specific first, so a composite that IS a known alias still wins:
+ *   1. the whole name
+ *   2. the part before any parenthesis          — "ALT (SGPT)"      → "ALT"
+ *   3. the contents of the parenthesis          — "ALT (SGPT)"      → "SGPT"
+ *   4. each comma- or slash-separated segment   — "Glucose, Fasting" → "Glucose"
+ *
  * @returns {string|null} canonical key, or null when unrecognised.
  */
-const resolveName = (reportedName) => ALIAS_INDEX.get(slug(reportedName)) ?? null;
+const resolveName = (reportedName) => {
+    const raw = String(reportedName ?? '').trim();
+    if (!raw) return null;
+
+    const direct = ALIAS_INDEX.get(slug(raw));
+    if (direct) return direct;
+
+    const candidates = [];
+
+    const parenMatch = raw.match(/^([^(]+)\(([^)]*)\)/);
+    if (parenMatch) {
+        candidates.push(parenMatch[1], parenMatch[2]);
+    }
+
+    // Split on separators labs use to qualify an analyte
+    for (const part of raw.split(/[,/;]|\(|\)/)) {
+        const trimmed = part.trim();
+        if (trimmed) candidates.push(trimmed);
+    }
+
+    for (const candidate of candidates) {
+        const hit = ALIAS_INDEX.get(slug(candidate));
+        if (hit) return hit;
+    }
+
+    return null;
+};
 
 /**
  * HbA1c: DCCT/NGSP percent → IFCC mmol/mol.

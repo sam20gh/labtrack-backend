@@ -123,7 +123,7 @@ exports.confirmReport = async (req, res) => {
             parseStatus: 'parsed',
         });
 
-        const saved = await persistMeasurements({
+        const { saved, failed } = await persistMeasurements({
             userId,
             user,
             measurements: measurements.map((m) => ({ ...m, measuredAt: m.measuredAt || measuredAt })),
@@ -133,16 +133,25 @@ exports.confirmReport = async (req, res) => {
 
         await TestResult.findByIdAndUpdate(
             testResult._id,
-            { $set: { biomarkerCount: saved.length } },
+            {
+                $set: {
+                    biomarkerCount: saved.length,
+                    parseStatus: failed.length ? 'needs_review' : 'parsed',
+                },
+            },
             { runValidators: true }
         );
 
         const flagged = saved.filter((b) => !['normal', 'unknown'].includes(b.flag));
 
         res.status(201).json({
-            message: `${saved.length} measurements saved`,
+            // Partial success is reported, not hidden: the user must know if a row was lost
+            message: failed.length
+                ? `${saved.length} measurements saved, ${failed.length} could not be stored`
+                : `${saved.length} measurements saved`,
             testResult,
             biomarkers: saved,
+            failed,
             flagged: flagged.map((b) => ({
                 name: b.name, displayName: b.displayName, value: b.value, unit: b.unit,
                 flag: b.flag, geneAdjusted: b.appliedRange?.geneAdjusted || false,
