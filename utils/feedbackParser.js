@@ -1,4 +1,12 @@
 // utils/feedbackParser.js
+//
+// DEPRECATED (Phase 4). Keyword matching over AI prose: it recognised only a handful of
+// exact phrases and silently discarded everything else. Superseded by the schema-enforced
+// output of utils/interpretationEngine.js.
+//
+// Still referenced by the legacy /api/plans endpoints, which Phase 5 replaces with
+// PlanItem generation from structured interpretations. Do not extend this file — add
+// capability to the interpretation schema instead.
 
 const extractHealthPlan = (feedback) => {
     const healthPlan = {

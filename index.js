@@ -17,6 +17,7 @@ const planItemRoutes = require('./routes/planItemRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const appointmentRoutes = require('./routes/appointmentRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const interpretationRoutes = require('./routes/interpretationRoutes');
 
 const app = express();
 app.use(cors());
@@ -39,6 +40,7 @@ app.use('/api/plan-items', planItemRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/interpretation', interpretationRoutes);
 
 
 const PORT = process.env.PORT || 5002;
