@@ -3,10 +3,14 @@ const ReferenceRange = require('../models/ReferenceRange');
 const TestResult = require('../models/testResultModel');
 const User = require('../models/userModel');
 const { evaluate } = require('../utils/biomarkerEvaluator');
+const { normaliseMeasurement, resolveName, slug } = require('../utils/unitNormaliser');
 
-/** Normalise a reported analyte name into the canonical key used for trending. */
+/**
+ * Canonical key for lookups. Prefers the alias table (so 'Hb' and 'Serum Ferritin' resolve
+ * correctly); falls back to a slug for analytes outside the catalogue.
+ */
 const canonicalise = (name) =>
-    String(name).trim().toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '');
+    resolveName(name) ?? slug(name).replace(/[^a-z0-9]/g, '_');
 
 /**
  * Evaluate and persist a set of measurements for one user.
@@ -16,28 +20,37 @@ const persistMeasurements = async ({ userId, user, measurements, testResultId, s
     const saved = [];
 
     for (const m of measurements) {
-        const name = canonicalise(m.name);
-        const value = Number(m.value);
-        if (!name || Number.isNaN(value)) continue;
+        // Convert to canonical name + unit BEFORE any range comparison. Skipping this would
+        // compare e.g. 90 mg/dL glucose against a mmol/L range and report critical_high.
+        const norm = normaliseMeasurement(m);
+        if (!norm.name || Number.isNaN(norm.value)) continue;
 
         const measuredAt = m.measuredAt ? new Date(m.measuredAt) : new Date();
-        const { flag, appliedRange } = await evaluate({ userId, name, value, user, measuredAt });
+        const needsReview = Boolean(m.needsReview) || norm.needsReview;
+
+        // An unrecognised analyte or unit must not be flagged against a range that may not
+        // apply — store it, mark it for confirmation, and leave the verdict to a human.
+        const evaluation = needsReview
+            ? { flag: 'unknown', appliedRange: null }
+            : await evaluate({ userId, name: norm.name, value: norm.value, user, measuredAt });
+
+        const notes = [m.notes, norm.normalisationNote].filter(Boolean).join(' · ') || undefined;
 
         saved.push(await Biomarker.create({
             userId,
-            name,
-            displayName: m.displayName || m.name,
-            value,
-            unit: m.unit || appliedRange?.unit || '',
+            name: norm.name,
+            displayName: norm.displayName || m.name,
+            value: norm.value,
+            unit: norm.unit || evaluation.appliedRange?.unit || '',
             measuredAt,
             testResultId,
             source: source || 'manual_entry',
-            flag,
-            appliedRange,
+            flag: evaluation.flag,
+            appliedRange: evaluation.appliedRange,
             reportedRange: m.reportedRange,
-            needsReview: Boolean(m.needsReview),
+            needsReview,
             extractionConfidence: m.extractionConfidence,
-            notes: m.notes,
+            notes,
         }));
     }
 
@@ -204,6 +217,12 @@ exports.getReferenceRanges = async (req, res) => {
     } catch (error) {
         res.status(500).json({ message: 'Error fetching reference ranges', error: error.message });
     }
+};
+
+/** GET /api/biomarkers/catalogue — canonical analytes and the units we accept. */
+exports.getCatalogue = async (req, res) => {
+    const { listBiomarkers } = require('../utils/unitNormaliser');
+    res.json({ biomarkers: listBiomarkers() });
 };
 
 exports.persistMeasurements = persistMeasurements;

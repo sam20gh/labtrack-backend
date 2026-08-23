@@ -7,6 +7,7 @@ const { authenticateToken } = require('../middleware/authMiddleware');
 // so there is no id to tamper with.
 router.use(authenticateToken);
 
+router.get('/catalogue', c.getCatalogue);
 router.get('/reference-ranges', c.getReferenceRanges);
 router.get('/latest', c.getLatest);
 router.get('/:name/trend', c.getTrend);
