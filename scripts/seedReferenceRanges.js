@@ -77,6 +77,41 @@ const RANGES = [
             rationale: 'BRCA2 carriers face elevated prostate cancer risk; surveillance threshold lowered',
         }],
     },
+
+    // --- Full blood count ---------------------------------------------------
+    { biomarker: 'wbc', displayName: 'White Blood Cells', unit: '10^9/L', sex: 'any', ageMin: 18, ageMax: 200, min: 4.0, max: 11.0, criticalMin: 1.0, criticalMax: 30.0 },
+    { biomarker: 'rbc', displayName: 'Red Blood Cells', unit: '10^12/L', sex: 'male', ageMin: 18, ageMax: 200, min: 4.5, max: 5.9 },
+    { biomarker: 'rbc', displayName: 'Red Blood Cells', unit: '10^12/L', sex: 'female', ageMin: 18, ageMax: 200, min: 4.0, max: 5.2 },
+    { biomarker: 'haematocrit', displayName: 'Haematocrit', unit: '%', sex: 'male', ageMin: 18, ageMax: 200, min: 40, max: 52 },
+    { biomarker: 'haematocrit', displayName: 'Haematocrit', unit: '%', sex: 'female', ageMin: 18, ageMax: 200, min: 36, max: 47 },
+    { biomarker: 'platelets', displayName: 'Platelets', unit: '10^9/L', sex: 'any', ageMin: 18, ageMax: 200, min: 150, max: 400, criticalMin: 50, criticalMax: 1000 },
+    { biomarker: 'mcv', displayName: 'MCV', unit: 'fL', sex: 'any', ageMin: 18, ageMax: 200, min: 80, max: 100 },
+
+    // --- Electrolytes and renal ---------------------------------------------
+    { biomarker: 'sodium', displayName: 'Sodium', unit: 'mmol/L', sex: 'any', ageMin: 18, ageMax: 200, min: 135, max: 145, criticalMin: 120, criticalMax: 160 },
+    { biomarker: 'potassium', displayName: 'Potassium', unit: 'mmol/L', sex: 'any', ageMin: 18, ageMax: 200, min: 3.5, max: 5.3, criticalMin: 2.5, criticalMax: 6.5 },
+    { biomarker: 'chloride', displayName: 'Chloride', unit: 'mmol/L', sex: 'any', ageMin: 18, ageMax: 200, min: 98, max: 107 },
+    { biomarker: 'urea', displayName: 'Urea', unit: 'mmol/L', sex: 'any', ageMin: 18, ageMax: 200, min: 2.5, max: 7.8 },
+
+    // --- Liver and protein ---------------------------------------------------
+    { biomarker: 'albumin', displayName: 'Albumin', unit: 'g/L', sex: 'any', ageMin: 18, ageMax: 200, min: 35, max: 50 },
+    { biomarker: 'total_protein', displayName: 'Total Protein', unit: 'g/L', sex: 'any', ageMin: 18, ageMax: 200, min: 60, max: 80 },
+    { biomarker: 'bilirubin', displayName: 'Total Bilirubin', unit: 'µmol/L', sex: 'any', ageMin: 18, ageMax: 200, max: 21 },
+    { biomarker: 'alp', displayName: 'Alkaline Phosphatase', unit: 'U/L', sex: 'any', ageMin: 18, ageMax: 200, min: 30, max: 130 },
+    { biomarker: 'ggt', displayName: 'GGT', unit: 'U/L', sex: 'male', ageMin: 18, ageMax: 200, max: 55 },
+    { biomarker: 'ggt', displayName: 'GGT', unit: 'U/L', sex: 'female', ageMin: 18, ageMax: 200, max: 38 },
+
+    // --- Other common panel members ------------------------------------------
+    { biomarker: 'calcium', displayName: 'Calcium', unit: 'mmol/L', sex: 'any', ageMin: 18, ageMax: 200, min: 2.20, max: 2.60, criticalMin: 1.75, criticalMax: 3.25 },
+    { biomarker: 'uric_acid', displayName: 'Uric Acid', unit: 'µmol/L', sex: 'male', ageMin: 18, ageMax: 200, min: 200, max: 430 },
+    { biomarker: 'uric_acid', displayName: 'Uric Acid', unit: 'µmol/L', sex: 'female', ageMin: 18, ageMax: 200, min: 140, max: 360 },
+    { biomarker: 'crp', displayName: 'C-Reactive Protein', unit: 'mg/L', sex: 'any', ageMin: 18, ageMax: 200, max: 5, criticalMax: 100 },
+    {
+        biomarker: 'iron', displayName: 'Iron', unit: 'µmol/L', sex: 'any', ageMin: 18, ageMax: 200, min: 10, max: 30,
+        geneModifiers: [{ gene: 'HFE', max: 25, rationale: 'HFE variants raise iron-overload risk; upper limit monitored more tightly' }],
+    },
+    { biomarker: 'folate', displayName: 'Folate', unit: 'nmol/L', sex: 'any', ageMin: 18, ageMax: 200, min: 7 },
+
     { biomarker: 'psa', displayName: 'PSA', unit: 'ng/mL', sex: 'male', ageMin: 50, ageMax: 59, max: 3.5 },
     { biomarker: 'psa', displayName: 'PSA', unit: 'ng/mL', sex: 'male', ageMin: 60, ageMax: 200, max: 4.5 },
 ];

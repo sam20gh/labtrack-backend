@@ -119,6 +119,128 @@ const BIOMARKERS = {
         aliases: ['vitaminb12', 'b12', 'cobalamin'],
         units: { 'pmol/l': 1, 'pg/ml': 0.7378 },
     },
+    // --- Full blood count -------------------------------------------------
+    wbc: {
+        displayName: 'White Blood Cells',
+        unit: '10^9/L',
+        aliases: ['wbc', 'whitebloodcells', 'whitecellcount', 'leukocytes', 'wbccount', 'whitebloodcellcount'],
+        units: { '10^9/l': 1, 'x10^9/l': 1, '10e9/l': 1, 'k/ul': 1, '10^3/ul': 1, 'thou/ul': 1, '/ul': 0.001 },
+    },
+    rbc: {
+        displayName: 'Red Blood Cells',
+        unit: '10^12/L',
+        aliases: ['rbc', 'redbloodcells', 'redcellcount', 'erythrocytes', 'rbccount', 'redbloodcellcount'],
+        units: { '10^12/l': 1, 'x10^12/l': 1, '10e12/l': 1, 'm/ul': 1, '10^6/ul': 1, 'mill/ul': 1 },
+    },
+    haematocrit: {
+        displayName: 'Haematocrit',
+        unit: '%',
+        aliases: ['haematocrit', 'hematocrit', 'hct', 'pcv', 'packedcellvolume'],
+        units: { '%': 1, 'l/l': 100, 'ratio': 100 },
+    },
+    platelets: {
+        displayName: 'Platelets',
+        unit: '10^9/L',
+        aliases: ['platelets', 'plateletcount', 'plt', 'thrombocytes'],
+        units: { '10^9/l': 1, 'x10^9/l': 1, '10e9/l': 1, 'k/ul': 1, '10^3/ul': 1, 'thou/ul': 1 },
+    },
+    mcv: {
+        displayName: 'MCV',
+        unit: 'fL',
+        aliases: ['mcv', 'meancorpuscularvolume', 'meancellvolume'],
+        units: { 'fl': 1, 'um^3': 1 },
+    },
+
+    // --- Electrolytes and renal -------------------------------------------
+    sodium: {
+        displayName: 'Sodium',
+        unit: 'mmol/L',
+        aliases: ['sodium', 'na', 'serumsodium'],
+        units: { 'mmol/l': 1, 'meq/l': 1 },
+    },
+    potassium: {
+        displayName: 'Potassium',
+        unit: 'mmol/L',
+        aliases: ['potassium', 'k', 'serumpotassium'],
+        units: { 'mmol/l': 1, 'meq/l': 1 },
+    },
+    chloride: {
+        displayName: 'Chloride',
+        unit: 'mmol/L',
+        aliases: ['chloride', 'cl', 'serumchloride'],
+        units: { 'mmol/l': 1, 'meq/l': 1 },
+    },
+    urea: {
+        displayName: 'Urea',
+        unit: 'mmol/L',
+        aliases: ['urea', 'bloodurea', 'bun', 'ureanitrogen', 'bloodureanitrogen'],
+        units: { 'mmol/l': 1, 'mg/dl': 0.357 },
+    },
+
+    // --- Liver and protein -------------------------------------------------
+    albumin: {
+        displayName: 'Albumin',
+        unit: 'g/L',
+        aliases: ['albumin', 'serumalbumin', 'alb'],
+        units: { 'g/l': 1, 'g/dl': 10 },
+    },
+    total_protein: {
+        displayName: 'Total Protein',
+        unit: 'g/L',
+        aliases: ['totalprotein', 'protein', 'proteintotal', 'serumtotalprotein'],
+        units: { 'g/l': 1, 'g/dl': 10 },
+    },
+    bilirubin: {
+        displayName: 'Total Bilirubin',
+        unit: 'µmol/L',
+        aliases: ['bilirubin', 'totalbilirubin', 'bilirubintotal', 'tbil', 'serumbilirubin'],
+        units: { 'µmol/l': 1, 'umol/l': 1, 'mg/dl': 17.104 },
+    },
+    alp: {
+        displayName: 'Alkaline Phosphatase',
+        unit: 'U/L',
+        aliases: ['alp', 'alkalinephosphatase', 'alkphos'],
+        units: { 'u/l': 1, 'iu/l': 1 },
+    },
+    ggt: {
+        displayName: 'GGT',
+        unit: 'U/L',
+        aliases: ['ggt', 'gammagt', 'gammaglutamyltransferase'],
+        units: { 'u/l': 1, 'iu/l': 1 },
+    },
+
+    // --- Other common panel members ---------------------------------------
+    calcium: {
+        displayName: 'Calcium',
+        unit: 'mmol/L',
+        aliases: ['calcium', 'ca', 'serumcalcium', 'totalcalcium'],
+        units: { 'mmol/l': 1, 'mg/dl': 0.2495 },
+    },
+    uric_acid: {
+        displayName: 'Uric Acid',
+        unit: 'µmol/L',
+        aliases: ['uricacid', 'urate', 'serumuricacid'],
+        units: { 'µmol/l': 1, 'umol/l': 1, 'mg/dl': 59.48 },
+    },
+    crp: {
+        displayName: 'C-Reactive Protein',
+        unit: 'mg/L',
+        aliases: ['crp', 'creactiveprotein', 'hscrp', 'highsensitivitycrp'],
+        units: { 'mg/l': 1, 'mg/dl': 10 },
+    },
+    iron: {
+        displayName: 'Iron',
+        unit: 'µmol/L',
+        aliases: ['iron', 'serumiron', 'fe'],
+        units: { 'µmol/l': 1, 'umol/l': 1, 'µg/dl': 0.179, 'ug/dl': 0.179 },
+    },
+    folate: {
+        displayName: 'Folate',
+        unit: 'nmol/L',
+        aliases: ['folate', 'folicacid', 'serumfolate'],
+        units: { 'nmol/l': 1, 'ng/ml': 2.266 },
+    },
+
     psa: {
         displayName: 'PSA',
         unit: 'ng/mL',
