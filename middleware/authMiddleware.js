@@ -16,8 +16,16 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
 const { verifySupabaseToken, roleFromClaims } = require('../config/supabase');
 
-const SECRET_KEY = process.env.SECRET_KEY;
-const LEGACY_AUTH_DISABLED = process.env.LEGACY_AUTH_DISABLED === 'true';
+/**
+ * Read at call time rather than module load.
+ *
+ * Capturing these in constants meant the values were frozen at first import — before
+ * dotenv had necessarily run, depending on require order, and unreachable from a test that
+ * sets them in `beforeAll`. Reading per request costs nothing and removes a class of
+ * "works locally, not in CI" failure.
+ */
+const secretKey = () => process.env.SECRET_KEY;
+const legacyAuthDisabled = () => process.env.LEGACY_AUTH_DISABLED === 'true';
 
 const bearerToken = (req) => {
     const header = req.header('Authorization') || '';
@@ -65,9 +73,9 @@ const resolveAuth = async (req) => {
         };
     }
 
-    if (!LEGACY_AUTH_DISABLED && SECRET_KEY) {
+    if (!legacyAuthDisabled() && secretKey()) {
         try {
-            const payload = jwt.verify(token, SECRET_KEY);
+            const payload = jwt.verify(token, secretKey());
             return {
                 userId: payload.id ? String(payload.id) : null,
                 supabaseId: null,

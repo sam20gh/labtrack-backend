@@ -31,7 +31,26 @@ const PlanItemSchema = new mongoose.Schema({
     /** e.g. 'Annually', 'Once'. Drives generation of the next occurrence on completion. */
     frequency: { type: String },
 
-    dueDate: { type: Date, required: true, index: true },
+    /**
+     * Stored at local midnight.
+     *
+     * A due date is a day, not an instant. `advanceRecurringItem()` derives the next
+     * occurrence from `completedAt`, which carries a time — and both `deriveStatus()` and
+     * the daily sweep compared against midnight exactly, so such an item was never flagged
+     * `due` on its due date. It jumped from `upcoming` straight to `urgent` the day after,
+     * skipping the reminder that fires on the day.
+     */
+    dueDate: {
+        type: Date,
+        required: true,
+        index: true,
+        set: (value) => {
+            if (!value) return value;
+            const d = new Date(value);
+            if (Number.isNaN(d.getTime())) return value;
+            return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        },
+    },
 
     /**
      * `due` and `urgent` are derived from dueDate by the daily status job, not set by hand.
@@ -90,9 +109,12 @@ PlanItemSchema.index({ userId: 1, dueDate: 1 });
 /** Status implied by the due date alone, for the daily sweep. */
 PlanItemSchema.statics.deriveStatus = function (dueDate, now = new Date()) {
     const due = new Date(dueDate);
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    if (due < startOfToday) return 'urgent';
-    if (due.getTime() === startOfToday.getTime()) return 'due';
+    // Compare whole days: an item due at any time today is due today
+    const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate()).getTime();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+
+    if (dueDay < today) return 'urgent';
+    if (dueDay === today) return 'due';
     return 'upcoming';
 };
 

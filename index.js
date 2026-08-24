@@ -19,6 +19,7 @@ const appointmentRoutes = require('./routes/appointmentRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const reviewRoutes = require('./routes/reviewRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 const interpretationRoutes = require('./routes/interpretationRoutes');
 
 const app = express();
@@ -37,12 +38,15 @@ app.post(
     require('./controllers/paymentController').handleWebhook
 );
 
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
+app.use(require('./middleware/requestLogger'));
 
 connectDB();
 
 // Plan statuses are date-derived, so they must be recomputed daily
 require('./jobs/statusSweep').scheduleStatusSweep();
+// Reminders run after the status sweep, so urgency is current when they fire
+require('./jobs/reminderJob').scheduleReminderJob();
 
 app.use('/api/users', userRoutes);
 app.use('/api/test-results', testResultRoutes);
@@ -61,8 +65,39 @@ app.use('/api/appointments', appointmentRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use('/api/notifications', notificationRoutes);
 app.use('/api/interpretation', interpretationRoutes);
 
+
+/**
+ * Health check.
+ *
+ * Unauthenticated on purpose: a load balancer or uptime monitor cannot hold a token. It
+ * reports only what an operator needs — no counts, no identifiers, nothing about patients.
+ */
+app.get('/health', (req, res) => {
+    const mongoose = require('mongoose');
+    const dbUp = mongoose.connection.readyState === 1;
+
+    res.status(dbUp ? 200 : 503).json({
+        status: dbUp ? 'ok' : 'degraded',
+        database: dbUp ? 'connected' : 'disconnected',
+        services: {
+            // Capability flags, so a deploy can be checked without guessing from behaviour
+            supabaseAuth: require('./config/supabase').isConfigured(),
+            payments: require('./config/stripe').isConfigured(),
+            aiInterpretation: Boolean(process.env.ANTHROPIC_API_KEY),
+        },
+        uptimeSeconds: Math.round(process.uptime()),
+        timestamp: new Date().toISOString(),
+    });
+});
+
+// Must come after every route: the first matches anything unrouted, the second catches
+// whatever a handler threw.
+const { errorHandler, notFound } = require('./middleware/errorHandler');
+app.use(notFound);
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 5002;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

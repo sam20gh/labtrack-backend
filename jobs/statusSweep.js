@@ -53,6 +53,7 @@ const attachSuggestions = async () => {
 /** Recompute statuses. Returns counts for logging and tests. */
 const runStatusSweep = async () => {
     const today = startOfToday();
+    const tomorrow = new Date(today.getTime() + 86400000);
 
     /**
      * Both conditions on `status` must survive into the query.
@@ -72,11 +73,13 @@ const runStatusSweep = async () => {
             { $set: { status: 'urgent' } }
         ),
         PlanItem.updateMany(
-            { ...mutableExcept('due'), dueDate: today },
+            // A range, not equality: a legacy row stored with a time component would never
+            // match an exact midnight timestamp and would skip `due` entirely
+            { ...mutableExcept('due'), dueDate: { $gte: today, $lt: tomorrow } },
             { $set: { status: 'due' } }
         ),
         PlanItem.updateMany(
-            { ...mutableExcept('upcoming'), dueDate: { $gt: today } },
+            { ...mutableExcept('upcoming'), dueDate: { $gte: tomorrow } },
             { $set: { status: 'upcoming' } }
         ),
     ]);

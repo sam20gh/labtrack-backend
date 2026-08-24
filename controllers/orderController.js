@@ -3,6 +3,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const PlanItem = require('../models/PlanItem');
 const { advanceRecurringItem } = require('../utils/planGeneratorV2');
+const { notifyUser } = require('../jobs/reminderJob');
 
 /**
  * POST /api/orders — place a home-collection order.
@@ -143,6 +144,23 @@ exports.updateOrderStatus = async (req, res) => {
         if (testResultId) order.testResultId = testResultId;
         if (dnaReportId) order.dnaReportId = dnaReportId;
         await order.save();
+
+        // Tell the person their kit moved. Fire-and-forget: a push failure must not fail
+        // the fulfilment transition itself.
+        const ANNOUNCE = {
+            kit_sent: { title: 'Your kit is on its way', body: 'Your collection kit has been dispatched.', key: 'orderUpdates' },
+            sample_received: { title: 'Sample received', body: 'The laboratory has your sample and is processing it.', key: 'orderUpdates' },
+            resulted: { title: 'Your results are ready', body: 'Your new results are in your record. Tap to see them.', key: 'resultsReady' },
+        };
+        const announcement = ANNOUNCE[status];
+        if (announcement) {
+            notifyUser(order.userId, {
+                title: announcement.title,
+                body: announcement.body,
+                data: { type: 'order', orderId: String(order._id), route: '/order-details' },
+                preferenceKey: announcement.key,
+            }).catch((e) => console.warn('⚠️ Order notification failed:', e.message));
+        }
 
         if (status === 'resulted') {
             const planItemIds = order.items.map((i) => i.planItemId).filter(Boolean);

@@ -21,6 +21,7 @@ const Professional = require('../models/Professional');
 const Product = require('../models/Product');
 const User = require('../models/userModel');
 const { firstDueDate } = require('../utils/planGeneratorV2');
+const { notifyUser } = require('../jobs/reminderJob');
 
 /** Fields of an interpretation a clinician may amend. */
 const AMENDABLE = ['summary', 'risks', 'recommended_screenings', 'specialist_consultations', 'lifestyle_recommendations', 'follow_up', 'limitations'];
@@ -145,6 +146,15 @@ exports.submitReview = async (req, res) => {
         await report.save();
 
         console.log(`🩺 Report ${report._id} reviewed by ${professionalId} — approved: ${approved}, ${edits.length} amendments`);
+
+        const clinician = await Professional.findById(professionalId).select('firstname lastname').lean();
+        notifyUser(report.userId, {
+            title: 'A specialist has reviewed your results',
+            body: clinician
+                ? `Dr ${clinician.lastname} has reviewed your genetic report and health plan.`
+                : 'Your genetic report has been reviewed by a specialist.',
+            data: { type: 'review', dnaReportId: String(report._id), route: '/myplans' },
+        }).catch((e) => console.warn('⚠️ Review notification failed:', e.message));
 
         res.json({
             message: approved ? 'Interpretation approved' : 'Interpretation reviewed with concerns',

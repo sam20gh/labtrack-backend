@@ -96,6 +96,32 @@ const UserSchema = new mongoose.Schema({
     supabaseId: { type: String, unique: true, sparse: true, default: undefined },
     /** Stripe customer, so saved cards and receipts stay with the person across orders. */
     stripeCustomerId: { type: String, default: undefined },
+
+    /**
+     * Expo push tokens, one per device. An array rather than a single field: people use a
+     * phone and a tablet, and reinstalling issues a fresh token while the old one lingers.
+     * Tokens Expo reports as unregistered are pruned automatically.
+     */
+    pushTokens: [{
+        token: { type: String, required: true },
+        platform: { type: String, enum: ['ios', 'android'], default: undefined },
+        deviceName: { type: String },
+        registeredAt: { type: Date, default: Date.now },
+    }],
+
+    notificationPreferences: {
+        enabled: { type: Boolean, default: true },
+        /** Days before a due date to notify. 0 means on the day itself. */
+        offsetDays: { type: [Number], default: [7, 0] },
+        overdueReminders: { type: Boolean, default: true },
+        orderUpdates: { type: Boolean, default: true },
+        resultsReady: { type: Boolean, default: true },
+        /** Local hours during which a notification may be sent. */
+        quietHours: {
+            start: { type: Number, min: 0, max: 23, default: 22 },
+            end: { type: Number, min: 0, max: 23, default: 8 },
+        },
+    },
     firstName: { type: String, default: '' },
     lastName: { type: String, default: '' },
     username: { type: String, unique: true, required: true },

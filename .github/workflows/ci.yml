@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Must match engines: jose needs a WebCrypto global that Node 18 does not expose,
+          # and without it every Supabase signature check fails silently.
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Syntax check every source file
+        run: |
+          find . -name '*.js' -not -path './node_modules/*' -print0 \
+            | xargs -0 -n1 node --check
+
+      - name: Tests
+        run: npm test
+        env:
+          # The suite runs against an in-memory MongoDB and needs no real credentials
+          SECRET_KEY: ci-test-secret
+          NODE_ENV: test
+
+      - name: Verify the app boots with no optional services configured
+        run: |
+          # Every integration is meant to degrade rather than crash when unconfigured
+          timeout 20s node -e "
+            process.env.MONGO_URI='mongodb://127.0.0.1:1/labtrack-ci';
+            require('./config/stripe');
+            require('./config/supabase');
+            require('./utils/reportParser');
+            require('./utils/interpretationEngine');
+            console.log('✅ all modules load without credentials');
+          "
