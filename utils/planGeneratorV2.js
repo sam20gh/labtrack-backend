@@ -93,13 +93,27 @@ const occurrenceDates = (firstDue, frequency, horizonMonths = DEFAULT_HORIZON_MO
     return dates;
 };
 
-/** Case-insensitive, bidirectional substring match against the product catalogue. */
+/**
+ * Case-insensitive, bidirectional substring match against the product catalogue.
+ *
+ * Returns the LONGEST matching product name, not the first. A combined recommendation like
+ * "Transvaginal ultrasound plus serum CA-125" matches both "CA-125" and "Transvaginal
+ * Ultrasound"; taking the first in array order picked the £59.99 blood test over the £279
+ * scan that is the substantive part of the recommendation. The longest match is the most
+ * specific one.
+ */
 const matchProduct = (testName, products) => {
     const needle = String(testName).toLowerCase();
-    return products.find((p) => {
+
+    const matches = products.filter((p) => {
         const name = String(p.name).toLowerCase();
         return name.includes(needle) || needle.includes(name);
-    }) || null;
+    });
+
+    if (!matches.length) return null;
+
+    return matches.reduce((best, p) =>
+        String(p.name).length > String(best.name).length ? p : best);
 };
 
 /**
