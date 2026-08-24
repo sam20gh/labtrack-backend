@@ -28,6 +28,8 @@ exports.getDnaReports = async (req, res) => {
     try {
         const reports = await DnaReport.find({ userId: req.auth.userId })
             .sort({ createdAt: -1 })
+            // So the app can say "Reviewed by Dr X" rather than just "reviewed"
+            .populate('specialistReview.professionalId', 'firstname lastname speciality profile_image')
             .lean();
         res.json({ reports });
     } catch (error) {
@@ -38,7 +40,8 @@ exports.getDnaReports = async (req, res) => {
 /** GET /api/dna-reports/:id */
 exports.getDnaReport = async (req, res) => {
     try {
-        const report = await DnaReport.findOne({ _id: req.params.id, userId: req.auth.userId });
+        const report = await DnaReport.findOne({ _id: req.params.id, userId: req.auth.userId })
+            .populate('specialistReview.professionalId', 'firstname lastname speciality profile_image');
         if (!report) return res.status(404).json({ message: 'DNA report not found' });
         res.json({ report });
     } catch (error) {

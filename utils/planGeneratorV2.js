@@ -227,6 +227,8 @@ const regeneratePlan = async ({ interpretation, user, products, professionals, s
         interpretation, user, products, professionals, sourceDnaReportId, sourceTestResultId, horizonMonths,
     });
 
+    // `source: 'ai'` is the guard that protects clinician-ordered follow-ups: a
+    // regenerated interpretation must never delete what a doctor put on the plan.
     const removed = await PlanItem.deleteMany({
         userId: user._id,
         source: 'ai',
