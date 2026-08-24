@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const PlanItem = require('../models/PlanItem');
@@ -15,7 +16,14 @@ exports.createOrder = async (req, res) => {
             return res.status(400).json({ message: 'items must be a non-empty array' });
         }
 
+        // Validate ids before querying: an unparseable id would otherwise surface as a
+        // Mongoose CastError string in the response rather than a clear message
         const productIds = items.map((i) => i.productId);
+        const invalid = productIds.filter((id) => !mongoose.isValidObjectId(id));
+        if (invalid.length) {
+            return res.status(400).json({ message: `Invalid product id: ${invalid[0]}` });
+        }
+
         const products = await Product.find({ _id: { $in: productIds } }).lean();
         const byId = new Map(products.map((p) => [String(p._id), p]));
 
@@ -37,22 +45,38 @@ exports.createOrder = async (req, res) => {
 
         const subtotal = lineItems.reduce((sum, l) => sum + l.price * l.quantity, 0);
 
+        // With Stripe configured the order waits for payment; without it, orders are
+        // placed unpaid so the flow still works in environments with no payment provider.
+        const { isConfigured: stripeConfigured } = require('../config/stripe');
+        const initialStatus = stripeConfigured() ? 'pending_payment' : 'placed';
+
         const order = await Order.create({
             userId: req.auth.userId,
             items: lineItems,
             subtotal,
             total: subtotal,
-            status: 'placed',
-            statusHistory: [{ status: 'placed', at: new Date() }],
+            status: initialStatus,
+            statusHistory: [{
+                status: initialStatus,
+                at: new Date(),
+                note: stripeConfigured() ? 'Awaiting payment' : 'Placed without payment',
+            }],
             shippingAddress,
         });
 
         // Mark any plan items this order fulfils, so the timeline reflects it immediately
+        // Link the plan items now, but only mark them `ordered` once payment is settled —
+        // an unpaid order should not make a screening disappear from the timeline.
         const planItemIds = lineItems.map((l) => l.planItemId).filter(Boolean);
         if (planItemIds.length) {
             await PlanItem.updateMany(
                 { _id: { $in: planItemIds }, userId: req.auth.userId },
-                { $set: { status: 'ordered', orderId: order._id } },
+                {
+                    $set: {
+                        orderId: order._id,
+                        ...(initialStatus === 'placed' ? { status: 'ordered' } : {}),
+                    },
+                },
                 { runValidators: true }
             );
         }

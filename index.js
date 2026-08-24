@@ -17,10 +17,25 @@ const planItemRoutes = require('./routes/planItemRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const appointmentRoutes = require('./routes/appointmentRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
 const interpretationRoutes = require('./routes/interpretationRoutes');
 
 const app = express();
 app.use(cors());
+
+/**
+ * Stripe webhook — mounted before express.json() on purpose.
+ *
+ * Signature verification hashes the exact bytes Stripe sent. Once express.json() has parsed
+ * and discarded the raw body, the signature can never be verified, and every webhook is
+ * rejected. This must stay above the JSON parser.
+ */
+app.post(
+    '/api/payments/webhook',
+    express.raw({ type: 'application/json' }),
+    require('./controllers/paymentController').handleWebhook
+);
+
 app.use(express.json());
 
 connectDB();
@@ -43,6 +58,7 @@ app.use('/api/plan-items', planItemRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/payments', paymentRoutes);
 app.use('/api/interpretation', interpretationRoutes);
 
 

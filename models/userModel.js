@@ -94,6 +94,8 @@ const UserSchema = new mongoose.Schema({
     // Supabase auth user id (claims.sub). Sparse: legacy accounts have none until they
     // first sign in through Supabase, at which point authMiddleware links by email.
     supabaseId: { type: String, unique: true, sparse: true, default: undefined },
+    /** Stripe customer, so saved cards and receipts stay with the person across orders. */
+    stripeCustomerId: { type: String, default: undefined },
     firstName: { type: String, default: '' },
     lastName: { type: String, default: '' },
     username: { type: String, unique: true, required: true },
