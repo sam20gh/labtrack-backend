@@ -1,4 +1,5 @@
 const PlanItem = require('../models/PlanItem');
+const { advanceRecurringItem } = require('../utils/planGeneratorV2');
 
 /** GET /api/plan-items — the caller's timeline, optionally filtered by status. */
 exports.getPlanItems = async (req, res) => {
@@ -70,7 +71,14 @@ exports.updateStatus = async (req, res) => {
         );
         if (!item) return res.status(404).json({ message: 'Plan item not found' });
 
-        res.json({ message: 'Plan item updated', item });
+        // Completing a recurring screening schedules the next one, so a short horizon
+        // never leaves the plan empty
+        let next = null;
+        if (status === 'completed') {
+            next = await advanceRecurringItem(item);
+        }
+
+        res.json({ message: 'Plan item updated', item, nextOccurrence: next });
     } catch (error) {
         res.status(400).json({ message: 'Error updating plan item', error: error.message });
     }

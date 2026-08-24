@@ -1,6 +1,7 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const PlanItem = require('../models/PlanItem');
+const { advanceRecurringItem } = require('../utils/planGeneratorV2');
 
 /**
  * POST /api/orders — place a home-collection order.
@@ -127,6 +128,10 @@ exports.updateOrderStatus = async (req, res) => {
                     { $set: { status: 'completed', completedAt: new Date(), resultingTestResultId: testResultId } },
                     { runValidators: true }
                 );
+
+                // Keep recurring surveillance rolling forward
+                const completed = await PlanItem.find({ _id: { $in: planItemIds } });
+                for (const item of completed) await advanceRecurringItem(item);
             }
         }
 

@@ -25,6 +25,9 @@ app.use(express.json());
 
 connectDB();
 
+// Plan statuses are date-derived, so they must be recomputed daily
+require('./jobs/statusSweep').scheduleStatusSweep();
+
 app.use('/api/users', userRoutes);
 app.use('/api/test-results', testResultRoutes);
 app.use('/api/deepseek', deepseekRoutes);

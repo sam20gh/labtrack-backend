@@ -5,6 +5,9 @@ const Biomarker = require('../models/Biomarker');
 const TestResult = require('../models/testResultModel');
 const AIFeedback = require('../models/AIFeedback');
 const { interpret, isConfigured, MODEL } = require('../utils/interpretationEngine');
+const { regeneratePlan } = require('../utils/planGeneratorV2');
+const Product = require('../models/Product');
+const Professional = require('../models/Professional');
 
 /**
  * Assemble everything the engine needs about one person.
@@ -118,6 +121,23 @@ exports.generateInterpretation = async (req, res) => {
             );
         }
 
+        // Turn the interpretation into dated, actionable items. The server loads the
+        // catalogues itself — the old /api/plans/create made the client POST the entire
+        // product and professional lists, which is both wasteful and trivially forgeable.
+        const [products, professionals] = await Promise.all([
+            Product.find().lean(),
+            Professional.find().select('firstname lastname speciality profile_image').lean(),
+        ]);
+
+        const plan = await regeneratePlan({
+            interpretation: result.data,
+            user: context.user,
+            products,
+            professionals,
+            sourceDnaReportId: dnaReportId,
+            sourceTestResultId: testResultId,
+        });
+
         res.status(201).json({
             message: 'Interpretation generated',
             cached: false,
@@ -126,6 +146,13 @@ exports.generateInterpretation = async (req, res) => {
             pendingSpecialistReview: Boolean(dnaReportId),
             model: MODEL,
             interpretation: result.data,
+            plan: {
+                created: plan.created.length,
+                replaced: plan.removedCount,
+                // Surfaced rather than swallowed: a recommendation with nothing to book
+                // against is a catalogue gap someone needs to close
+                unmatched: plan.unmatched,
+            },
             usage: result.usage,
         });
     } catch (error) {
