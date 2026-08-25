@@ -4,7 +4,10 @@
  * The product promise is that a clinician checks what the model produced before it is
  * treated as advice. That requires three things this module provides:
  *
- *   1. **A queue** of interpretations awaiting review.
+ *   1. **A queue** of interpretations awaiting review. It reads `Interpretation`, so it
+ *      covers every patient — the queue used to be `DnaReport.find({status:'ai_interpreted'})`,
+ *      which meant a patient with only blood results could never be reviewed at all while
+ *      the app told them review was pending.
  *   2. **Amendment with an audit trail.** What the AI said and what the clinician changed
  *      it to are both preserved — "the model got this wrong and a doctor corrected it" is
  *      exactly the record a medical product needs, and overwriting it would erase the
@@ -16,6 +19,8 @@
  * browse arbitrary patients.
  */
 const DnaReport = require('../models/DnaReport');
+const Interpretation = require('../models/Interpretation');
+const TestResult = require('../models/testResultModel');
 const PlanItem = require('../models/PlanItem');
 const Professional = require('../models/Professional');
 const Product = require('../models/Product');
@@ -32,27 +37,45 @@ const AMENDABLE = ['summary', 'risks', 'recommended_screenings', 'specialist_con
  */
 exports.getQueue = async (req, res) => {
     try {
-        const reports = await DnaReport.find({ status: 'ai_interpreted' })
-            .sort({ createdAt: 1 })
+        const pending = await Interpretation.find({ 'review.status': 'pending' })
+            .sort({ generatedAt: 1 })
             .populate('userId', 'firstName lastName dob gender email')
             .limit(100)
             .lean();
 
+        // One lookup for every DNA report referenced across the queue, rather than one per
+        // row: the pathogenic count is what lets a clinician pick the urgent ones first.
+        const dnaIds = pending.flatMap((i) =>
+            (i.covers || []).filter((c) => c.kind === 'dna_report').map((c) => c.id));
+        const dnaReports = dnaIds.length
+            ? await DnaReport.find({ _id: { $in: dnaIds } }).select('mutations').lean()
+            : [];
+        const mutationsById = new Map(dnaReports.map((d) => [String(d._id), d.mutations || []]));
+
         res.json({
-            count: reports.length,
-            reports: reports.map((r) => ({
-                _id: r._id,
-                patient: r.userId,
-                labName: r.labName,
-                reportDate: r.reportDate,
-                mutationCount: r.mutations?.length ?? 0,
-                // Surfaced in the queue so the clinically urgent ones can be picked first
-                pathogenicCount: (r.mutations || []).filter((m) =>
-                    ['pathogenic', 'likely_pathogenic'].includes(m.significance)).length,
-                summary: r.aiInterpretation?.summary,
-                generatedAt: r.aiInterpretation?.generatedAt,
-                waitingSince: r.createdAt,
-            })),
+            count: pending.length,
+            interpretations: pending.map((i) => {
+                const mutations = (i.covers || [])
+                    .filter((c) => c.kind === 'dna_report')
+                    .flatMap((c) => mutationsById.get(String(c.id)) || []);
+
+                return {
+                    _id: i._id,
+                    patient: i.userId,
+                    generatedAt: i.generatedAt,
+                    waitingSince: i.generatedAt,
+                    summary: i.content?.summary,
+                    // What the interpretation actually read, so the queue says whether this
+                    // is a genetic case, a blood case, or both.
+                    sourceKinds: [...new Set((i.covers || []).map((c) => c.kind))],
+                    sourceCount: (i.covers || []).length,
+                    mutationCount: mutations.length,
+                    pathogenicCount: mutations.filter((m) =>
+                        ['pathogenic', 'likely_pathogenic'].includes(m.significance)).length,
+                    // Surfaced for the same reason: a high-risk read should be picked first.
+                    highRiskCount: (i.content?.risks || []).filter((r) => r.level === 'high').length,
+                };
+            }),
         });
     } catch (error) {
         console.error('❌ Review queue failed:', error);
@@ -60,30 +83,67 @@ exports.getQueue = async (req, res) => {
     }
 };
 
-/** GET /api/reviews/:reportId — the full report and interpretation for review. */
+/**
+ * GET /api/reviews/:interpretationId — the interpretation and everything it read.
+ *
+ * A clinician needs the sources as well as the output, otherwise they are signing off prose
+ * they cannot check.
+ */
 exports.getReportForReview = async (req, res) => {
     try {
-        const report = await DnaReport.findById(req.params.reportId)
+        const interpretation = await Interpretation.findById(req.params.reportId)
             .populate('userId', 'firstName lastName dob gender email healthAssessment')
             .lean();
 
-        if (!report) return res.status(404).json({ message: 'Report not found' });
+        if (!interpretation) return res.status(404).json({ message: 'Interpretation not found' });
 
-        res.json({ report });
+        const dnaIds = (interpretation.covers || []).filter((c) => c.kind === 'dna_report').map((c) => c.id);
+        const resultIds = (interpretation.covers || []).filter((c) => c.kind === 'test_result').map((c) => c.id);
+
+        const [dnaReports, testResults, previous] = await Promise.all([
+            dnaIds.length ? DnaReport.find({ _id: { $in: dnaIds } }).lean() : [],
+            resultIds.length ? TestResult.find({ _id: { $in: resultIds } }).lean() : [],
+            // What the previous read said, so an amendment can be judged against the change
+            // rather than in isolation.
+            interpretation.supersedes
+                ? Interpretation.findById(interpretation.supersedes).select('content generatedAt review').lean()
+                : null,
+        ]);
+
+        res.json({ interpretation, sources: { dnaReports, testResults }, previous });
     } catch (error) {
-        res.status(500).json({ message: 'Could not load the report', error: error.message });
+        console.error('❌ Could not load interpretation for review:', error);
+        res.status(500).json({ message: 'Could not load the interpretation', error: error.message });
+    }
+};
+
+/** GET /api/reviews/mine — what this clinician has already signed. */
+exports.getMyReviews = async (req, res) => {
+    try {
+        const interpretations = await Interpretation.find({ 'review.professionalId': req.auth.userId })
+            .sort({ 'review.reviewedAt': -1 })
+            .populate('userId', 'firstName lastName')
+            .limit(100)
+            .lean();
+
+        res.json({ count: interpretations.length, interpretations });
+    } catch (error) {
+        res.status(500).json({ message: 'Could not load your reviews', error: error.message });
     }
 };
 
 /**
- * POST /api/reviews/:reportId
+ * POST /api/reviews/:interpretationId
  *
  * Sign off an interpretation, optionally amending it.
  *
- * Body: { approved, notes, amendments: { summary?, risks?, ... } }
+ * Body: `{ approved, notes, amendments: { summary?, risks?, ... } }`
  *
- * Amendments are applied to `aiInterpretation.raw` and each change is recorded in
- * `specialistReview.edits` with its previous value.
+ * The amended version is written to `amended.content` **beside** the original rather than
+ * over it. Two reasons: "the model said X and a doctor corrected it to Y" is exactly the
+ * record a medical product needs, and the patient read already prefers `amended` — which is
+ * what makes a correction reach them at all. Under the old shape the amendment landed on
+ * `DnaReport` while the patient-facing read looked at `AIFeedback`, so it never did.
  */
 exports.submitReview = async (req, res) => {
     try {
@@ -93,73 +153,76 @@ exports.submitReview = async (req, res) => {
             return res.status(400).json({ message: 'approved must be true or false' });
         }
 
-        const report = await DnaReport.findById(req.params.reportId);
-        if (!report) return res.status(404).json({ message: 'Report not found' });
-
-        if (report.status !== 'ai_interpreted' && report.status !== 'specialist_reviewed') {
-            return res.status(409).json({
-                message: `A report at status "${report.status}" is not ready for review`,
-            });
-        }
+        const interpretation = await Interpretation.findById(req.params.reportId);
+        if (!interpretation) return res.status(404).json({ message: 'Interpretation not found' });
 
         // req.auth.userId is the Professional's id for a professional-issued token
         const professionalId = req.auth.userId;
 
-        const raw = report.aiInterpretation?.raw ? { ...report.aiInterpretation.raw } : {};
+        // Start from whatever is current: re-reviewing an amended interpretation must build
+        // on the previous clinician's work, not silently revert it.
+        const base = interpretation.amended?.content || interpretation.content || {};
+        const next = { ...base };
         const edits = [];
 
         for (const field of AMENDABLE) {
             if (!(field in amendments)) continue;
 
-            const previous = raw[field];
+            const previous = base[field];
             const updated = amendments[field];
             if (JSON.stringify(previous) === JSON.stringify(updated)) continue;
 
-            edits.push({
-                field,
-                previous,
-                updated,
-                reason: amendments.__reasons?.[field] || notes,
-            });
-            raw[field] = updated;
+            edits.push({ field, previous, updated, reason: amendments.__reasons?.[field] || notes });
+            next[field] = updated;
         }
 
-        report.aiInterpretation.raw = raw;
-        // Keep the top-level summary in step with an amended one
-        if (raw.summary) report.aiInterpretation.summary = raw.summary;
-        if (raw.risks) {
-            report.aiInterpretation.risks = raw.risks.map((r) => ({
-                condition: r.condition, level: r.level, rationale: r.rationale,
-            }));
-        }
-
-        report.status = 'specialist_reviewed';
-        report.specialistReview = {
+        interpretation.review = {
+            status: edits.length ? 'amended' : 'approved',
             professionalId,
             reviewedAt: new Date(),
-            approved,
             notes,
             // Append rather than replace: a second review must not erase the first
-            edits: [...(report.specialistReview?.edits || []), ...edits],
+            edits: [...(interpretation.review?.edits || []), ...edits],
         };
 
-        await report.save();
+        if (edits.length) {
+            interpretation.amended = { content: next, at: new Date(), by: professionalId };
+        }
 
-        console.log(`🩺 Report ${report._id} reviewed by ${professionalId} — approved: ${approved}, ${edits.length} amendments`);
+        await interpretation.save();
+
+        // Keep the DNA report's copy in step for anything still reading it. Legacy, and it
+        // goes with the field in Phase 6.
+        const dnaCover = (interpretation.covers || []).find((c) => c.kind === 'dna_report');
+        if (dnaCover) {
+            await DnaReport.findByIdAndUpdate(dnaCover.id, {
+                $set: {
+                    status: 'specialist_reviewed',
+                    'aiInterpretation.raw': next,
+                    'aiInterpretation.summary': next.summary,
+                    'specialistReview.professionalId': professionalId,
+                    'specialistReview.reviewedAt': new Date(),
+                    'specialistReview.approved': approved,
+                    'specialistReview.notes': notes,
+                },
+            }).catch((e) => console.warn('⚠️ Legacy DnaReport sync failed:', e.message));
+        }
+
+        console.log(`🩺 Interpretation ${interpretation._id} reviewed by ${professionalId} — approved: ${approved}, ${edits.length} amendments`);
 
         const clinician = await Professional.findById(professionalId).select('firstname lastname').lean();
-        notifyUser(report.userId, {
+        notifyUser(interpretation.userId, {
             title: 'A specialist has reviewed your results',
             body: clinician
-                ? `Dr ${clinician.lastname} has reviewed your genetic report and health plan.`
-                : 'Your genetic report has been reviewed by a specialist.',
-            data: { type: 'review', dnaReportId: String(report._id), route: '/myplans' },
+                ? `Dr ${clinician.lastname} has reviewed your results and health plan.`
+                : 'Your results have been reviewed by a specialist.',
+            data: { type: 'review', interpretationId: String(interpretation._id), route: '/myplans' },
         }).catch((e) => console.warn('⚠️ Review notification failed:', e.message));
 
         res.json({
             message: approved ? 'Interpretation approved' : 'Interpretation reviewed with concerns',
             amendmentCount: edits.length,
-            report: await DnaReport.findById(report._id).lean(),
+            interpretation: await Interpretation.findById(interpretation._id).lean(),
         });
     } catch (error) {
         console.error('❌ Review submission failed:', error);
@@ -182,11 +245,16 @@ exports.addPlanItem = async (req, res) => {
             return res.status(400).json({ message: 'type and title are required' });
         }
 
-        const report = await DnaReport.findById(req.params.reportId).lean();
-        if (!report) return res.status(404).json({ message: 'Report not found' });
+        // The route param is now an interpretation id, and the patient comes from it.
+        const interpretation = await Interpretation.findById(req.params.reportId).lean();
+        if (!interpretation) return res.status(404).json({ message: 'Interpretation not found' });
 
-        const patient = await User.findById(report.userId).select('dob').lean();
+        const patient = await User.findById(interpretation.userId).select('dob').lean();
         if (!patient) return res.status(404).json({ message: 'Patient not found' });
+
+        // Kept for provenance where the interpretation read one, so a clinician-ordered
+        // follow-up still records the genetic finding behind it.
+        const dnaCover = (interpretation.covers || []).find((c) => c.kind === 'dna_report');
 
         // Either an explicit date or an age the clinician wants surveillance to start at
         const due = dueDate
@@ -197,7 +265,7 @@ exports.addPlanItem = async (req, res) => {
         if (productId) product = await Product.findById(productId).lean();
 
         const item = await PlanItem.create({
-            userId: report.userId,
+            userId: interpretation.userId,
             type,
             title,
             description,
@@ -209,7 +277,8 @@ exports.addPlanItem = async (req, res) => {
             // Marks this as clinician-ordered, which also protects it from AI regeneration
             source: 'specialist',
             orderedByProfessionalId: req.auth.userId,
-            sourceDnaReportId: report._id,
+            sourceDnaReportId: dnaCover?.id,
+            sourceInterpretationId: interpretation._id,
             speciality,
             productId: product?._id,
             productName: product?.name,
@@ -220,23 +289,6 @@ exports.addPlanItem = async (req, res) => {
     } catch (error) {
         console.error('❌ Adding specialist plan item failed:', error);
         res.status(400).json({ message: 'Could not add the follow-up', error: error.message });
-    }
-};
-
-/**
- * GET /api/reviews/mine — reports this professional has reviewed.
- */
-exports.getMyReviews = async (req, res) => {
-    try {
-        const reports = await DnaReport.find({ 'specialistReview.professionalId': req.auth.userId })
-            .sort({ 'specialistReview.reviewedAt': -1 })
-            .populate('userId', 'firstName lastName')
-            .limit(100)
-            .lean();
-
-        res.json({ count: reports.length, reports });
-    } catch (error) {
-        res.status(500).json({ message: 'Could not load your reviews', error: error.message });
     }
 };
 

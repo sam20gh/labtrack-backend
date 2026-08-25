@@ -73,6 +73,8 @@ const PlanItemSchema = new mongoose.Schema({
         default: 'ai',
     },
     sourceDnaReportId: { type: mongoose.Schema.Types.ObjectId, ref: 'DnaReport' },
+    /** The interpretation a clinician was reading when they ordered this follow-up. */
+    sourceInterpretationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Interpretation' },
     sourceTestResultId: { type: mongoose.Schema.Types.ObjectId, ref: 'TestResult' },
     /** Set when a professional added or amended the item. */
     orderedByProfessionalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Professional' },
