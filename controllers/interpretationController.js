@@ -4,6 +4,9 @@ const DnaReport = require('../models/DnaReport');
 const Biomarker = require('../models/Biomarker');
 const TestResult = require('../models/testResultModel');
 const AIFeedback = require('../models/AIFeedback');
+const Interpretation = require('../models/Interpretation');
+const { requiresReview, presentToPatient } = require('../config/clinicalPolicy');
+const { assessRegeneration } = require('../utils/regenerationGuard');
 const { interpret, isConfigured, MODEL } = require('../utils/interpretationEngine');
 const { regeneratePlan } = require('../utils/planGeneratorV2');
 const Product = require('../models/Product');
@@ -78,6 +81,52 @@ const gatherContext = async (userId) => {
     return { user, dnaReports, biomarkers, trends, series, testResults, previous };
 };
 
+
+/**
+ * Append one snapshot to the person's interpretation history.
+ *
+ * `covers` records what the prompt actually read, which is the whole point: the old
+ * `testID` claimed a single owning document for output derived from all of them.
+ */
+const writeSnapshot = async ({ userId, context, data, dnaReportId, testResultId }) => {
+    const covers = [];
+    for (const r of context.dnaReports || []) {
+        covers.push({ kind: 'dna_report', id: r._id, date: r.reportDate });
+    }
+    for (const t of context.testResults || []) {
+        covers.push({ kind: 'test_result', id: t._id, date: t.patient?.date_of_test });
+    }
+    // The document the user asked about may sit outside the context window gatherContext
+    // applies to test results, so make sure it is represented.
+    const requested = dnaReportId || testResultId;
+    if (requested && !covers.some((c) => String(c.id) === String(requested))) {
+        covers.push({ kind: dnaReportId ? 'dna_report' : 'test_result', id: requested });
+    }
+
+    const previous = await Interpretation.findOne({ userId }).sort({ generatedAt: -1 }).select('_id').lean();
+
+    return Interpretation.create({
+        userId,
+        generatedAt: new Date(),
+        model: MODEL,
+        covers,
+        content: data,
+        supersedes: previous?._id || null,
+        review: { status: requiresReview(data) ? 'pending' : 'not_required' },
+    });
+};
+
+/** The verification block every interpretation response carries. */
+const presentation = (snapshot) => {
+    const shown = presentToPatient(snapshot);
+    return {
+        status: shown.status,
+        withheld: shown.withheld,
+        reviewRequired: snapshot.review?.status === 'pending',
+        reviewedAt: snapshot.review?.reviewedAt || null,
+    };
+};
+
 /**
  * POST /api/interpretation/generate
  *
@@ -98,14 +147,39 @@ exports.generateInterpretation = async (req, res) => {
         const cacheKey = dnaReportId || testResultId || null;
 
         if (!force && cacheKey) {
-            const cached = await AIFeedback.findOne({ userID: userId, testID: cacheKey }).sort({ createdAt: -1 });
+            // Matches on `covers`, so an interpretation generated *after* this document
+            // existed counts as covering it — which it does. The old per-document key would
+            // miss that and spend a second model call saying the same thing.
+            const cached = await Interpretation.findOne({ userId, 'covers.id': cacheKey })
+                .sort({ generatedAt: -1 })
+                .lean();
             if (cached) {
+                const shown = presentToPatient(cached);
                 return res.json({
                     message: 'Existing interpretation returned',
                     cached: true,
-                    interpretation: JSON.parse(cached.feedback),
+                    interpretation: shown.content,
+                    verification: presentation(cached),
                 });
             }
+        }
+
+        // Only reached when a model call is actually about to happen: a cache hit above
+        // costs nothing and must never be rate-limited.
+        const verdict = await assessRegeneration({ userId });
+        if (!verdict.allowed) {
+            const existing = verdict.existing ? presentToPatient(verdict.existing) : null;
+            return res.status(429)
+                .set('Retry-After', String(verdict.retryAfterSeconds))
+                .json({
+                    message: verdict.message,
+                    reason: verdict.reason,
+                    retryAfterSeconds: verdict.retryAfterSeconds,
+                    // Hand back what they already have, so the client can keep showing an
+                    // analysis rather than treating a refusal as an absence.
+                    interpretation: existing?.content ?? null,
+                    verification: verdict.existing ? presentation(verdict.existing) : null,
+                });
         }
 
         const context = await gatherContext(userId);
@@ -128,6 +202,16 @@ exports.generateInterpretation = async (req, res) => {
                 { $set: { userID: userId, testID: cacheKey, feedback: JSON.stringify(result.data), createdAt: new Date() } },
                 { upsert: true, runValidators: true }
             );
+        }
+
+        // Phase 2 dual-write. `Interpretation` is append-only and not yet read from, so a
+        // failure here must not cost the user an interpretation they have already paid for
+        // — it is logged and swallowed until the read path moves across in Phase 4.
+        let snapshot = null;
+        try {
+            snapshot = await writeSnapshot({ userId, context, data: result.data, dnaReportId, testResultId });
+        } catch (err) {
+            console.error('⚠️ Interpretation snapshot write failed (AIFeedback still saved):', err.message);
         }
 
         // Attach to the DNA report and move it into the review queue
@@ -174,7 +258,12 @@ exports.generateInterpretation = async (req, res) => {
             cached: false,
             // The client must show this as AI-generated and pending clinical review
             aiGenerated: true,
+            // Retained for older clients. `verification` below is the field to read: it is
+            // source-agnostic, where this one was only ever true for DNA reports.
             pendingSpecialistReview: Boolean(dnaReportId),
+            verification: snapshot
+                ? presentation(snapshot)
+                : { status: 'unverified', withheld: false, reviewRequired: true },
             model: MODEL,
             interpretation: result.data,
             plan: {
@@ -213,58 +302,95 @@ exports.generateInterpretation = async (req, res) => {
  * returned instead of a real analysis. The two are returned separately and labelled, so
  * the client can show the existing read while offering to generate a current one.
  */
+/** Metadata for one `covers` entry, queried against the collection its `kind` names. */
+const describeSource = async (ref) => {
+    if (!ref) return null;
+
+    if (ref.kind === 'test_result') {
+        const r = await TestResult.findById(ref.id).lean();
+        if (!r) return null;
+        return {
+            kind: 'test_result',
+            id: String(r._id),
+            testType: r.patient?.test_type || null,
+            labName: r.patient?.lab_name || null,
+            date: r.patient?.date_of_test || null,
+        };
+    }
+
+    const d = await DnaReport.findById(ref.id).select('labName reportDate').lean();
+    if (!d) return null;
+    return {
+        kind: 'dna_report',
+        id: String(d._id),
+        testType: 'Genetic report',
+        labName: d.labName || null,
+        date: d.reportDate || null,
+    };
+};
+
+/**
+ * The newest document an interpretation read.
+ *
+ * That is what "this analysis covers your 9 June result" should name — the leading edge of
+ * what it saw, not an arbitrary one of the several documents it drew on.
+ */
+const newestCover = (covers = []) =>
+    [...covers]
+        .filter((c) => c?.id)
+        .sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime())[0] || null;
+
 exports.getLatest = async (req, res) => {
     try {
         const userId = req.auth.userId;
 
-        const [feedback, latestResult] = await Promise.all([
-            AIFeedback.findOne({ userID: userId }).sort({ createdAt: -1 }).lean(),
+        const [snapshot, latestResult, legacy] = await Promise.all([
+            Interpretation.findOne({ userId }).sort({ generatedAt: -1 }).lean(),
             TestResult.findOne({ 'patient.user_id': userId })
                 .sort({ 'patient.date_of_test': -1 })
                 .lean(),
+            // Transitional fallback for anyone the Phase 3 backfill could not migrate — an
+            // unparseable row, or a generation that landed between deploys. Removed in
+            // Phase 6 along with the model. A blank home screen is the bug this whole
+            // migration started from, so it is worth carrying until the old store goes.
+            AIFeedback.findOne({ userID: userId }).sort({ createdAt: -1 }).lean(),
         ]);
 
         let interpretation = null;
-        if (feedback) {
-            try {
-                interpretation = JSON.parse(feedback.feedback);
-            } catch (err) {
-                // A row that will not parse is a row the client cannot use. Log it and
-                // answer as though there were none, rather than 500-ing the home screen.
-                console.error('❌ Unparseable AIFeedback', String(feedback._id), err.message);
-            }
-        }
-
-        // The interpretation's source may be a test result or a DNA report.
         let source = null;
-        if (interpretation && feedback?.testID) {
-            const [sourceResult, sourceDna] = await Promise.all([
-                TestResult.findById(feedback.testID).lean(),
-                DnaReport.findById(feedback.testID).select('labName reportDate').lean(),
-            ]);
-            if (sourceResult) {
-                source = {
-                    kind: 'test_result',
-                    id: String(sourceResult._id),
-                    testType: sourceResult.patient?.test_type || null,
-                    labName: sourceResult.patient?.lab_name || null,
-                    date: sourceResult.patient?.date_of_test || null,
-                };
-            } else if (sourceDna) {
-                source = {
-                    kind: 'dna_report',
-                    id: String(sourceDna._id),
-                    testType: 'Genetic report',
-                    labName: sourceDna.labName || null,
-                    date: sourceDna.reportDate || null,
-                };
+        let coversLatest = false;
+        let verification = {
+            status: 'unverified', withheld: false, reviewRequired: false, reviewedAt: null,
+        };
+
+        if (snapshot) {
+            const shown = presentToPatient(snapshot);
+            interpretation = shown.content;
+            verification = presentation(snapshot);
+            source = await describeSource(newestCover(snapshot.covers));
+            // A direct membership test, where the old shape could only compare one id.
+            coversLatest = Boolean(
+                latestResult && (snapshot.covers || []).some((c) => String(c.id) === String(latestResult._id)),
+            );
+        } else if (legacy) {
+            try {
+                interpretation = JSON.parse(legacy.feedback);
+                verification.reviewRequired = true;
+            } catch (err) {
+                console.error('❌ Unparseable AIFeedback', String(legacy._id), err.message);
+            }
+            if (interpretation && legacy.testID) {
+                source = (await describeSource({ kind: 'test_result', id: legacy.testID }))
+                    || (await describeSource({ kind: 'dna_report', id: legacy.testID }));
+                coversLatest = Boolean(latestResult && String(legacy.testID) === String(latestResult._id));
             }
         }
 
         res.json({
             available: isConfigured(),
             interpretation,
-            generatedAt: feedback?.createdAt || null,
+            verification,
+            generatedAt: snapshot?.generatedAt || legacy?.createdAt || null,
             source,
             latestResult: latestResult
                 ? {
@@ -276,11 +402,9 @@ exports.getLatest = async (req, res) => {
                     biomarkerCount: latestResult.biomarkerCount ?? null,
                 }
                 : null,
-            // Whether the interpretation above actually describes the newest result, or an
-            // earlier one. The client says so rather than implying the analysis is current.
-            isForLatestResult: Boolean(
-                interpretation && latestResult && String(feedback.testID) === String(latestResult._id)
-            ),
+            // Whether the interpretation above actually read the newest result, or predates
+            // it. The client says so rather than implying the analysis is current.
+            isForLatestResult: Boolean(interpretation) && coversLatest,
         });
     } catch (error) {
         console.error('❌ Latest interpretation error:', error);
@@ -291,16 +415,37 @@ exports.getLatest = async (req, res) => {
 /** GET /api/interpretation/:sourceId — a cached interpretation, if one exists. */
 exports.getInterpretation = async (req, res) => {
     try {
-        const cached = await AIFeedback.findOne({
-            userID: req.auth.userId,
-            testID: req.params.sourceId,
-        }).sort({ createdAt: -1 });
+        const userId = req.auth.userId;
+        const sourceId = req.params.sourceId;
 
-        if (!cached) return res.status(404).json({ message: 'No interpretation found' });
+        // "The newest interpretation that read this document" — not "the interpretation
+        // belonging to it". A later whole-person read covers this source too, and is the
+        // better answer.
+        const snapshot = await Interpretation.findOne({ userId, 'covers.id': sourceId })
+            .sort({ generatedAt: -1 })
+            .lean();
+
+        if (snapshot) {
+            const shown = presentToPatient(snapshot);
+            if (shown.withheld) {
+                return res.status(404).json({ message: 'Awaiting clinician review' });
+            }
+            return res.json({
+                interpretation: shown.content,
+                generatedAt: snapshot.generatedAt,
+                verification: presentation(snapshot),
+                aiGenerated: true,
+            });
+        }
+
+        // Transitional; removed in Phase 6 with the model.
+        const legacy = await AIFeedback.findOne({ userID: userId, testID: sourceId }).sort({ createdAt: -1 }).lean();
+        if (!legacy) return res.status(404).json({ message: 'No interpretation found' });
 
         res.json({
-            interpretation: JSON.parse(cached.feedback),
-            generatedAt: cached.createdAt,
+            interpretation: JSON.parse(legacy.feedback),
+            generatedAt: legacy.createdAt,
+            verification: { status: 'unverified', withheld: false, reviewRequired: true, reviewedAt: null },
             aiGenerated: true,
         });
     } catch (error) {

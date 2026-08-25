@@ -64,22 +64,27 @@ workspace directory that contains this repo.
 | Router | Auth |
 |---|---|
 | `/api/users` | Bearer, except `POST /signup` and `POST /login` |
-| `/api/plans`, `/api/products`, `/api/aifeedback` | Bearer |
-| `/api/professionals`, `/api/test-results`, `/api/deepseek`, `/api/images`, `/api/auth` | **none** |
+| `/api/interpretation`, `/api/biomarkers`, `/api/plan-items`, `/api/plans`, `/api/products`, `/api/dna-reports`, `/api/orders`, `/api/appointments`, `/api/reports`, `/api/payments`, `/api/notifications` | Bearer |
+| `/api/test-results` | Bearer, and the `user_id` must be the caller |
+| `/api/reviews` | Bearer, `professional` or `admin` role only |
+| `/api/professionals`, `/api/deepseek`, `/api/images`, `/api/auth` | **none** |
 
 ## AI pipeline
 
-1. `GET /api/aifeedback/get/:testID` — cache lookup; only call the model on a 404.
-2. `POST /api/deepseek` — `controllers/deepseekController.js` calls `deepseek-chat` through
-   the OpenAI SDK with `baseURL: 'https://api.deepseek.com/v1'`.
-3. `POST /api/aifeedback/save` — persist `{ userID, testID, feedback }`.
-4. `POST /api/plans/create` — `feedbackParser.extractHealthPlan()` keyword-matches the raw
-   text into screenings, lifestyle items, and consultations; `planGenerator.generateUserPlan()`
-   matches those to `Product` and `Professional` documents by case-insensitive substring and
-   emits 10 yearly occurrences from the user's current age.
+1. `GET /api/interpretation/latest` — the person's most recent interpretation, whatever
+   document it came from, plus their newest result. One call; this is what the home screen reads.
+2. `POST /api/interpretation/generate` — `utils/interpretationEngine.js` calls Claude Opus 5
+   with a structured-output schema. The prompt carries the whole person: profile, every DNA
+   variant, every biomarker with its dated series, and the previous interpretation so the new
+   one can be written as a delta. Cached by source id unless `force: true`.
+3. `utils/planGeneratorV2.regeneratePlan()` turns the structured output into dated `PlanItem`
+   rows. **Whole-person scoped** — it clears every `source: 'ai'` item for the user before
+   inserting, so it must only ever be handed a whole-person interpretation. `source: 'specialist'`
+   items are spared, which is what protects clinician-ordered follow-ups.
 
-To recognise a new marker, add a keyword branch in `utils/feedbackParser.js` and make sure a
-matching `Product` name or `Professional.speciality` **enum value** exists — unmatched items
+`utils/interpretationSchema.js` is the output contract: specialities are constrained to the
+`Professional.speciality` enum, so an unmatchable value cannot be produced. To recognise a new
+marker, make sure a matching `Product` name or `Professional.speciality` **enum value** exists — unmatched items
 are dropped silently.
 
 ## Known issues

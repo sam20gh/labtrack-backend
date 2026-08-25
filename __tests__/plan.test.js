@@ -176,3 +176,52 @@ describe('reminder scheduling', () => {
         expect(dueOffset(item(-30), { ...prefs, overdueReminders: false })).toBeNull();
     });
 });
+
+/**
+ * regeneratePlan is whole-person, not per-source.
+ *
+ * It clears every AI-sourced mutable item for the user before inserting, regardless of
+ * which document the interpretation came from. That is correct while interpretations are
+ * whole-person — but it means wiring a *per-result* interpretation to plan regeneration
+ * would silently delete surveillance driven by a DNA report the new result knows nothing
+ * about. This test exists to fail loudly if that is ever attempted.
+ */
+const mongoose = require('mongoose');
+const { regeneratePlan } = require('../utils/planGeneratorV2');
+
+describe('regeneratePlan — scope', () => {
+    const userId = new mongoose.Types.ObjectId();
+
+    const upcoming = (extra) => ({
+        userId,
+        dueDate: new Date(Date.now() + 30 * 86400000),
+        status: 'upcoming',
+        ...extra,
+    });
+
+    it('clears AI items from every source, and spares clinician-ordered ones', async () => {
+        await PlanItem.create(upcoming({
+            type: 'scan', title: 'Breast MRI', condition: 'Hereditary Breast Cancer',
+            frequency: 'annually', source: 'ai', sourceDnaReportId: new mongoose.Types.ObjectId(),
+        }));
+        await PlanItem.create(upcoming({
+            type: 'consultation', title: 'Cardiology follow-up', source: 'specialist',
+        }));
+
+        const result = await regeneratePlan({
+            interpretation: { recommended_screenings: [], specialist_consultations: [] },
+            user: { _id: userId, dob: '1985-03-14' },
+            products: [],
+            professionals: [],
+            sourceTestResultId: new mongoose.Types.ObjectId(),
+        });
+
+        const titles = (await PlanItem.find({ userId }).lean()).map((p) => p.title);
+
+        expect(result.removedCount).toBe(1);
+        // Deleted despite coming from an unrelated DNA report — the hazard above.
+        expect(titles).not.toContain('Breast MRI');
+        // source: 'specialist' is the guard that protects what a doctor ordered.
+        expect(titles).toContain('Cardiology follow-up');
+    });
+});

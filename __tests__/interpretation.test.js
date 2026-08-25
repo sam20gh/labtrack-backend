@@ -273,3 +273,128 @@ describe('buildContext — rendering', () => {
         expect(text).toContain('undated');
     });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4: reads come from Interpretation
+// ---------------------------------------------------------------------------
+
+const Interpretation = require('../models/Interpretation');
+const { getInterpretation } = require('../controllers/interpretationController');
+// DnaReport is used by the source-resolution test below; the backfill suite requires it
+// separately, so it is not already in scope here.
+const DnaReportModel = require('../models/DnaReport');
+
+const snapshot = (overrides = {}) => Interpretation.create({
+    userId,
+    generatedAt: new Date('2026-08-25'),
+    content: { summary: 'From the snapshot.' },
+    covers: [],
+    review: { status: 'pending' },
+    ...overrides,
+});
+
+describe('getLatest — reading the snapshot', () => {
+    it('prefers the snapshot over a legacy AIFeedback row', async () => {
+        const r = await makeResult('Lipid Panel', '2026-06-09');
+        await AIFeedback.create({
+            userID: userId, testID: r._id,
+            feedback: JSON.stringify({ summary: 'Stale legacy copy.' }),
+        });
+        await snapshot({ covers: [{ kind: 'test_result', id: r._id, date: new Date('2026-06-09') }] });
+
+        const body = await call();
+        expect(body.interpretation.summary).toBe('From the snapshot.');
+        expect(body.source.testType).toBe('Lipid Panel');
+    });
+
+    it('reads isForLatestResult from covers, so a multi-source read counts', async () => {
+        const older = await makeResult('Lipid Panel', '2026-06-09');
+        const newest = await makeResult('Full Blood Count', '2026-08-24');
+
+        // One whole-person interpretation that read both documents.
+        await snapshot({
+            covers: [
+                { kind: 'test_result', id: older._id, date: new Date('2026-06-09') },
+                { kind: 'test_result', id: newest._id, date: new Date('2026-08-24') },
+            ],
+        });
+
+        const body = await call();
+        expect(body.isForLatestResult).toBe(true);
+        // `source` names the leading edge of what it read.
+        expect(body.source.testType).toBe('Full Blood Count');
+    });
+
+    it('still flags an interpretation that predates the newest result', async () => {
+        const older = await makeResult('Lipid Panel', '2026-06-09');
+        await makeResult('Full Blood Count', '2026-08-24');
+        await snapshot({ covers: [{ kind: 'test_result', id: older._id, date: new Date('2026-06-09') }] });
+
+        const body = await call();
+        expect(body.isForLatestResult).toBe(false);
+        expect(body.source.testType).toBe('Lipid Panel');
+    });
+
+    it('serves a clinician amendment instead of the AI text', async () => {
+        const r = await makeResult('Lipid Panel', '2026-06-09');
+        await snapshot({
+            covers: [{ kind: 'test_result', id: r._id, date: new Date('2026-06-09') }],
+            content: { summary: 'AI said moderate.' },
+            amended: { content: { summary: 'Clinician corrected to low.' }, at: new Date('2026-08-26') },
+            review: { status: 'amended', reviewedAt: new Date('2026-08-26') },
+        });
+
+        const body = await call();
+        // The defect this migration exists to fix.
+        expect(body.interpretation.summary).toBe('Clinician corrected to low.');
+        expect(body.verification.status).toBe('amended');
+        expect(body.verification.reviewRequired).toBe(false);
+    });
+
+    it('reports the pending verification state for an unreviewed snapshot', async () => {
+        await snapshot();
+        const body = await call();
+        expect(body.verification.status).toBe('unverified');
+        expect(body.verification.withheld).toBe(false);
+        expect(body.verification.reviewRequired).toBe(true);
+    });
+
+    it('resolves a DNA report source without probing the wrong collection', async () => {
+        const dna = await DnaReportModel.create({ userId, labName: 'Genetics Co', mutations: [], reportDate: new Date('2026-05-01') });
+        await snapshot({ covers: [{ kind: 'dna_report', id: dna._id, date: new Date('2026-05-01') }] });
+
+        const body = await call();
+        expect(body.source.kind).toBe('dna_report');
+        expect(body.source.labName).toBe('Genetics Co');
+    });
+});
+
+describe('getInterpretation — by source', () => {
+    const callFor = async (sourceId) => {
+        const res = mockRes();
+        await getInterpretation({ auth: { userId: String(userId) }, params: { sourceId: String(sourceId) } }, res);
+        return res;
+    };
+
+    it('answers with a later interpretation that read this document', async () => {
+        const older = await makeResult('Lipid Panel', '2026-06-09');
+        const newest = await makeResult('Full Blood Count', '2026-08-24');
+        // Generated for the newest result, but it read the older one too.
+        await snapshot({
+            covers: [
+                { kind: 'test_result', id: older._id, date: new Date('2026-06-09') },
+                { kind: 'test_result', id: newest._id, date: new Date('2026-08-24') },
+            ],
+        });
+
+        const res = await callFor(older._id);
+        expect(res.status).not.toHaveBeenCalledWith(404);
+        expect(res.json.mock.calls[0][0].interpretation.summary).toBe('From the snapshot.');
+    });
+
+    it('404s for a document nothing has read', async () => {
+        await snapshot();
+        const res = await callFor(new mongoose.Types.ObjectId());
+        expect(res.status).toHaveBeenCalledWith(404);
+    });
+});
