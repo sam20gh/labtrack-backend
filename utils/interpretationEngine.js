@@ -34,7 +34,13 @@ const getClient = () => {
  * Deliberately plain text rather than raw JSON: labelled sections with units and trends
  * spelled out give the model less room to misread a field than a nested object does.
  */
-const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, testResults = [] }) => {
+/** YYYY-MM-DD, tolerant of a missing or unparseable date. */
+const isoDay = (d) => {
+    const t = new Date(d).getTime();
+    return Number.isNaN(t) ? 'undated' : new Date(t).toISOString().slice(0, 10);
+};
+
+const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, series = {}, testResults = [], previous = null }) => {
     const age = calculateAge(user?.dob);
     const lines = [];
 
@@ -79,7 +85,7 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, tes
         lines.push('No genetic testing on record.');
     } else {
         for (const report of dnaReports) {
-            lines.push(`Report from ${report.labName || 'unknown lab'}${report.reportDate ? ` (${new Date(report.reportDate).toISOString().slice(0, 10)})` : ''}:`);
+            lines.push(`Report from ${report.labName || 'unknown lab'}${report.reportDate ? ` (${isoDay(report.reportDate)})` : ''}:`);
             if (!report.mutations?.length) {
                 lines.push('  No variants reported.');
                 continue;
@@ -104,6 +110,18 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, tes
                 ? ` — ${trend.count} measurements, ${trend.direction} from ${trend.first} to ${trend.last}`
                 : '';
             lines.push(`  ${b.displayName || b.name}: ${b.value} ${b.unit} — ${b.flag}${range}${trendText}`);
+
+            // Every measurement with its date. Endpoints alone hide the shape, and hide
+            // whether repeated identical values are real draws or a duplicated entry.
+            const points = series[b.name]?.points || [];
+            if (points.length > 1) {
+                if (series[b.name].omitted) {
+                    lines.push(`    (most recent ${points.length}; ${series[b.name].omitted} earlier omitted)`);
+                }
+                for (const p of points) {
+                    lines.push(`    ${isoDay(p.at)}: ${p.v} ${b.unit}`);
+                }
+            }
         }
     }
 
@@ -111,7 +129,24 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, tes
         lines.push('');
         lines.push('## Reports on file');
         for (const t of testResults) {
-            lines.push(`  ${t.patient?.test_type} at ${t.patient?.lab_name}, ${new Date(t.patient?.date_of_test).toISOString().slice(0, 10)}${t.interpretation ? ` — lab comment: ${t.interpretation}` : ''}`);
+            lines.push(`  ${t.patient?.test_type || 'Test'} at ${t.patient?.lab_name || 'unknown lab'}, ${isoDay(t.patient?.date_of_test)}${t.interpretation ? ` — lab comment: ${t.interpretation}` : ''}`);
+        }
+    }
+
+    if (previous) {
+        lines.push('');
+        lines.push(`## Your previous interpretation (${isoDay(previous.generatedAt)})`);
+        lines.push('Written by you at an earlier assessment. Re-derive everything from the data');
+        lines.push('above — this is for continuity, not a conclusion to defer to. Where the picture');
+        lines.push('has changed, say so explicitly and say which values moved.');
+        lines.push('');
+        if (previous.summary) lines.push(`Summary given: ${previous.summary}`);
+        if (previous.risks?.length) {
+            lines.push('Risks stated:');
+            for (const r of previous.risks) lines.push(`  ${r.condition} — ${r.level}`);
+        }
+        if (previous.biomarkersOfConcern?.length) {
+            lines.push(`Markers flagged: ${previous.biomarkersOfConcern.map((b) => b.name).join(', ')}`);
         }
     }
 

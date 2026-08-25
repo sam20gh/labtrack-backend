@@ -9,6 +9,9 @@ const { regeneratePlan } = require('../utils/planGeneratorV2');
 const Product = require('../models/Product');
 const Professional = require('../models/Professional');
 
+/** Most recent measurements rendered per biomarker. Beyond this the oldest are summarised. */
+const SERIES_LIMIT = 24;
+
 /**
  * Assemble everything the engine needs about one person.
  * Latest value per biomarker plus its trend — a value inside range but climbing is a
@@ -30,21 +33,49 @@ const gatherContext = async (userId) => {
 
     const biomarkers = latest.map((g) => g.doc);
     const trends = {};
+    const series = {};
     for (const g of latest) {
-        // Aggregation pushed newest-first; reverse for chronological first/last
-        const series = g.values.slice().reverse();
-        if (series.length < 2) continue;
-        const first = series[0].v;
-        const last = series[series.length - 1].v;
+        // Aggregation pushed newest-first; reverse for chronological order
+        const points = g.values.slice().reverse();
+
+        // The dated series, not just its endpoints. Without dates the model cannot tell
+        // five genuine draws from one draw entered five times — an observed failure, and
+        // it said so in the output rather than being able to read the history.
+        series[g._id] = points.length > SERIES_LIMIT
+            ? { points: points.slice(-SERIES_LIMIT), omitted: points.length - SERIES_LIMIT }
+            : { points, omitted: 0 };
+
+        if (points.length < 2) continue;
+        const first = points[0].v;
+        const last = points[points.length - 1].v;
         trends[g._id] = {
-            count: series.length,
+            count: points.length,
             first,
             last,
             direction: last > first ? 'rising' : last < first ? 'falling' : 'stable',
         };
     }
 
-    return { user, dnaReports, biomarkers, trends, testResults };
+    // What the last interpretation said, so this one can be written as a delta rather
+    // than as though the person had never been assessed before.
+    let previous = null;
+    const lastFeedback = await AIFeedback.findOne({ userID: userId }).sort({ createdAt: -1 }).lean();
+    if (lastFeedback) {
+        try {
+            const parsed = JSON.parse(lastFeedback.feedback);
+            previous = {
+                generatedAt: lastFeedback.createdAt,
+                summary: parsed.summary,
+                risks: parsed.risks || [],
+                biomarkersOfConcern: parsed.biomarkers_of_concern || [],
+            };
+        } catch {
+            // An unreadable prior read is the same as not having one.
+            previous = null;
+        }
+    }
+
+    return { user, dnaReports, biomarkers, trends, series, testResults, previous };
 };
 
 /**
@@ -281,3 +312,7 @@ exports.getInterpretation = async (req, res) => {
 exports.getStatus = async (req, res) => {
     res.json({ available: isConfigured(), model: isConfigured() ? MODEL : null });
 };
+
+// Exported for tests: the series capping and previous-interpretation parsing here are
+// what make the prompt's history usable, and they are worth asserting on directly.
+exports._gatherContext = gatherContext;

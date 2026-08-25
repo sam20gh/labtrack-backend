@@ -128,6 +128,10 @@ const INTERPRETATION_SCHEMA = {
                 additionalProperties: false,
             },
         },
+        changes_since_last: {
+            type: 'string',
+            description: 'How the picture has changed since the previous interpretation, naming the values that moved and in which direction. When no previous interpretation is supplied, write exactly: "First interpretation — no previous assessment to compare against."',
+        },
         follow_up: { type: 'string', description: 'When the person should next review their health overall' },
         limitations: {
             type: 'array',
@@ -137,7 +141,8 @@ const INTERPRETATION_SCHEMA = {
     },
     required: [
         'summary', 'risks', 'recommended_screenings', 'specialist_consultations',
-        'lifestyle_recommendations', 'biomarkers_of_concern', 'follow_up', 'limitations',
+        'lifestyle_recommendations', 'biomarkers_of_concern', 'changes_since_last',
+        'follow_up', 'limitations',
     ],
     additionalProperties: false,
 };
@@ -152,6 +157,8 @@ How to reason:
 - Pathogenic and likely-pathogenic variants drive surveillance. Do NOT build recommendations on variants of uncertain significance — say in limitations that a VUS was present and needs clinical correlation.
 - Use the person's actual age when setting starting_age and urgency. If a recommended surveillance age has already passed, mark it urgent.
 - Read biomarker trends, not just latest values. A result inside the reference range but moving steadily toward a limit is worth noting; a single out-of-range value with no trend may be noise.
+- Each biomarker is listed with every dated measurement beneath it. Use the dates: intervals matter as much as values, and repeated identical values on the *same* date are one draw recorded more than once, not a stable trend — say so rather than reading it as history.
+- If a previous interpretation is supplied, treat it as your own earlier note. Re-derive your conclusions from the current data; do not defer to it or restate it. Populate changes_since_last with what actually moved, naming values and directions. If you now disagree with the earlier read, say that plainly and explain why.
 - Choose specialities only from the provided enum, matching the finding to the right discipline (a BRCA variant needs Medical Genetics and Oncology, not "a genetic counsellor").
 - Be honest about uncertainty. Populate limitations rather than overstating confidence. Not knowing is a finding.
 

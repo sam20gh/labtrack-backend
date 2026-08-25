@@ -136,3 +136,140 @@ describe('getLatest', () => {
         expect(body.interpretation).toBeNull();
     });
 });
+
+// ---------------------------------------------------------------------------
+// Prompt context: dated history and continuity with the previous read
+// ---------------------------------------------------------------------------
+
+const Biomarker = require('../models/Biomarker');
+const { buildContext } = require('../utils/interpretationEngine');
+const { _gatherContext } = require('../controllers/interpretationController');
+
+const addMeasurement = (name, value, measuredAt, unit = 'mmol/L') =>
+    Biomarker.create({
+        userId, name, displayName: name, value, unit,
+        measuredAt: new Date(measuredAt), flag: 'normal',
+    });
+
+describe('gatherContext — history', () => {
+    it('keeps every measurement with its date, not just the endpoints', async () => {
+        await addMeasurement('triglycerides', 1.4, '2026-01-10');
+        await addMeasurement('triglycerides', 1.7, '2026-03-10');
+        await addMeasurement('triglycerides', 1.95, '2026-06-09');
+
+        const ctx = await _gatherContext(userId);
+        const points = ctx.series.triglycerides.points;
+
+        expect(points).toHaveLength(3);
+        // Chronological, so the model reads it as a history rather than a stack
+        expect(points.map((p) => p.v)).toEqual([1.4, 1.7, 1.95]);
+        expect(ctx.trends.triglycerides.direction).toBe('rising');
+    });
+
+    it('caps a long series and reports how many were dropped', async () => {
+        for (let i = 0; i < 30; i++) {
+            await addMeasurement('ferritin', 200 + i, `2026-01-${String((i % 28) + 1).padStart(2, '0')}`, 'ng/mL');
+        }
+        const ctx = await _gatherContext(userId);
+        expect(ctx.series.ferritin.points).toHaveLength(24);
+        expect(ctx.series.ferritin.omitted).toBe(6);
+    });
+
+    it('carries the previous interpretation forward', async () => {
+        const r = await makeResult('Lipid Panel', '2026-06-09');
+        await AIFeedback.create({
+            userID: userId, testID: r._id,
+            feedback: JSON.stringify({
+                summary: 'Earlier read.',
+                risks: [{ condition: 'Prediabetes', level: 'moderate' }],
+                biomarkers_of_concern: [{ name: 'Triglycerides' }],
+            }),
+        });
+
+        const ctx = await _gatherContext(userId);
+        expect(ctx.previous.summary).toBe('Earlier read.');
+        expect(ctx.previous.risks[0].condition).toBe('Prediabetes');
+        expect(ctx.previous.biomarkersOfConcern[0].name).toBe('Triglycerides');
+    });
+
+    it('treats an unparseable previous interpretation as none', async () => {
+        const r = await makeResult('Lipid Panel', '2026-06-09');
+        await AIFeedback.create({ userID: userId, testID: r._id, feedback: 'not json{' });
+
+        const ctx = await _gatherContext(userId);
+        expect(ctx.previous).toBeNull();
+    });
+});
+
+describe('buildContext — rendering', () => {
+    const baseUser = { dob: '1985-03-14', gender: 'male' };
+
+    it('prints each measurement against its date', () => {
+        const text = buildContext({
+            user: baseUser,
+            biomarkers: [{ name: 'triglycerides', displayName: 'Triglycerides', value: 1.95, unit: 'mmol/L', flag: 'high' }],
+            trends: { triglycerides: { count: 3, first: 1.4, last: 1.95, direction: 'rising' } },
+            series: {
+                triglycerides: {
+                    points: [
+                        { v: 1.4, at: new Date('2026-01-10') },
+                        { v: 1.7, at: new Date('2026-03-10') },
+                        { v: 1.95, at: new Date('2026-06-09') },
+                    ],
+                    omitted: 0,
+                },
+            },
+        });
+
+        expect(text).toContain('2026-01-10: 1.4 mmol/L');
+        expect(text).toContain('2026-06-09: 1.95 mmol/L');
+    });
+
+    it('says so when older measurements were left out', () => {
+        const points = Array.from({ length: 24 }, (_, i) => ({ v: 5, at: new Date('2026-02-02') }));
+        const text = buildContext({
+            user: baseUser,
+            biomarkers: [{ name: 'hba1c', value: 5.69, unit: '%', flag: 'normal' }],
+            series: { hba1c: { points, omitted: 6 } },
+        });
+        expect(text).toContain('6 earlier omitted');
+    });
+
+    it('includes the previous interpretation and tells the model not to defer to it', () => {
+        const text = buildContext({
+            user: baseUser,
+            previous: {
+                generatedAt: new Date('2026-06-10'),
+                summary: 'Earlier read.',
+                risks: [{ condition: 'Prediabetes', level: 'moderate' }],
+                biomarkersOfConcern: [{ name: 'Triglycerides' }],
+            },
+        });
+
+        expect(text).toContain('previous interpretation (2026-06-10)');
+        expect(text).toContain('Earlier read.');
+        expect(text).toContain('Prediabetes — moderate');
+        expect(text).toMatch(/not a conclusion to defer to/i);
+    });
+
+    it('omits the previous-interpretation section entirely on a first run', () => {
+        const text = buildContext({ user: baseUser });
+        expect(text).not.toContain('previous interpretation');
+    });
+
+    // buildContext runs outside interpret()'s try/catch, so a throw here is a 500 on the
+    // Generate button rather than a handled error.
+    it('does not throw on an undated report', () => {
+        expect(() => buildContext({
+            user: baseUser,
+            testResults: [{ patient: { test_type: 'Lipid Panel', lab_name: 'Lab', date_of_test: undefined } }],
+            dnaReports: [{ labName: 'Genetics Co', reportDate: 'nonsense', mutations: [] }],
+        })).not.toThrow();
+
+        const text = buildContext({
+            user: baseUser,
+            testResults: [{ patient: { test_type: 'Lipid Panel', lab_name: 'Lab' } }],
+        });
+        expect(text).toContain('undated');
+    });
+});
