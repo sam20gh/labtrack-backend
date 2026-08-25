@@ -42,5 +42,9 @@ jobs:
             require('./config/supabase');
             require('./utils/reportParser');
             require('./utils/interpretationEngine');
+            require('./config/clinicalPolicy');
+            require('./config/retention');
+            require('./utils/regenerationGuard');
+            require('./jobs/retentionSweep');
             console.log('✅ all modules load without credentials');
           "
