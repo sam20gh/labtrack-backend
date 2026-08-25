@@ -46,6 +46,8 @@ connectDB();
 require('./jobs/statusSweep').scheduleStatusSweep();
 // Reminders run after the status sweep, so urgency is current when they fire
 require('./jobs/reminderJob').scheduleReminderJob();
+// Prunes superseded, unreviewed interpretation drafts. Never touches a reviewed one.
+require('./jobs/retentionSweep').scheduleRetentionSweep();
 
 app.use('/api/users', userRoutes);
 app.use('/api/test-results', testResultRoutes);

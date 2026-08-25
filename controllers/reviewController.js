@@ -191,21 +191,20 @@ exports.submitReview = async (req, res) => {
 
         await interpretation.save();
 
-        // Keep the DNA report's copy in step for anything still reading it. Legacy, and it
-        // goes with the field in Phase 6.
+        // The report's own status still matters — `biomarkerEvaluator` gates gene-adjusted
+        // reference ranges on it — but the interpretation copy is no longer written here.
+        // `Interpretation.amended` is the single authoritative version.
         const dnaCover = (interpretation.covers || []).find((c) => c.kind === 'dna_report');
         if (dnaCover) {
             await DnaReport.findByIdAndUpdate(dnaCover.id, {
                 $set: {
                     status: 'specialist_reviewed',
-                    'aiInterpretation.raw': next,
-                    'aiInterpretation.summary': next.summary,
                     'specialistReview.professionalId': professionalId,
                     'specialistReview.reviewedAt': new Date(),
                     'specialistReview.approved': approved,
                     'specialistReview.notes': notes,
                 },
-            }).catch((e) => console.warn('⚠️ Legacy DnaReport sync failed:', e.message));
+            }).catch((e) => console.warn('⚠️ DnaReport status update failed:', e.message));
         }
 
         console.log(`🩺 Interpretation ${interpretation._id} reviewed by ${professionalId} — approved: ${approved}, ${edits.length} amendments`);

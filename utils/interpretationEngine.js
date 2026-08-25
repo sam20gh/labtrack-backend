@@ -136,6 +136,10 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
     if (previous) {
         lines.push('');
         lines.push(`## Your previous interpretation (${isoDay(previous.generatedAt)})`);
+        if (previous.reviewed) {
+            lines.push('This one was reviewed by a clinician, and what follows is the version they signed.');
+            lines.push('Where you now disagree with it, say so explicitly rather than quietly departing from it.');
+        }
         lines.push('Written by you at an earlier assessment. Re-derive everything from the data');
         lines.push('above — this is for continuity, not a conclusion to defer to. Where the picture');
         lines.push('has changed, say so explicitly and say which values moved.');

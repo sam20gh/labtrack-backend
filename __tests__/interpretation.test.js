@@ -8,7 +8,6 @@
  */
 const mongoose = require('mongoose');
 const TestResult = require('../models/testResultModel');
-const AIFeedback = require('../models/AIFeedback');
 const { getLatest } = require('../controllers/interpretationController');
 
 const mockRes = () => {
@@ -39,6 +38,17 @@ const call = async () => {
     return res.json.mock.calls[0][0];
 };
 
+const Interpretation = require('../models/Interpretation');
+
+const snapshotFor = (overrides = {}) => Interpretation.create({
+    userId,
+    generatedAt: new Date('2026-08-25'),
+    content: { summary: 'A read.' },
+    covers: [],
+    review: { status: 'pending' },
+    ...overrides,
+});
+
 describe('getLatest', () => {
     it('returns nulls, not an error, for an account with no data', async () => {
         const body = await call();
@@ -50,11 +60,9 @@ describe('getLatest', () => {
     it('surfaces an older result\'s analysis when the newest has none', async () => {
         const older = await makeResult('Lipid Panel', '2026-06-09');
         await makeResult('Full Blood Count', '2026-08-24');
-
-        await AIFeedback.create({
-            userID: userId,
-            testID: older._id,
-            feedback: JSON.stringify({ summary: 'Cardiometabolic pattern.', risks: [] }),
+        await snapshotFor({
+            content: { summary: 'Cardiometabolic pattern.' },
+            covers: [{ kind: 'test_result', id: older._id, date: new Date('2026-06-09') }],
         });
 
         const body = await call();
@@ -70,14 +78,11 @@ describe('getLatest', () => {
         expect(body.isForLatestResult).toBe(false);
     });
 
-    it('marks the analysis current when it belongs to the newest result', async () => {
+    it('marks the analysis current when it covers the newest result', async () => {
         await makeResult('Lipid Panel', '2026-06-09');
         const newest = await makeResult('Full Blood Count', '2026-08-24');
-
-        await AIFeedback.create({
-            userID: userId,
-            testID: newest._id,
-            feedback: JSON.stringify({ summary: 'All clear.', risks: [] }),
+        await snapshotFor({
+            covers: [{ kind: 'test_result', id: newest._id, date: new Date('2026-08-24') }],
         });
 
         const body = await call();
@@ -85,48 +90,23 @@ describe('getLatest', () => {
         expect(body.latestResult.id).toBe(String(newest._id));
     });
 
-    it('picks the newest AIFeedback when several exist', async () => {
-        const first = await makeResult('Lipid Panel', '2026-06-09');
-        const second = await makeResult('Full Blood Count', '2026-08-24');
-
-        await AIFeedback.create({
-            userID: userId, testID: first._id,
-            feedback: JSON.stringify({ summary: 'older' }),
-            createdAt: new Date('2026-06-10'),
-        });
-        await AIFeedback.create({
-            userID: userId, testID: second._id,
-            feedback: JSON.stringify({ summary: 'newer' }),
-            createdAt: new Date('2026-08-25'),
-        });
+    it('picks the newest snapshot when several exist', async () => {
+        await snapshotFor({ content: { summary: 'older' }, generatedAt: new Date('2026-06-10') });
+        await snapshotFor({ content: { summary: 'newer' }, generatedAt: new Date('2026-08-25') });
 
         const body = await call();
         expect(body.interpretation.summary).toBe('newer');
     });
 
     it('never returns another user\'s analysis', async () => {
-        const mine = await makeResult('Lipid Panel', '2026-06-09');
-        await AIFeedback.create({
-            userID: new mongoose.Types.ObjectId(),
-            testID: mine._id,
-            feedback: JSON.stringify({ summary: 'someone else' }),
+        await Interpretation.create({
+            userId: new mongoose.Types.ObjectId(),
+            content: { summary: 'someone else' },
+            covers: [],
         });
 
         const body = await call();
         expect(body.interpretation).toBeNull();
-    });
-
-    it('degrades to no analysis rather than 500 on an unparseable row', async () => {
-        const r = await makeResult('Lipid Panel', '2026-06-09');
-        await AIFeedback.create({ userID: userId, testID: r._id, feedback: 'not json{' });
-
-        const res = mockRes();
-        await getLatest({ auth: { userId: String(userId) } }, res);
-
-        expect(res.status).not.toHaveBeenCalledWith(500);
-        expect(res.json.mock.calls[0][0].interpretation).toBeNull();
-        // The result itself still comes back, so the Generate button still appears.
-        expect(res.json.mock.calls[0][0].latestResult.testType).toBe('Lipid Panel');
     });
 
     it('passes the lab\'s own wording through separately from the AI read', async () => {
@@ -176,28 +156,33 @@ describe('gatherContext — history', () => {
     });
 
     it('carries the previous interpretation forward', async () => {
-        const r = await makeResult('Lipid Panel', '2026-06-09');
-        await AIFeedback.create({
-            userID: userId, testID: r._id,
-            feedback: JSON.stringify({
+        await snapshotFor({
+            content: {
                 summary: 'Earlier read.',
                 risks: [{ condition: 'Prediabetes', level: 'moderate' }],
                 biomarkers_of_concern: [{ name: 'Triglycerides' }],
-            }),
+            },
         });
 
         const ctx = await _gatherContext(userId);
         expect(ctx.previous.summary).toBe('Earlier read.');
         expect(ctx.previous.risks[0].condition).toBe('Prediabetes');
         expect(ctx.previous.biomarkersOfConcern[0].name).toBe('Triglycerides');
+        expect(ctx.previous.reviewed).toBe(false);
     });
 
-    it('treats an unparseable previous interpretation as none', async () => {
-        const r = await makeResult('Lipid Panel', '2026-06-09');
-        await AIFeedback.create({ userID: userId, testID: r._id, feedback: 'not json{' });
+    it('carries the clinician-amended version, not the superseded AI text', async () => {
+        await snapshotFor({
+            content: { summary: 'What the model said.' },
+            amended: { content: { summary: 'What the clinician said.' }, at: new Date() },
+            review: { status: 'amended' },
+        });
 
         const ctx = await _gatherContext(userId);
-        expect(ctx.previous).toBeNull();
+        // Writing a delta against text the patient never saw would describe a change that
+        // did not happen to them.
+        expect(ctx.previous.summary).toBe('What the clinician said.');
+        expect(ctx.previous.reviewed).toBe(true);
     });
 });
 
@@ -278,7 +263,6 @@ describe('buildContext — rendering', () => {
 // Phase 4: reads come from Interpretation
 // ---------------------------------------------------------------------------
 
-const Interpretation = require('../models/Interpretation');
 const { getInterpretation } = require('../controllers/interpretationController');
 // DnaReport is used by the source-resolution test below; the backfill suite requires it
 // separately, so it is not already in scope here.
@@ -294,19 +278,6 @@ const snapshot = (overrides = {}) => Interpretation.create({
 });
 
 describe('getLatest — reading the snapshot', () => {
-    it('prefers the snapshot over a legacy AIFeedback row', async () => {
-        const r = await makeResult('Lipid Panel', '2026-06-09');
-        await AIFeedback.create({
-            userID: userId, testID: r._id,
-            feedback: JSON.stringify({ summary: 'Stale legacy copy.' }),
-        });
-        await snapshot({ covers: [{ kind: 'test_result', id: r._id, date: new Date('2026-06-09') }] });
-
-        const body = await call();
-        expect(body.interpretation.summary).toBe('From the snapshot.');
-        expect(body.source.testType).toBe('Lipid Panel');
-    });
-
     it('reads isForLatestResult from covers, so a multi-source read counts', async () => {
         const older = await makeResult('Lipid Panel', '2026-06-09');
         const newest = await makeResult('Full Blood Count', '2026-08-24');

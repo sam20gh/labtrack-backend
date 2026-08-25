@@ -52,6 +52,14 @@ const DnaReportSchema = new mongoose.Schema({
         index: true,
     },
 
+    /**
+     * @deprecated Superseded by the `Interpretation` collection (Phase 6, 2026-08-25).
+     *
+     * No longer written or read. It held a second copy of the interpretation, and because
+     * clinician amendments landed here while the patient-facing read looked elsewhere, a
+     * correction could never reach the person it was about. Historic values are left in
+     * place as an archive; `Interpretation.amended` is the authoritative version.
+     */
     aiInterpretation: {
         summary: { type: String },
         risks: [{

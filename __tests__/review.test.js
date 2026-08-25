@@ -150,7 +150,7 @@ describe('submitReview', () => {
         expect(res.status).toHaveBeenCalledWith(400);
     });
 
-    it('syncs the legacy DnaReport copy for anything still reading it', async () => {
+    it('advances the DNA report status without copying the interpretation onto it', async () => {
         const userId = await patient(8);
         const dna = await DnaReport.create({ userId, labName: 'Genetics Co', mutations: [], status: 'ai_interpreted' });
         const i = await Interpretation.create({
@@ -161,8 +161,13 @@ describe('submitReview', () => {
         await submit(i._id, { approved: true, amendments: { summary: 'Corrected.' } });
 
         const savedDna = await DnaReport.findById(dna._id).lean();
+        // The status still gates gene-adjusted reference ranges, so it is kept current...
         expect(savedDna.status).toBe('specialist_reviewed');
-        expect(savedDna.aiInterpretation.summary).toBe('Corrected.');
+        expect(savedDna.specialistReview.approved).toBe(true);
+        // ...but the interpretation is no longer duplicated here. Two copies that could
+        // drift is precisely the defect this migration removed.
+        expect(savedDna.aiInterpretation?.summary).toBeUndefined();
+        expect(presentToPatient(await Interpretation.findById(i._id).lean()).content.summary).toBe('Corrected.');
     });
 });
 
