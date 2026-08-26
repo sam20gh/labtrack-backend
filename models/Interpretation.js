@@ -17,7 +17,7 @@ const mongoose = require('mongoose');
 
 /** Which documents this interpretation actually read. */
 const SourceRefSchema = new mongoose.Schema({
-    kind: { type: String, enum: ['test_result', 'dna_report'], required: true },
+    kind: { type: String, enum: ['test_result', 'dna_report', 'genotype_file'], required: true },
     // Deliberately not a `ref`: the target collection is named by `kind`, and the old
     // model's single polymorphic ref pointing at a non-existent 'Test' model is exactly
     // the ambiguity this replaces.
