@@ -409,11 +409,16 @@ const PANEL = [
         name: 'Asparagus odour detection',
         category: CATEGORY.TRAIT,
         tier: TIER.RELEASE,
-        evidence: 'GWAS — olfactory receptor locus',
+        // Direction of effect not confirmed. The locus is robustly associated with asparagus
+        // anosmia, but which allele tracks which direction is not something this panel's
+        // author could verify, so the copy states the association without claiming a
+        // direction. Resolve against the source GWAS before this ships. See D5.
+        evidence: 'GWAS — olfactory receptor locus. Direction of effect UNVERIFIED.',
+        directionUnverified: true,
         genotypes: {
-            AA: { tone: TONE.TYPICAL, label: 'Likely detects', detail: 'You can probably smell the compound asparagus produces in urine.' },
-            AG: { tone: TONE.TYPICAL, label: 'May detect', detail: 'You may or may not smell the compound asparagus produces in urine.' },
-            GG: { tone: TONE.TYPICAL, label: 'Likely cannot detect', detail: 'You probably cannot smell the compound asparagus produces in urine — a surprisingly common blind spot.' },
+            AA: { tone: TONE.TYPICAL, label: 'Associated variant', detail: 'This position is linked to whether people can smell the compound asparagus produces in urine. Which way it points is not yet confirmed for this panel.' },
+            AG: { tone: TONE.TYPICAL, label: 'Mixed', detail: 'You carry one copy of each variant at the position linked to asparagus odour detection.' },
+            GG: { tone: TONE.TYPICAL, label: 'Associated variant', detail: 'This position is linked to whether people can smell the compound asparagus produces in urine. Which way it points is not yet confirmed for this panel.' },
         },
     },
 
@@ -603,7 +608,7 @@ const PANEL_RSIDS = new Set([...BY_RSID.keys(), ...APOE.rsids]);
 
 /** Bumped whenever an entry is added or its interpretation changes, so a stored */
 /** extraction can be compared against the panel that produced it and re-run if stale. */
-const PANEL_VERSION = '2026.08.26-1';
+const PANEL_VERSION = '2026.08.26-2';
 
 module.exports = {
     PANEL,
