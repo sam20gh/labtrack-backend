@@ -76,13 +76,27 @@ const transcribe = async (path, language) => {
         }
         return { ok: true, text, model: MODEL };
     } catch (error) {
-        console.error('❌ Transcription failed:', error);
-        if (error?.status === 401 || error?.status === 403) {
+        // The three provider-side failures are indistinguishable to the person and very
+        // different to whoever has to fix them, so the log separates what the reply cannot.
+        if (error?.status === 401) {
+            console.error('❌ Transcription rejected: TRANSCRIBE_API_KEY is not valid for '
+                + `${BASE_URL}. Check the key belongs to that provider.`);
+            return { ok: false, error: 'Voice input is not configured correctly on this server.' };
+        }
+        if (error?.status === 403 || error?.code === 'model_not_found') {
+            // An OpenAI *project* key carries a model allowlist, and a project created for
+            // chat has no audio model on it. The key authenticates perfectly and every
+            // transcription still 403s, which reads as a broken key until you see this.
+            console.error(`❌ Transcription rejected: the key is valid but has no access to "${MODEL}" `
+                + `on ${BASE_URL}. Enable that model for the project (or set TRANSCRIBE_MODEL to `
+                + 'one it can reach). Original: ' + (error?.error?.message || error?.message));
             return { ok: false, error: 'Voice input is not configured correctly on this server.' };
         }
         if (error?.status === 429) {
+            console.error('❌ Transcription rate-limited or out of quota:', error?.error?.message || error?.message);
             return { ok: false, error: 'Voice input is busy right now. Try again in a moment.' };
         }
+        console.error('❌ Transcription failed:', error);
         return { ok: false, error: 'That recording could not be transcribed.' };
     }
 };
