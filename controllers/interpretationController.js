@@ -5,6 +5,8 @@ const Biomarker = require('../models/Biomarker');
 const TestResult = require('../models/testResultModel');
 const GenotypeFile = require('../models/GenotypeFile');
 const Interpretation = require('../models/Interpretation');
+const NutritionPlan = require('../models/NutritionPlan');
+const MealLog = require('../models/MealLog');
 const { requiresReview, presentToPatient } = require('../config/clinicalPolicy');
 const { assessRegeneration } = require('../utils/regenerationGuard');
 const { interpret, isConfigured, MODEL } = require('../utils/interpretationEngine');
@@ -81,7 +83,57 @@ const gatherContext = async (userId) => {
         }
     }
 
-    return { user, dnaReports, biomarkers, trends, series, testResults, previous };
+    const nutrition = await gatherNutrition(userId);
+
+    return { user, dnaReports, biomarkers, trends, series, testResults, previous, nutrition };
+};
+
+/** How many days of meal logs the interpretation reads. */
+const NUTRITION_WINDOW_DAYS = 30;
+
+/**
+ * Recent logged nutrition, summarised.
+ *
+ * The tracker exists to push people towards the dietary advice this engine writes, so the
+ * next interpretation has to be able to see whether that worked. Without it the model
+ * re-issues "shift towards a Mediterranean pattern" to someone who has been eating that way
+ * for a month, which reads as not having been listened to.
+ *
+ * Returns null when there is nothing logged: an empty section would invite the model to
+ * comment on an absence of data as though it were a finding.
+ */
+const gatherNutrition = async (userId) => {
+    const from = new Date();
+    from.setDate(from.getDate() - NUTRITION_WINDOW_DAYS);
+
+    const [plan, meals] = await Promise.all([
+        NutritionPlan.findOne({ userId }).lean(),
+        MealLog.find({ userId, eatenAt: { $gte: from } }).select('day calories analysis').lean(),
+    ]);
+
+    if (!meals.length) return null;
+
+    const byDay = new Map();
+    for (const m of meals) {
+        byDay.set(m.day, (byDay.get(m.day) || 0) + (m.calories || 0));
+    }
+    const dayTotals = [...byDay.values()];
+
+    const assessedMeals = meals.filter((m) => m.analysis && m.analysis.alignment !== 'unassessed');
+
+    return {
+        windowDays: NUTRITION_WINDOW_DAYS,
+        daysLogged: byDay.size,
+        meanCalories: Math.round(dayTotals.reduce((a, b) => a + b, 0) / dayTotals.length),
+        targets: plan?.targets || null,
+        guidance: (plan?.guidance || []).map((g) => g.directive).filter(Boolean),
+        adherence: {
+            assessed: assessedMeals.length,
+            aligned: assessedMeals.filter((m) => m.analysis.alignment === 'aligned').length,
+            partial: assessedMeals.filter((m) => m.analysis.alignment === 'partial').length,
+            offPlan: assessedMeals.filter((m) => m.analysis.alignment === 'off_plan').length,
+        },
+    };
 };
 
 
@@ -444,3 +496,4 @@ exports.getStatus = async (req, res) => {
 // Exported for tests: the series capping and previous-interpretation parsing here are
 // what make the prompt's history usable, and they are worth asserting on directly.
 exports._gatherContext = gatherContext;
+exports._gatherNutrition = gatherNutrition;

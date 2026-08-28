@@ -40,7 +40,7 @@ const isoDay = (d) => {
     return Number.isNaN(t) ? 'undated' : new Date(t).toISOString().slice(0, 10);
 };
 
-const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, series = {}, testResults = [], previous = null }) => {
+const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, series = {}, testResults = [], previous = null, nutrition = null }) => {
     const age = calculateAge(user?.dob);
     const lines = [];
 
@@ -131,6 +131,31 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
         for (const t of testResults) {
             lines.push(`  ${t.patient?.test_type || 'Test'} at ${t.patient?.lab_name || 'unknown lab'}, ${isoDay(t.patient?.date_of_test)}${t.interpretation ? ` — lab comment: ${t.interpretation}` : ''}`);
         }
+    }
+
+    if (nutrition) {
+        lines.push('');
+        lines.push('## Logged nutrition');
+        // What they actually ate against what the last interpretation told them to eat.
+        // Without this the dietary advice is written blind every time, and someone who has
+        // already been following it for three months is told to start.
+        lines.push(`Self-logged, so treat it as indicative rather than measured. ${nutrition.daysLogged} of the last ${nutrition.windowDays} days have entries.`);
+        if (nutrition.targets?.calories) {
+            lines.push(`Daily target ${nutrition.targets.calories} kcal; mean intake on logged days ${nutrition.meanCalories} kcal.`);
+        }
+        if (nutrition.guidance?.length) {
+            lines.push(`Dietary guidance currently on their plan: ${nutrition.guidance.join('; ')}.`);
+        }
+        if (nutrition.adherence.assessed > 0) {
+            lines.push(`Of ${nutrition.adherence.assessed} meals assessed against that guidance, `
+                + `${nutrition.adherence.aligned} were aligned, ${nutrition.adherence.partial} partly aligned, `
+                + `and ${nutrition.adherence.offPlan} were not.`);
+        } else {
+            lines.push('No meals have been assessed against dietary guidance yet.');
+        }
+        lines.push('Where the record shows advice already being followed, acknowledge it rather than');
+        lines.push('repeating the instruction. Where it shows advice not being followed, consider');
+        lines.push('whether a different, more achievable change would serve them better.');
     }
 
     if (previous) {

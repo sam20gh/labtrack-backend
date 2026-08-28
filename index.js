@@ -22,6 +22,7 @@ const reviewRoutes = require('./routes/reviewRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const interpretationRoutes = require('./routes/interpretationRoutes');
 const assistantRoutes = require('./routes/assistantRoutes');
+const nutritionRoutes = require('./routes/nutritionRoutes');
 
 const app = express();
 app.use(cors());
@@ -71,6 +72,7 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/interpretation', interpretationRoutes);
 app.use('/api/assistant', assistantRoutes);
+app.use('/api/nutrition', nutritionRoutes);
 
 
 /**
