@@ -7,6 +7,7 @@ router.use(authenticateToken);
 
 router.post('/', c.createAppointment);
 router.get('/', c.getAppointments);
+router.post('/:id/reschedule', c.rescheduleAppointment);
 router.post('/:id/cancel', c.cancelAppointment);
 
 module.exports = router;

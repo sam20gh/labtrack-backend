@@ -55,6 +55,42 @@ exports.getAppointments = async (req, res) => {
     }
 };
 
+/**
+ * POST /api/appointments/:id/reschedule
+ *
+ * Moving a booking is not cancel-then-rebook: that loses the plan item link, the price
+ * snapshot and the reason for the visit, and it tells the professional the patient walked
+ * away. The row is moved instead, and dropped back to `requested` because a time the
+ * professional confirmed is not a time they have confirmed any more.
+ */
+exports.rescheduleAppointment = async (req, res) => {
+    try {
+        const { scheduledFor, mode } = req.body;
+
+        if (!scheduledFor || new Date(scheduledFor) < new Date()) {
+            return res.status(400).json({ message: 'scheduledFor must be a future date' });
+        }
+
+        const update = { scheduledFor, status: 'requested' };
+        if (mode) update.mode = mode;
+
+        const appointment = await Appointment.findOneAndUpdate(
+            { _id: req.params.id, userId: req.auth.userId, status: { $in: ['requested', 'confirmed'] } },
+            { $set: update },
+            { new: true, runValidators: true }
+        );
+        if (!appointment) {
+            return res.status(404).json({ message: 'No reschedulable appointment found' });
+        }
+
+        console.log(`\u{1F504} Appointment ${appointment._id} moved to ${appointment.scheduledFor.toISOString()}`);
+        res.json({ message: 'Appointment rescheduled', appointment });
+    } catch (error) {
+        console.error('\u274C Error rescheduling appointment:', error);
+        res.status(400).json({ message: 'Error rescheduling appointment', error: error.message });
+    }
+};
+
 /** POST /api/appointments/:id/cancel */
 exports.cancelAppointment = async (req, res) => {
     try {
