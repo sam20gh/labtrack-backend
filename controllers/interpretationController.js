@@ -3,6 +3,7 @@ const User = require('../models/userModel');
 const DnaReport = require('../models/DnaReport');
 const Biomarker = require('../models/Biomarker');
 const TestResult = require('../models/testResultModel');
+const GenotypeFile = require('../models/GenotypeFile');
 const Interpretation = require('../models/Interpretation');
 const { requiresReview, presentToPatient } = require('../config/clinicalPolicy');
 const { assessRegeneration } = require('../utils/regenerationGuard');
@@ -295,6 +296,21 @@ const describeSource = async (ref) => {
         };
     }
 
+    // A genotype file is a third kind, not a DnaReport. Falling through to the DnaReport
+    // branch made `findById` miss, which returned a null source — and the client then had
+    // nothing to name, so a seeded genotype approval rendered as "your earlier result".
+    if (ref.kind === 'genotype_file') {
+        const g = await GenotypeFile.findById(ref.id).select('labName reportedAt').lean();
+        if (!g) return null;
+        return {
+            kind: 'genotype_file',
+            id: String(g._id),
+            testType: 'Genotype report',
+            labName: g.labName || null,
+            date: g.reportedAt || null,
+        };
+    }
+
     const d = await DnaReport.findById(ref.id).select('labName reportDate').lean();
     if (!d) return null;
     return {
@@ -321,12 +337,28 @@ exports.getLatest = async (req, res) => {
     try {
         const userId = req.auth.userId;
 
-        const [snapshot, latestResult] = await Promise.all([
-            Interpretation.findOne({ userId }).sort({ generatedAt: -1 }).lean(),
-            TestResult.findOne({ 'patient.user_id': userId })
-                .sort({ 'patient.date_of_test': -1 })
-                .lean(),
-        ]);
+        const latestResult = await TestResult.findOne({ 'patient.user_id': userId })
+            .sort({ 'patient.date_of_test': -1 })
+            .lean();
+
+        // Prefer the newest interpretation that actually read the newest result, and only
+        // fall back to "newest overall" when nothing has read it yet.
+        //
+        // Sorting by `generatedAt` alone was wrong whenever a snapshot covering a *narrower*
+        // set of documents was written later — a genotype approval, for instance, covers one
+        // genotype file and no test results. That snapshot outranked the real analysis of the
+        // newest bloods, so the card rendered the genotype content, reported the newest
+        // result as unanalysed, and the "Analyse latest result" button then found the real
+        // analysis in cache and returned it unchanged: two seconds of spinner and no visible
+        // change, because the screen re-read the same losing snapshot.
+        let snapshot = latestResult
+            ? await Interpretation.findOne({ userId, 'covers.id': latestResult._id })
+                .sort({ generatedAt: -1 })
+                .lean()
+            : null;
+        if (!snapshot) {
+            snapshot = await Interpretation.findOne({ userId }).sort({ generatedAt: -1 }).lean();
+        }
 
         let interpretation = null;
         let source = null;

@@ -4,6 +4,7 @@ const TestResult = require('../models/testResultModel');
 const User = require('../models/userModel');
 const { evaluate } = require('../utils/biomarkerEvaluator');
 const { normaliseMeasurement, resolveName, slug } = require('../utils/unitNormaliser');
+const { explain } = require('../utils/biomarkerGlossary');
 
 /**
  * Canonical key for lookups. Prefers the alias table (so 'Hb' and 'Serum Ferritin' resolve
@@ -147,6 +148,10 @@ exports.getLatest = async (req, res) => {
             direction: b.previous
                 ? (b.value > b.previous.value ? 'up' : b.value < b.previous.value ? 'down' : 'flat')
                 : null,
+            // Plain-language name and explanation. The app is consumer-facing: "MCV 88 fL"
+            // is unreadable to the person whose blood it is. Null for analytes outside the
+            // catalogue, and the client falls back to the medical name alone.
+            explainer: explain(b.name),
         }));
 
         res.json({ biomarkers: withDelta });
@@ -173,7 +178,7 @@ exports.getTrend = async (req, res) => {
             .lean();
 
         if (!series.length) {
-            return res.json({ name, series: [], range: null, summary: null });
+            return res.json({ name, series: [], range: null, summary: null, explainer: explain(name) });
         }
 
         // The range on the newest point is the one currently in force for this user
@@ -186,6 +191,7 @@ exports.getTrend = async (req, res) => {
             name,
             displayName: series[0].displayName,
             unit: series[0].unit,
+            explainer: explain(name),
             series,
             range,
             summary: {
@@ -234,7 +240,11 @@ exports.getReferenceRanges = async (req, res) => {
 /** GET /api/biomarkers/catalogue — canonical analytes and the units we accept. */
 exports.getCatalogue = async (req, res) => {
     const { listBiomarkers } = require('../utils/unitNormaliser');
-    res.json({ biomarkers: listBiomarkers() });
+    // Carries the explainer too, so a manual-entry picker can tell someone what they are
+    // about to type a number into.
+    res.json({
+        biomarkers: listBiomarkers().map((b) => ({ ...b, explainer: explain(b.name) })),
+    });
 };
 
 exports.persistMeasurements = persistMeasurements;
