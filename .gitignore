@@ -82,3 +82,6 @@ yarn-error.*
 # @end expo-cli
 # Multer temp uploads
 uploads/
+
+# Repair-script backups — contain real measurements for real people. Never commit these.
+scripts/backups/

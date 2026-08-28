@@ -14,6 +14,21 @@ const canonicalise = (name) =>
     resolveName(name) ?? slug(name).replace(/[^a-z0-9]/g, '_');
 
 /**
+ * A genotype call dressed up as a measurement.
+ *
+ * `rs429358`-style identifiers are dbSNP reference numbers, not analytes. They reached the
+ * biomarker collection because a genetic report was uploaded through the lab-report path,
+ * and they are unusable there: no unit, no reference range, no trend, no plain-language
+ * description, and nothing the person can act on. Two of them sat in a live results grid
+ * beside ferritin and cholesterol carrying bare percentages.
+ *
+ * Rejected rather than stored-and-hidden, so the caller reports it and the upload path that
+ * produced it is visible instead of quietly accumulating junk. Genotype data belongs in
+ * `GenotypeFile.findings`, reached through `/api/genotype`.
+ */
+const isGenotypeCall = (name) => /^\s*rs\d+/i.test(String(name || ''));
+
+/**
  * Evaluate and persist a set of measurements for one user.
  * Shared by manual entry and (from Phase 3) document parsing.
  */
@@ -23,6 +38,16 @@ const persistMeasurements = async ({ userId, user, measurements, testResultId, s
     const failed = [];
 
     for (const m of measurements) {
+        if (isGenotypeCall(m.name)) {
+            failed.push({
+                name: m.name,
+                value: m.value,
+                unit: m.unit,
+                reason: 'Genetic variant, not a measurement — upload genetic data via /api/genotype',
+            });
+            continue;
+        }
+
         // Convert to canonical name + unit BEFORE any range comparison. Skipping this would
         // compare e.g. 90 mg/dL glucose against a mmol/L range and report critical_high.
         const norm = normaliseMeasurement(m);
@@ -248,4 +273,5 @@ exports.getCatalogue = async (req, res) => {
 };
 
 exports.persistMeasurements = persistMeasurements;
+exports.isGenotypeCall = isGenotypeCall;
 exports.canonicalise = canonicalise;
