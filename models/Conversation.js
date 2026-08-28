@@ -62,9 +62,31 @@ const WidgetSchema = new mongoose.Schema({
     },
 }, { _id: false });
 
+/**
+ * How a message arrived, when it arrived as more than typed text.
+ *
+ * Two kinds, and they store different amounts on purpose:
+ *
+ *   - `image` keeps the delivery URL. The picture is half of what was asked — "what is
+ *     this rash" is unreadable without it — so the transcript has to be able to draw it
+ *     again on reopen. `url` is null when image storage is unconfigured or refused the
+ *     upload; the model still saw the picture, the transcript just cannot redraw it.
+ *   - `voice` keeps **nothing but the marker**. `text` is the transcript, which is the
+ *     part that has meaning; the audio itself is a recording of someone describing their
+ *     symptoms out loud, and retaining that is a data-protection decision this feature is
+ *     not the place to make quietly. The flag exists so the bubble can say the words were
+ *     spoken rather than typed, which matters when a transcription has misheard something.
+ */
+const AttachmentSchema = new mongoose.Schema({
+    kind: { type: String, enum: ['image', 'voice'], required: true },
+    url: { type: String, default: null },
+    mimeType: { type: String, default: null },
+}, { _id: false });
+
 const MessageSchema = new mongoose.Schema({
     role: { type: String, enum: ['user', 'assistant'], required: true },
     text: { type: String, required: true },
+    attachment: { type: AttachmentSchema, default: null },
     widget: { type: WidgetSchema, default: null },
     /** Follow-up chips offered with an assistant reply. */
     suggestions: [{ type: String }],

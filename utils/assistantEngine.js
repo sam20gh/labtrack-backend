@@ -171,9 +171,10 @@ const buildPrompt = async (userId) => {
  * @param {string} args.userId
  * @param {string} args.message         what the person just typed
  * @param {Array<{role:string, text:string}>} args.history  prior turns, oldest first
+ * @param {{data: Buffer, mediaType: string}} [args.image]  a photograph sent with the message
  * @returns {Promise<{ok:boolean, data?:object, error?:string, usage?:object}>}
  */
-const ask = async ({ userId, message, history = [] }) => {
+const ask = async ({ userId, message, history = [], image = null }) => {
     if (!isConfigured()) {
         return { ok: false, error: 'The assistant is not configured on this server.' };
     }
@@ -193,6 +194,19 @@ const ask = async ({ userId, message, history = [] }) => {
         // with an assistant greeting, so drop any leading assistant turns rather than
         // sending a request that fails validation.
         while (turns.length && turns[0].role === 'assistant') turns.shift();
+
+        // A photograph rides on the final turn only, and never above a cache breakpoint —
+        // an image block in the cached prefix would change every time a picture was sent
+        // and invalidate the person's health context along with it.
+        //
+        // Image first, text second: the model reads the blocks in order, and a question
+        // that begins "what is this" makes no sense before the thing it refers to.
+        const finalTurn = image
+            ? [
+                { type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data.toString('base64') } },
+                { type: 'text', text: message },
+            ]
+            : message;
 
         const stream = getClient().messages.stream({
             model: MODEL,
@@ -221,16 +235,22 @@ const ask = async ({ userId, message, history = [] }) => {
                     content: 'Understood — I have their records and will answer from them.',
                 },
                 ...turns,
-                { role: 'user', content: message },
+                { role: 'user', content: finalTurn },
             ],
         });
 
         const response = await stream.finalMessage();
 
         if (response.stop_reason === 'refusal') {
+            // Photographs of skin and bodies trip a classifier far more readily than text
+            // does, and the generic wording reads as a judgement about what they asked
+            // rather than about the picture. `nutritionEngine` splits the same two cases.
             return {
                 ok: false,
-                error: 'I can\'t help with that one. If this is about symptoms you are having, please speak to a clinician.',
+                error: image
+                    ? 'I could not look at that photograph. You can describe what you are seeing instead, '
+                      + 'and if it is worrying you, please have a clinician look at it.'
+                    : 'I can\'t help with that one. If this is about symptoms you are having, please speak to a clinician.',
             };
         }
 

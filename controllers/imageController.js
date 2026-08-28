@@ -1,48 +1,30 @@
-const axios = require('axios');
-const FormData = require('form-data');
+/**
+ * The standalone image upload endpoint.
+ *
+ * The Cloudflare call itself now lives in `utils/imageStore` so the assistant can persist a
+ * photograph a person sent it without making an HTTP call back into this same server. This
+ * handler is the route-shaped wrapper around it and its response shape is unchanged.
+ */
 const fs = require('fs');
+const { uploadImage } = require('../utils/imageStore');
 
 exports.uploadImage = async (req, res) => {
-    console.log("Upload request received"); // Debugging log
+    const tempPath = req.file?.path || null;
 
     try {
         if (!req.file) {
-            console.log("No file received");
             return res.status(400).json({ message: 'No image file uploaded' });
         }
 
-        console.log("File received:", req.file);
+        const imageUrl = await uploadImage(tempPath);
 
-        const formData = new FormData();
-        formData.append('file', fs.createReadStream(req.file.path));
-        formData.append('requireSignedURLs', 'false');
-
-        console.log("Sending request to Cloudflare...");
-        const response = await axios.post(
-            `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/images/v1`,
-            formData,
-            {
-                headers: {
-                    ...formData.getHeaders(),
-                    Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`
-                }
-            }
-        );
-
-        console.log("Cloudflare response:", response.data);
-        fs.unlinkSync(req.file.path);
-
-        if (response.data.success) {
-            return res.status(200).json({
-                message: 'Image uploaded successfully',
-                imageUrl: `https://imagedelivery.net/${process.env.CLOUDFLARE_ACCOUNT_ID}/${response.data.result.id}/public`
-            });
-        } else {
-            console.log("Cloudflare upload failed", response.data);
-            throw new Error('Cloudflare upload failed');
-        }
+        return res.status(200).json({ message: 'Image uploaded successfully', imageUrl });
     } catch (error) {
-        console.error("Error during upload:", error);
+        console.error('❌ Error during upload:', error);
         res.status(500).json({ message: 'Image upload failed', error: error.message });
+    } finally {
+        // Was `unlinkSync` on the success path only, so every failed upload left a file
+        // behind in `uploads/` — which is not gitignored.
+        if (tempPath) fs.unlink(tempPath, () => { });
     }
 };
