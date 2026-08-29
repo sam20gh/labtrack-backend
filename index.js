@@ -23,6 +23,8 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const interpretationRoutes = require('./routes/interpretationRoutes');
 const assistantRoutes = require('./routes/assistantRoutes');
 const nutritionRoutes = require('./routes/nutritionRoutes');
+const wearableRoutes = require('./routes/wearableRoutes');
+const activityRoutes = require('./routes/activityRoutes');
 
 const app = express();
 app.use(cors());
@@ -73,6 +75,9 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/interpretation', interpretationRoutes);
 app.use('/api/assistant', assistantRoutes);
 app.use('/api/nutrition', nutritionRoutes);
+// Device health data. Deliberately not '/api/health' — see the note in wearableRoutes.js.
+app.use('/api/wearables', wearableRoutes);
+app.use('/api/activity', activityRoutes);
 
 
 /**
