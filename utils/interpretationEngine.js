@@ -40,7 +40,7 @@ const isoDay = (d) => {
     return Number.isNaN(t) ? 'undated' : new Date(t).toISOString().slice(0, 10);
 };
 
-const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, series = {}, testResults = [], previous = null, nutrition = null }) => {
+const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, series = {}, testResults = [], previous = null, nutrition = null, medications = null }) => {
     const age = calculateAge(user?.dob);
     const lines = [];
 
@@ -156,6 +156,46 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
         lines.push('Where the record shows advice already being followed, acknowledge it rather than');
         lines.push('repeating the instruction. Where it shows advice not being followed, consider');
         lines.push('whether a different, more achievable change would serve them better.');
+    }
+
+    if (medications) {
+        lines.push('');
+        lines.push('## Medicines they take');
+        // A biomarker cannot be read without this. A raised potassium in someone on
+        // spironolactone and an ACE inhibitor is a different finding from the same number in
+        // someone on neither, and an engine that cannot see the list will write the wrong one.
+        for (const m of medications.current) {
+            const bits = [m.name];
+            if (m.strength) bits.push(m.strength);
+            if (m.brandName) bits.push(`(as ${m.brandName})`);
+            const how = m.frequency ? m.frequency.replace(/_/g, ' ') : 'schedule not recorded';
+            lines.push(`  ${bits.join(' ')} — ${how}${m.since ? `, since ${m.since}` : ''}`);
+        }
+
+        if (medications.adherence && medications.adherence.assessed > 0) {
+            const a = medications.adherence;
+            lines.push(`Over the last ${medications.windowDays} days, ${a.taken} of ${a.assessed} due doses were `
+                + `recorded as taken (${a.score}%), ${a.missed} were missed and ${a.skipped} deliberately skipped.`);
+            lines.push('Where a result has not moved, weigh this before concluding a treatment is not working.');
+        } else {
+            lines.push('No dose history has been recorded, so adherence is unknown — do not assume either way.');
+        }
+
+        if (medications.interactionFindings?.length) {
+            lines.push('');
+            lines.push('Interactions already identified by the rule table, for context — these are');
+            lines.push('being shown to the person separately, so do not restate them as new findings:');
+            for (const f of medications.interactionFindings) {
+                lines.push(`  [${f.severity}] ${f.between.join(' + ')}`);
+            }
+        }
+
+        if (medications.uncheckable?.length) {
+            lines.push(`Not classifiable by that table, so not checked at all: ${medications.uncheckable.join(', ')}.`);
+        }
+
+        lines.push('Never tell them to start, stop, or change the dose of any of these. Where');
+        lines.push('something needs changing, say what to raise with the prescriber and why.');
     }
 
     if (previous) {

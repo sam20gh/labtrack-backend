@@ -7,6 +7,8 @@ const GenotypeFile = require('../models/GenotypeFile');
 const Interpretation = require('../models/Interpretation');
 const NutritionPlan = require('../models/NutritionPlan');
 const MealLog = require('../models/MealLog');
+const Medication = require('../models/Medication');
+const MedicationDose = require('../models/MedicationDose');
 const { requiresReview, presentToPatient } = require('../config/clinicalPolicy');
 const { assessRegeneration } = require('../utils/regenerationGuard');
 const { interpret, isConfigured, MODEL } = require('../utils/interpretationEngine');
@@ -84,8 +86,80 @@ const gatherContext = async (userId) => {
     }
 
     const nutrition = await gatherNutrition(userId);
+    const medications = await gatherMedications(userId);
 
-    return { user, dnaReports, biomarkers, trends, series, testResults, previous, nutrition };
+    return { user, dnaReports, biomarkers, trends, series, testResults, previous, nutrition, medications };
+};
+
+/** How many days of dose history the interpretation reads. */
+const MEDICATION_WINDOW_DAYS = 30;
+
+/**
+ * What the person actually takes, and whether they are taking it.
+ *
+ * Two reasons this belongs in the shared context rather than only on the medication screens:
+ *
+ *   - **A biomarker cannot be read without it.** A raised potassium in someone on
+ *     spironolactone and an ACE inhibitor is a different finding from the same number in
+ *     someone on neither, and an engine that cannot see the medication list will write the
+ *     wrong one. The same goes for a statin and a cholesterol trend, or thyroid results and
+ *     levothyroxine.
+ *   - **The assistant is asked about medicines constantly.** Reading them from the same
+ *     `_gatherContext` every other surface uses is what stops it describing a drug
+ *     differently from the way the medication screen does.
+ *
+ * Adherence is included because "your cholesterol has not moved" means something different
+ * when a third of the doses were missed, and saying so is more useful than re-issuing the
+ * advice. Returns null when there is nothing recorded: an empty section invites a model to
+ * comment on an absence of data as though it were a finding.
+ */
+const gatherMedications = async (userId) => {
+    const from = new Date();
+    from.setDate(from.getDate() - MEDICATION_WINDOW_DAYS);
+
+    const [medications, doses] = await Promise.all([
+        Medication.find({ userId, active: true })
+            .select('name brandName strength form frequency dose withFood notes startDay')
+            .lean(),
+        MedicationDose.find({ userId, scheduledFor: { $gte: from } })
+            .select('status scheduledFor takenAt medicationName')
+            .lean(),
+    ]);
+
+    if (!medications.length) return null;
+
+    const { adherence } = require('../utils/medicationSchedule');
+    const catalogue = require('../utils/medicationCatalogue');
+
+    // The rule table's verdict travels with the list. An interpretation written without it
+    // can recommend something that clashes with what the person already takes.
+    const conditions = (await User.findById(userId).select('healthAssessment.conditions').lean())
+        ?.healthAssessment?.conditions?.filter((c) => c.status !== 'Resolved').map((c) => c.name) || [];
+    const rules = catalogue.runRules(medications, conditions);
+
+    return {
+        windowDays: MEDICATION_WINDOW_DAYS,
+        current: medications.map((m) => ({
+            name: m.name,
+            brandName: m.brandName,
+            strength: m.strength,
+            form: m.form,
+            frequency: m.frequency,
+            dose: m.dose,
+            plainName: catalogue.explain(m.name)?.plainName || null,
+            classes: catalogue.classesFor(m.name),
+            since: m.startDay,
+        })),
+        adherence: doses.length ? adherence(doses) : null,
+        interactionFindings: rules.findings.map((f) => ({
+            severity: f.severity,
+            between: f.between,
+            effect: f.effect,
+        })),
+        /** Drugs the catalogue could not classify. Stated so the model does not treat the
+         *  finding list as complete. */
+        uncheckable: rules.uncheckable,
+    };
 };
 
 /** How many days of meal logs the interpretation reads. */
@@ -497,3 +571,4 @@ exports.getStatus = async (req, res) => {
 // what make the prompt's history usable, and they are worth asserting on directly.
 exports._gatherContext = gatherContext;
 exports._gatherNutrition = gatherNutrition;
+exports._gatherMedications = gatherMedications;
