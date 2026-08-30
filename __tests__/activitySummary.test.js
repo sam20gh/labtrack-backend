@@ -14,7 +14,8 @@
 const mongoose = require('mongoose');
 const DailyMetrics = require('../models/DailyMetrics');
 const User = require('../models/userModel');
-const { getSummary } = require('../controllers/activityController');
+const ActivityPlan = require('../models/ActivityPlan');
+const { getSummary, getCalendar } = require('../controllers/activityController');
 
 /** Today in UTC, which is the local day the controller resolves at `tzOffset` 0. */
 const todayUTC = () => new Date().toISOString().slice(0, 10);
@@ -113,5 +114,59 @@ describe('missing is not zero', () => {
         expect(body.totals.floors).toBeNull();
         expect(body.averages.floors).toBeNull();
         expect(body.averages.restingBpm).toBeNull();
+    });
+});
+
+describe('the calendar grid', () => {
+    const callCalendar = async (userId, query = {}) => {
+        let body;
+        const res = { json: (p) => { body = p; return res; }, status: () => res };
+        await getCalendar({ user: { id: String(userId) }, query: { tzOffset: 0, ...query } }, res);
+        return body;
+    };
+
+    it('returns every date of the named month, reported or not', async () => {
+        const userId = await seedUser();
+        await DailyMetrics.create({ userId, day: '2026-04-10', activity: { steps: 9000, exerciseMin: 30, sessions: 1 } });
+
+        const body = await callCalendar(userId, { month: '2026-04' });
+
+        expect(body.month).toBe('2026-04');
+        expect(body.days).toHaveLength(30);
+        expect(body.days[0].day).toBe('2026-04-01');
+        expect(body.days.find((d) => d.day === '2026-04-10')).toMatchObject({ steps: 9000, sessions: 1 });
+    });
+
+    it('handles February and leap years rather than assuming 30', async () => {
+        const userId = await seedUser();
+        expect((await callCalendar(userId, { month: '2026-02' })).days).toHaveLength(28);
+        expect((await callCalendar(userId, { month: '2028-02' })).days).toHaveLength(29);
+    });
+
+    it('leaves the ring null when no target exists, rather than drawing a zero', async () => {
+        const userId = await seedUser();
+        await DailyMetrics.create({ userId, day: '2026-04-10', activity: { exerciseMin: 30 } });
+
+        const body = await callCalendar(userId, { month: '2026-04' });
+
+        expect(body.hasTarget).toBe(false);
+        expect(body.days.find((d) => d.day === '2026-04-10').progress).toBeNull();
+    });
+
+    it('scores a day against its share of the weekly target', async () => {
+        const userId = await seedUser();
+        await ActivityPlan.create({
+            userId,
+            targets: { sessions: 5, minutes: 140, distanceKm: null, calories: null },
+        });
+        await DailyMetrics.create({ userId, day: '2026-04-10', activity: { exerciseMin: 10 } });
+        await DailyMetrics.create({ userId, day: '2026-04-11', activity: { exerciseMin: 60 } });
+
+        const body = await callCalendar(userId, { month: '2026-04' });
+
+        // 140 a week is 20 a day; 10 minutes is half of it.
+        expect(body.days.find((d) => d.day === '2026-04-10').progress).toBe(0.5);
+        // Over target pins at 1 — the ring cannot draw more than a circle.
+        expect(body.days.find((d) => d.day === '2026-04-11').progress).toBe(1);
     });
 });

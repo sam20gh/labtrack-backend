@@ -342,6 +342,76 @@ exports.getSummary = async (req, res) => {
     }
 };
 
+/**
+ * GET /api/activity/calendar?month=YYYY-MM&tzOffset=
+ *
+ * The month grid on the dashboard — `Design/activity.svg` frames 7 and 20, where every date
+ * carries a ring showing how much of that day was done.
+ *
+ * Its own endpoint rather than a wider `/summary`, because it answers a different question:
+ * `/summary` is "the last N days" and a calendar is "this named month", and the two disagree
+ * about their edges on every screen that draws both. One indexed read over `DailyMetrics`.
+ *
+ * `progress` is the fraction of a day's share of the weekly minutes target. **Null when
+ * there is no target**, never zero — a ring at zero on a plan nobody set says the person
+ * failed at something nobody asked of them, the same call `/summary`'s score makes. The
+ * client draws a plain marker for those days instead of an empty ring.
+ */
+exports.getCalendar = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const tzOffset = Number(req.query.tzOffset) || 0;
+
+        const raw = String(req.query.month || '');
+        const month = /^\d{4}-\d{2}$/.test(raw)
+            ? raw
+            : localDay(new Date(), tzOffset).slice(0, 7);
+
+        const [year, mon] = month.split('-').map(Number);
+        // Day 0 of the following month is the last day of this one.
+        const length = new Date(Date.UTC(year, mon, 0)).getUTCDate();
+        const pad = (n) => String(n).padStart(2, '0');
+
+        const [rows, plan] = await Promise.all([
+            DailyMetrics.find({
+                userId,
+                day: { $gte: `${month}-01`, $lte: `${month}-${pad(length)}` },
+            }).lean(),
+            ActivityPlan.findOne({ userId }).select('targets').lean(),
+        ]);
+
+        // A day's share of the weekly target. The plan is weekly because that is how the
+        // guidance is worded; the grid is daily because that is what a calendar is.
+        const dailyMinutes = plan?.targets?.minutes > 0 ? plan.targets.minutes / 7 : null;
+
+        const byDay = new Map(rows.map((r) => [r.day, r]));
+        const days = [];
+
+        for (let d = 1; d <= length; d += 1) {
+            const day = `${month}-${pad(d)}`;
+            const r = byDay.get(day);
+            const exerciseMin = r?.activity?.exerciseMin ?? null;
+
+            days.push({
+                day,
+                sessions: r?.activity?.sessions || 0,
+                exerciseMin,
+                activeKcal: r?.activity?.activeKcal ?? null,
+                steps: r?.activity?.steps ?? null,
+                score: r?.activity?.score ?? null,
+                progress: dailyMinutes && Number.isFinite(exerciseMin)
+                    ? Math.round(Math.min(1, exerciseMin / dailyMinutes) * 100) / 100
+                    : null,
+            });
+        }
+
+        res.json({ month, days, hasTarget: Boolean(dailyMinutes) });
+    } catch (err) {
+        console.error('❌ Activity calendar failed:', err);
+        res.status(500).json({ message: 'Could not load your activity calendar' });
+    }
+};
+
 /** GET /api/activity/day?date=&tzOffset= — one day's sessions plus its rollup. */
 exports.getDay = async (req, res) => {
     try {

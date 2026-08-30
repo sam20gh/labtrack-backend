@@ -11,6 +11,7 @@ router.put('/plan', c.updatePlan);
 
 router.get('/summary', c.getSummary);
 router.get('/day', c.getDay);
+router.get('/calendar', c.getCalendar);
 
 router.get('/sessions', c.listSessions);
 router.get('/sessions/:id', c.getSession);
