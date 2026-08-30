@@ -223,6 +223,14 @@ exports.getSummary = async (req, res) => {
 
         const byDay = new Map(rows.map((r) => [r.day, r]));
 
+        /**
+         * Every figure the rollup holds, not just the ones the first chart drew.
+         *
+         * A day a watch was not worn and a day of no steps are different facts, so every
+         * metric is `null` rather than `0` when nothing reported it — the chart draws that
+         * as a gap and the stat grid hides the tile. Summing them as zero would tell
+         * someone they walked nowhere on a day nobody measured.
+         */
         const series = days.map((day) => {
             const r = byDay.get(day);
             return {
@@ -230,11 +238,42 @@ exports.getSummary = async (req, res) => {
                 sessions: r?.activity?.sessions || 0,
                 exerciseMin: r?.activity?.exerciseMin ?? null,
                 activeKcal: r?.activity?.activeKcal ?? null,
+                restingKcal: r?.activity?.restingKcal ?? null,
                 steps: r?.activity?.steps ?? null,
                 distanceM: r?.activity?.distanceM ?? null,
+                floors: r?.activity?.floors ?? null,
+                restingBpm: r?.heart?.restingBpm ?? null,
+                avgBpm: r?.heart?.avgBpm ?? null,
+                minBpm: r?.heart?.minBpm ?? null,
+                maxBpm: r?.heart?.maxBpm ?? null,
+                hrvMs: r?.heart?.hrvMs ?? null,
                 score: r?.activity?.score ?? null,
             };
         });
+
+        const reported = (key) => series
+            .map((p) => p[key])
+            .filter((v) => Number.isFinite(v));
+
+        /** Summed over the range; null when the range holds no reading at all. */
+        const sum = (key) => {
+            const values = reported(key);
+            return values.length ? Math.round(values.reduce((a, b) => a + b, 0)) : null;
+        };
+
+        /**
+         * Averaged over the days that reported, never over the range.
+         *
+         * Dividing by days a watch was not worn understates the figure and then calls it an
+         * average — which is why `days` travels alongside it and the client says "across N
+         * days with data" rather than presenting it as the whole period.
+         */
+        const mean = (key) => {
+            const values = reported(key);
+            if (!values.length) return null;
+            const value = values.reduce((a, b) => a + b, 0) / values.length;
+            return { value: Math.round(value * 10) / 10, days: values.length };
+        };
 
         const withKcal = series.filter((p) => Number.isFinite(p.activeKcal));
         const totals = {
@@ -242,6 +281,25 @@ exports.getSummary = async (req, res) => {
             exerciseMin: series.reduce((s, p) => s + (p.exerciseMin || 0), 0),
             activeKcal: series.reduce((s, p) => s + (p.activeKcal || 0), 0),
             distanceM: series.reduce((s, p) => s + (p.distanceM || 0), 0),
+            steps: sum('steps'),
+            floors: sum('floors'),
+            restingKcal: sum('restingKcal'),
+        };
+
+        // One entry per metric the dashboard can chart or tile, so a screen never has to
+        // decide whether a number is missing or merely zero.
+        const averages = {
+            exerciseMin: mean('exerciseMin'),
+            activeKcal: mean('activeKcal'),
+            restingKcal: mean('restingKcal'),
+            steps: mean('steps'),
+            distanceM: mean('distanceM'),
+            floors: mean('floors'),
+            restingBpm: mean('restingBpm'),
+            avgBpm: mean('avgBpm'),
+            minBpm: mean('minBpm'),
+            maxBpm: mean('maxBpm'),
+            hrvMs: mean('hrvMs'),
         };
 
         const scored = scoreWindow({ series, targets: plan?.targets, days: days.length });
@@ -252,6 +310,7 @@ exports.getSummary = async (req, res) => {
             days,
             series,
             totals,
+            averages,
             streak: computeStreak(days, byDay),
             highlight: {
                 // Averaged over the days that reported, not over the range: dividing by
