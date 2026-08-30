@@ -25,6 +25,7 @@ const MedicationDose = require('../models/MedicationDose');
 const PlanItem = require('../models/PlanItem');
 const User = require('../models/userModel');
 const { adherence: doseAdherence } = require('./medicationSchedule');
+const bloodPressure = require('./bloodPressure');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_WINDOW_DAYS = 30;
@@ -172,6 +173,16 @@ const derive = (gathered, { latestWeight } = {}) => {
 
     const adherence = doses.length ? doseAdherence(doses) : null;
 
+    // Blood pressure is summarised rather than averaged into one figure, so the worst reading
+    // in the window survives alongside the mean — see `bloodPressure.summarise`.
+    const pressures = dailyMetrics
+        .filter((m) => m.bloodPressure?.readings > 0
+            && Number.isFinite(m.bloodPressure.systolic) && Number.isFinite(m.bloodPressure.diastolic))
+        .map((m) => ({ systolic: m.bloodPressure.systolic, diastolic: m.bloodPressure.diastolic }));
+    const bpSummary = pressures.length ? bloodPressure.summarise(pressures) : null;
+
+    const hydrationDays = dailyMetrics.filter((m) => m.hydration?.logs > 0);
+
     return {
         weightKg: latestWeight?.value ?? null,
         weightAt: latestWeight?.at ?? null,
@@ -196,6 +207,21 @@ const derive = (gathered, { latestWeight } = {}) => {
         daysLogged: byMealDay.size,
 
         medicationAdherence: adherence?.score ?? null,
+
+        bloodPressure: bpSummary ? {
+            systolic: bpSummary.mean.systolic,
+            diastolic: bpSummary.mean.diastolic,
+            category: bpSummary.mean.category?.key ?? null,
+            readings: bpSummary.readings,
+            // Carried separately so an interpretation cannot read a reassuring mean over a
+            // window that contained a crisis reading.
+            hadCrisis: bpSummary.hadCrisis,
+        } : null,
+
+        dailyWaterMl: hydrationDays.length
+            ? round(mean(hydrationDays.map((m) => m.hydration.consumedMl ?? 0)))
+            : null,
+        waterDaysLogged: hydrationDays.length,
 
         windowDays,
         refreshedAt: new Date(),
@@ -229,7 +255,12 @@ const latestWeight = async (userId) => {
     const row = await DailyMetrics.findOne({ userId, 'body.weightKg': { $ne: null } })
         .sort({ day: -1 }).select('day body').lean();
     if (!row?.body?.weightKg) return null;
-    return { value: row.body.weightKg, at: new Date(row.day), source: row.body.weightSource || 'device' };
+    return {
+        value: row.body.weightKg,
+        // The measurement's own timestamp where the rollup kept one; the day is the fallback.
+        at: row.body.measuredAt || new Date(row.day),
+        source: row.body.weightSource || 'device',
+    };
 };
 
 module.exports = {

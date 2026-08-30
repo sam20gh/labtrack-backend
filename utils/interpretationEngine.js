@@ -246,6 +246,37 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
         if (observed.medicationAdherence != null) {
             facts.push(`Taking ${observed.medicationAdherence}% of due doses.`);
         }
+        if (observed.dailyWaterMl != null) {
+            facts.push(`Logging around ${observed.dailyWaterMl} ml of fluid on `
+                + `${observed.waterDaysLogged} days.`);
+        }
+
+        /**
+         * Blood pressure is stated separately from the lifestyle facts.
+         *
+         * It is the one number in this section that is a clinical finding rather than a
+         * behaviour, and it changes how several biomarkers should be read — a raised
+         * creatinine in someone running 150/95 is a different paragraph from the same value
+         * in someone normotensive. Filed among "steps and sleep" it would be skimmed.
+         */
+        const bpLines = [];
+        if (observed.bloodPressure?.systolic) {
+            const b = observed.bloodPressure;
+            bpLines.push('');
+            bpLines.push('## Their blood pressure');
+            bpLines.push(`Mean ${b.systolic}/${b.diastolic} mmHg across ${b.readings} `
+                + `self-recorded reading${b.readings === 1 ? '' : 's'}`
+                + (b.category ? `, which classifies as ${b.category.replace(/_/g, ' ')}.` : '.'));
+            if (b.hadCrisis) {
+                bpLines.push('At least one reading in this window was in the hypertensive crisis '
+                    + 'range. Say so plainly and tell them to seek medical review — do not let '
+                    + 'the average bury it.');
+            }
+            bpLines.push('These are home readings, not a clinic measurement, so treat them as a '
+                + 'pattern worth raising rather than a diagnosis. Read the biomarkers in light '
+                + 'of them: renal markers, lipids and glucose all read differently alongside a '
+                + 'raised pressure.');
+        }
 
         if (facts.length) {
             lines.push('');
@@ -259,6 +290,8 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
             lines.push('doing something they are already doing is advice they will discount, and it');
             lines.push('costs the credibility of everything else in the assessment.');
         }
+
+        for (const line of bpLines) lines.push(line);
     }
 
     /**

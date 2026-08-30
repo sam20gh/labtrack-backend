@@ -277,6 +277,23 @@ const UserSchema = new mongoose.Schema({
         /** Dose adherence over the window, 0-100. Null when nothing came due. */
         medicationAdherence: { type: Number, default: null },
 
+        /**
+         * Mean blood pressure over the window, and whether any single reading in it was in
+         * the crisis range. The flag is kept because a mean is exactly the operation that
+         * would hide one.
+         */
+        bloodPressure: {
+            systolic: { type: Number, default: null },
+            diastolic: { type: Number, default: null },
+            category: { type: String, default: null },
+            readings: { type: Number, default: 0 },
+            hadCrisis: { type: Boolean, default: false },
+        },
+
+        /** Mean water logged on the days anything was logged, and how many days those were. */
+        dailyWaterMl: { type: Number, default: null },
+        waterDaysLogged: { type: Number, default: 0 },
+
         /** The window everything above was derived over, and when that happened. */
         windowDays: { type: Number, default: 30 },
         refreshedAt: { type: Date, default: null },

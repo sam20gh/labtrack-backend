@@ -78,6 +78,45 @@ const BodyTotalsSchema = new mongoose.Schema({
     measuredAt: { type: Date, default: null },
 }, { _id: false });
 
+/**
+ * Water logged that day, and the target it was measured against.
+ *
+ * `targetMl` is stored rather than recomputed on read because the target moves with body mass
+ * and with the day's recorded activity — so a Tuesday in March had a different target from
+ * today, and a history chart that redraws every bar against today's number tells someone they
+ * missed goals they actually met.
+ *
+ * `logs` is the count, and it is what separates "drank nothing" from "did not use the app".
+ * Zero ml with zero logs is an unknown day; zero ml with logs is not possible, which is the
+ * point of keeping both.
+ */
+const HydrationTotalsSchema = new mongoose.Schema({
+    consumedMl: { type: Number, default: null },
+    targetMl: { type: Number, default: null },
+    logs: { type: Number, default: 0 },
+    /** The design's five-level ladder, resolved at rollup time. Null on a day with no logs. */
+    level: { type: String, default: null },
+}, { _id: false });
+
+/**
+ * Blood-pressure readings for the day.
+ *
+ * The **mean** is stored for the trend, and the **worst** category seen is stored beside it,
+ * because a day averaging out to normal with one crisis reading in it is not a normal day and
+ * an average is precisely the operation that hides that. `utils/bloodPressure.summarise`
+ * makes the same pairing for the same reason.
+ */
+const BloodPressureTotalsSchema = new mongoose.Schema({
+    systolic: { type: Number, default: null },
+    diastolic: { type: Number, default: null },
+    pulse: { type: Number, default: null },
+    readings: { type: Number, default: 0 },
+    /** Category of the day's mean reading. */
+    category: { type: String, default: null },
+    /** Worst category seen that day, which may be worse than the mean's. */
+    worstCategory: { type: String, default: null },
+}, { _id: false });
+
 const DailyMetricsSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
@@ -88,6 +127,8 @@ const DailyMetricsSchema = new mongoose.Schema({
     sleep: { type: SleepTotalsSchema, default: () => ({}) },
     heart: { type: HeartTotalsSchema, default: () => ({}) },
     body: { type: BodyTotalsSchema, default: () => ({}) },
+    hydration: { type: HydrationTotalsSchema, default: () => ({}) },
+    bloodPressure: { type: BloodPressureTotalsSchema, default: () => ({}) },
 
     /**
      * Whole-day figures the health store reports directly (steps, resting energy) rather

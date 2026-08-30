@@ -38,6 +38,8 @@
 
 const { scoreWindow: scoreActivityWindow } = require('./activityScore');
 const { adherence: doseAdherence } = require('./medicationSchedule');
+const bloodPressure = require('./bloodPressure');
+const hydrationTargets = require('./hydrationTargets');
 
 const clamp = (n) => Math.max(0, Math.min(100, Math.round(n)));
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -108,6 +110,13 @@ const WEIGHTS = {
     body: 1.5,
     plan: 1.25,
     mind: 1,
+    /**
+     * Hydration is the lightest pillar on purpose. It is entirely self-logged, nothing
+     * measures it, and a day someone drank normally and forgot to tap is indistinguishable
+     * from a dry one. It belongs in the score — the kit puts it on the radar — but it must
+     * not be able to move the number the way a month of measured sleep can.
+     */
+    hydration: 0.75,
 };
 
 /** Every pillar, in the order the breakdown screen lists them. */
@@ -344,20 +353,92 @@ const scoreMedication = ({ doses = [], activeCount = 0 } = {}) => {
  */
 const scoreVitals = ({ metrics = [] } = {}) => {
     const resting = metrics.map((m) => m.heart?.restingBpm).filter((n) => Number.isFinite(n));
-    if (resting.length < MIN_NIGHTS) {
+
+    // Blood pressure is logged by hand, so a handful of readings is a real signal where a
+    // handful of heart-rate days would not be — a person does not take their pressure daily.
+    const pressures = metrics
+        .filter((m) => m.bloodPressure?.readings > 0
+            && Number.isFinite(m.bloodPressure.systolic) && Number.isFinite(m.bloodPressure.diastolic))
+        .map((m) => ({ systolic: m.bloodPressure.systolic, diastolic: m.bloodPressure.diastolic }));
+
+    const bpSummary = pressures.length ? bloodPressure.summarise(pressures) : null;
+    const bpScore = bloodPressure.score(bpSummary);
+
+    const parts = [];
+    let detail = null;
+    const meta = {};
+
+    if (resting.length >= MIN_NIGHTS) {
+        const bpm = median(resting);
+        // Full marks across 50-70. Six points per bpm outside it, which reaches zero around
+        // 87 bpm resting - high, but not a figure to tell someone is a zero without hedging.
+        const distance = bpm < 50 ? 50 - bpm : bpm > 70 ? bpm - 70 : 0;
+        parts.push({ value: clamp(100 - distance * 6), weight: 1 });
+        meta.restingBpm = Math.round(bpm);
+        meta.readings = resting.length;
+        detail = `Resting heart rate ${Math.round(bpm)} bpm.`;
+    }
+
+    if (bpScore !== null) {
+        // Weighted above resting heart rate: a stage 2 reading is a more consequential fact
+        // about someone than a slightly brisk resting pulse, and a pillar that averaged the
+        // two evenly could show a comfortable green next to untreated hypertension.
+        parts.push({ value: bpScore, weight: 1.5 });
+        const label = bpSummary.mean.category.label.toLowerCase();
+        const bpText = `blood pressure ${bpSummary.mean.systolic}/${bpSummary.mean.diastolic} (${label})`;
+        detail = detail ? `${detail.replace(/\.$/, '')}, ${bpText}.` : `Mean ${bpText}.`;
+        meta.bloodPressure = {
+            systolic: bpSummary.mean.systolic,
+            diastolic: bpSummary.mean.diastolic,
+            category: bpSummary.mean.category.key,
+            readings: bpSummary.readings,
+            hadCrisis: bpSummary.hadCrisis,
+        };
+    }
+
+    if (!parts.length) {
         return pillar('vitals', 'Vitals', null,
-            resting.length ? 'Not enough resting heart-rate readings yet.' : 'Connect a device to track your heart rate.',
+            resting.length
+                ? 'Not enough resting heart-rate readings yet.'
+                : 'Connect a device, or log a blood-pressure reading.',
             'none');
     }
 
-    const bpm = median(resting);
-    // Full marks across 50-70. Six points per bpm outside it, which reaches zero around
-    // 87 bpm resting - high, but not a figure to tell someone is a zero without hedging.
-    const distance = bpm < 50 ? 50 - bpm : bpm > 70 ? bpm - 70 : 0;
+    const totalWeight = parts.reduce((s, p) => s + p.weight, 0);
+    const value = parts.reduce((s, p) => s + p.value * p.weight, 0) / totalWeight;
 
-    return pillar('vitals', 'Vitals', 100 - distance * 6,
-        `Resting heart rate ${Math.round(bpm)} bpm.`,
-        'observed', { restingBpm: Math.round(bpm), readings: resting.length });
+    return pillar('vitals', 'Vitals', value, detail, 'observed', meta);
+};
+
+/**
+ * Hydration, as attainment against the person's own daily target.
+ *
+ * Days with no logs are excluded rather than scored zero, which is the single most important
+ * thing about this pillar: forgetting to tap a glass is not dehydration, and a tracker that
+ * scores an untouched day as a failure trains people to stop opening it. That exclusion is in
+ * `hydrationTargets.score`, and it means a person who logs carefully two days a week is scored
+ * on those two days.
+ *
+ * There is no reported fallback. Nothing in the health assessment asks about fluid intake, and
+ * inventing a question to answer here would be making up a fact about someone.
+ */
+const scoreHydration = ({ metrics = [] } = {}) => {
+    const days = metrics
+        .filter((m) => m.hydration?.logs > 0)
+        .map((m) => ({
+            logs: m.hydration.logs,
+            consumedMl: m.hydration.consumedMl ?? 0,
+            targetMl: m.hydration.targetMl,
+        }));
+
+    const value = hydrationTargets.score(days);
+    if (value === null) {
+        return pillar('hydration', 'Hydration', null, 'Log a drink to score this.', 'none');
+    }
+
+    return pillar('hydration', 'Hydration', value,
+        `Averaging ${value}% of your target across ${days.length} logged day${days.length === 1 ? '' : 's'}.`,
+        'observed', { loggedDays: days.length });
 };
 
 /**
@@ -504,6 +585,7 @@ const computeScore = (input = {}) => {
         scoreNutrition({ meals: input.meals, days, reported: input.assessment, answeredAt }),
         scoreMedication({ doses: input.doses, activeCount: input.activeMedicationCount }),
         scoreVitals({ metrics: input.dailyMetrics }),
+        scoreHydration({ metrics: input.dailyMetrics }),
         scoreBody(input.body || {}),
         scorePlan(input.planItems),
         scoreMind({ moodHistory: input.moodHistory, since, reported, answeredAt }),
@@ -633,6 +715,7 @@ module.exports = {
     _scoreNutrition: scoreNutrition,
     _scoreMedication: scoreMedication,
     _scoreVitals: scoreVitals,
+    _scoreHydration: scoreHydration,
     _scoreBody: scoreBody,
     _scorePlan: scorePlan,
     _scoreMind: scoreMind,
