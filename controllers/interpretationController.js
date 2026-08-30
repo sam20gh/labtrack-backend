@@ -88,7 +88,49 @@ const gatherContext = async (userId) => {
     const nutrition = await gatherNutrition(userId);
     const medications = await gatherMedications(userId);
 
-    return { user, dnaReports, biomarkers, trends, series, testResults, previous, nutrition, medications };
+    /**
+     * What the trackers measured, and the score built from it.
+     *
+     * `user.observed` is refreshed by `scoreController.recompute`, so reading it here costs
+     * nothing extra and is guaranteed to be the same view of the person the home screen is
+     * showing. Without this the engine writes lifestyle advice from the onboarding
+     * questionnaire alone — the failure the whole observed-profile change exists to fix.
+     *
+     * The score is read from the newest snapshot rather than recomputed: an interpretation
+     * is not a reason to write another row, and a value a few hours old is fine for the one
+     * thing it is used for here, which is deciding what to lead with.
+     */
+    const observed = user?.observed?.refreshedAt ? user.observed : null;
+    const score = await newestScore(userId);
+
+    return {
+        user, dnaReports, biomarkers, trends, series, testResults, previous,
+        nutrition, medications, observed, score,
+    };
+};
+
+/**
+ * The newest persisted LabTrack score, or null.
+ *
+ * Deliberately does not trigger a recomputation. `scoreController` owns when the score is
+ * recalculated; an interpretation reading it must not be able to append a snapshot as a side
+ * effect, or the trend chart grows a point every time someone opens a report.
+ */
+const newestScore = async (userId) => {
+    const HealthScore = require('../models/HealthScore');
+    const row = await HealthScore.findOne({ userId }).sort({ computedAt: -1 })
+        .select('value band headline pillars coverage computedAt').lean();
+    if (!row || row.value == null) return null;
+
+    const { BANDS } = require('../utils/labtrackScore');
+    return {
+        value: row.value,
+        band: row.band,
+        bandLabel: BANDS.find((b) => b.key === row.band)?.label ?? null,
+        pillars: row.pillars,
+        coverage: row.coverage,
+        computedAt: row.computedAt,
+    };
 };
 
 /** How many days of dose history the interpretation reads. */

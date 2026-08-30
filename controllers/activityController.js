@@ -6,6 +6,7 @@ const User = require('../models/userModel');
 const { recomputeDay, localDay, resolveDay, normaliseType } = require('../utils/healthSync');
 const { computeTargets, deriveGuidance, explain } = require('../utils/activityTargets');
 const { scoreSession, scoreWindow, bandFor } = require('../utils/activityScore');
+const scoreController = require('./scoreController');
 
 /**
  * The dashboard's range tabs. `all` is capped rather than unbounded — a chart of every day
@@ -552,6 +553,11 @@ exports.createSession = async (req, res) => {
 
         await recomputeDay(userId, resolvedDay);
         console.log(`🏃 Manual activity ${session.type} u=${userId} d=${resolvedDay}`);
+
+        // Recomputed in the background so the score reflects this the next time the home
+        // screen asks, rather than fifteen minutes later. Never awaited: a scoring failure
+        // must not be able to fail the write the person actually made.
+        scoreController.touch(userId, 'log');
 
         res.status(201).json({ session });
     } catch (err) {

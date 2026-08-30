@@ -40,7 +40,7 @@ const isoDay = (d) => {
     return Number.isNaN(t) ? 'undated' : new Date(t).toISOString().slice(0, 10);
 };
 
-const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, series = {}, testResults = [], previous = null, nutrition = null, medications = null }) => {
+const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, series = {}, testResults = [], previous = null, nutrition = null, medications = null, observed = null, score = null }) => {
     const age = calculateAge(user?.dob);
     const lines = [];
 
@@ -58,9 +58,17 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
         const lifestyle = [
             ls.smokingStatus && `smoking: ${ls.smokingStatus}`,
             ls.alcoholConsumption && `alcohol: ${ls.alcoholConsumption}`,
-            ls.exerciseFrequency && `exercise: ${ls.exerciseFrequency}`,
+            // Measured beats claimed. Where a device has reported activity, that is what
+            // goes in the prompt — an engine told someone exercises "Very Active" while
+            // their watch recorded two sessions a month writes the wrong plan.
+            (observed?.exerciseFrequency || ls.exerciseFrequency)
+                && `exercise: ${observed?.exerciseFrequency || ls.exerciseFrequency}`
+                + (observed?.exerciseFrequency ? ' (measured)' : ' (self-reported)'),
             ls.dietType && `diet: ${ls.dietType}`,
-            ls.sleepHoursPerNight && `sleep: ${ls.sleepHoursPerNight}h/night`,
+            (observed?.sleepMinutes || ls.sleepHoursPerNight)
+                && `sleep: ${observed?.sleepMinutes
+                    ? `${(observed.sleepMinutes / 60).toFixed(1)}h/night (measured over ${observed.nightsRecorded} nights)`
+                    : `${ls.sleepHoursPerNight}h/night (self-reported)`}`,
             ls.stressLevel && `stress: ${ls.stressLevel}`,
         ].filter(Boolean);
         if (lifestyle.length) lines.push(`Lifestyle: ${lifestyle.join('; ')}`);
@@ -196,6 +204,81 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
 
         lines.push('Never tell them to start, stop, or change the dose of any of these. Where');
         lines.push('something needs changing, say what to raise with the prescriber and why.');
+    }
+
+    /**
+     * What the trackers actually recorded.
+     *
+     * This section exists because the health assessment is a set of claims made once, and
+     * every plan written from it alone is a plan for the person someone described in
+     * onboarding rather than the person using the app. Telling someone who has been running
+     * four times a week to "build up to regular exercise" is the specific failure it
+     * prevents, and it reads as not having been listened to.
+     *
+     * The figures are stated as measurements and the model is told so explicitly, because
+     * where they contradict the questionnaire the measurement is the one to write from.
+     */
+    if (observed && observed.refreshedAt) {
+        const facts = [];
+        if (observed.weeklyExerciseMin != null) {
+            facts.push(`Averaging ${observed.weeklyExerciseMin} active minutes and `
+                + `${observed.weeklySessions ?? 0} sessions a week`
+                + (observed.exerciseTypes?.length ? `, mostly ${observed.exerciseTypes.join(', ')}.` : '.'));
+        }
+        if (observed.dailySteps != null) facts.push(`Around ${observed.dailySteps} steps a day.`);
+        if (observed.sleepMinutes != null) {
+            facts.push(`Sleeping ${(observed.sleepMinutes / 60).toFixed(1)}h a night across `
+                + `${observed.nightsRecorded} recorded nights`
+                + (observed.sleepScore != null ? `, mean sleep score ${observed.sleepScore}/100.` : '.'));
+        }
+        if (observed.restingBpm != null) {
+            facts.push(`Resting heart rate ${observed.restingBpm} bpm`
+                + (observed.hrvMs != null ? `, HRV ${observed.hrvMs} ms.` : '.'));
+        }
+        if (observed.weightKg != null) {
+            facts.push(`Most recent measured weight ${observed.weightKg} kg`
+                + (observed.weightAt ? ` (${isoDay(observed.weightAt)}).` : '.'));
+        }
+        if (observed.dailyCalories != null) {
+            facts.push(`Logging around ${observed.dailyCalories} kcal a day across `
+                + `${observed.daysLogged} days.`);
+        }
+        if (observed.medicationAdherence != null) {
+            facts.push(`Taking ${observed.medicationAdherence}% of due doses.`);
+        }
+
+        if (facts.length) {
+            lines.push('');
+            lines.push(`## What their devices and logs actually recorded (last ${observed.windowDays} days)`);
+            lines.push('These are measurements, not answers to a questionnaire. Where they');
+            lines.push('contradict the self-reported lifestyle above, write from these and say so.');
+            lines.push('');
+            for (const f of facts) lines.push(`  ${f}`);
+            lines.push('');
+            lines.push('Pitch every lifestyle recommendation against this baseline. Advice to start');
+            lines.push('doing something they are already doing is advice they will discount, and it');
+            lines.push('costs the credibility of everything else in the assessment.');
+        }
+    }
+
+    /**
+     * The score, and how much of it is real.
+     *
+     * Included so the interpretation can be written as a delta against a number the person
+     * is looking at on the home screen, and so it can say plainly when that number is still
+     * mostly a self-assessment.
+     */
+    if (score && score.value != null) {
+        lines.push('');
+        lines.push('## Their LabTrack score');
+        lines.push(`${score.value}/100 (${score.bandLabel || score.band}), of which `
+            + `${score.coverage.observedWeight}% comes from measured data rather than their answers.`);
+        const weak = score.pillars
+            .filter((p) => p.value != null && p.value < 55)
+            .map((p) => `${p.label} ${p.value}`);
+        if (weak.length) lines.push(`Weakest areas: ${weak.join(', ')}.`);
+        lines.push('Do not restate the score back to them as a finding — they can see it. Use it');
+        lines.push('to decide what is worth their attention first.');
     }
 
     if (previous) {

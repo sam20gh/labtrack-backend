@@ -134,52 +134,60 @@ exports.addBiomarkers = async (req, res) => {
  * GET /api/biomarkers/latest — most recent value for each analyte.
  * Powers the results grid; one row per biomarker, newest first.
  */
+/**
+ * The newest reading of every analyte for one person, with a delta against the one before.
+ *
+ * Extracted from `getLatest` so the score engine reads biomarkers through exactly the same
+ * query the results screen does. Two implementations of "latest biomarkers" is how the
+ * Markers pillar starts disagreeing with the list the person is looking at.
+ */
+const latestForUser = async (userId) => {
+    const mongoose = require('mongoose');
+
+    const latest = await Biomarker.aggregate([
+        { $match: { userId: new mongoose.Types.ObjectId(String(userId)) } },
+        { $sort: { measuredAt: -1 } },
+        {
+            $group: {
+                _id: '$name',
+                doc: { $first: '$$ROOT' },
+                // Second-newest enables a delta arrow without another query
+                history: { $push: { value: '$value', measuredAt: '$measuredAt' } },
+            },
+        },
+        {
+            $project: {
+                _id: '$doc._id',
+                name: '$doc.name',
+                displayName: '$doc.displayName',
+                value: '$doc.value',
+                unit: '$doc.unit',
+                measuredAt: '$doc.measuredAt',
+                flag: '$doc.flag',
+                appliedRange: '$doc.appliedRange',
+                previous: { $arrayElemAt: ['$history', 1] },
+                measurementCount: { $size: '$history' },
+            },
+        },
+        { $sort: { name: 1 } },
+    ]);
+
+    return latest.map((b) => ({
+        ...b,
+        delta: b.previous ? Number((b.value - b.previous.value).toFixed(4)) : null,
+        direction: b.previous
+            ? (b.value > b.previous.value ? 'up' : b.value < b.previous.value ? 'down' : 'flat')
+            : null,
+        // Plain-language name and explanation. The app is consumer-facing: "MCV 88 fL"
+        // is unreadable to the person whose blood it is. Null for analytes outside the
+        // catalogue, and the client falls back to the medical name alone.
+        explainer: explain(b.name),
+    }));
+};
+
 exports.getLatest = async (req, res) => {
     try {
-        const userId = req.auth.userId;
-        const mongoose = require('mongoose');
-
-        const latest = await Biomarker.aggregate([
-            { $match: { userId: new mongoose.Types.ObjectId(String(userId)) } },
-            { $sort: { measuredAt: -1 } },
-            {
-                $group: {
-                    _id: '$name',
-                    doc: { $first: '$$ROOT' },
-                    // Second-newest enables a delta arrow without another query
-                    history: { $push: { value: '$value', measuredAt: '$measuredAt' } },
-                },
-            },
-            {
-                $project: {
-                    _id: '$doc._id',
-                    name: '$doc.name',
-                    displayName: '$doc.displayName',
-                    value: '$doc.value',
-                    unit: '$doc.unit',
-                    measuredAt: '$doc.measuredAt',
-                    flag: '$doc.flag',
-                    appliedRange: '$doc.appliedRange',
-                    previous: { $arrayElemAt: ['$history', 1] },
-                    measurementCount: { $size: '$history' },
-                },
-            },
-            { $sort: { name: 1 } },
-        ]);
-
-        const withDelta = latest.map((b) => ({
-            ...b,
-            delta: b.previous ? Number((b.value - b.previous.value).toFixed(4)) : null,
-            direction: b.previous
-                ? (b.value > b.previous.value ? 'up' : b.value < b.previous.value ? 'down' : 'flat')
-                : null,
-            // Plain-language name and explanation. The app is consumer-facing: "MCV 88 fL"
-            // is unreadable to the person whose blood it is. Null for analytes outside the
-            // catalogue, and the client falls back to the medical name alone.
-            explainer: explain(b.name),
-        }));
-
-        res.json({ biomarkers: withDelta });
+        res.json({ biomarkers: await latestForUser(req.auth.userId) });
     } catch (error) {
         console.error('❌ Error fetching latest biomarkers:', error);
         res.status(500).json({ message: 'Error fetching biomarkers', error: error.message });
@@ -275,3 +283,4 @@ exports.getCatalogue = async (req, res) => {
 exports.persistMeasurements = persistMeasurements;
 exports.isGenotypeCall = isGenotypeCall;
 exports.canonicalise = canonicalise;
+exports.latestForUser = latestForUser;

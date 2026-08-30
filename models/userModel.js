@@ -211,7 +211,76 @@ const UserSchema = new mongoose.Schema({
             sleepHoursPerNight: { type: Number },
             checkupFrequency: { type: String } // e.g., "weekly", "monthly", "yearly"
         }
-    }
+    },
+
+    /**
+     * The measured profile.
+     *
+     * `healthAssessment` is what the person said about themselves once, during onboarding.
+     * This is what the trackers have since observed, and where the two disagree this is the
+     * one that describes them now: someone who answered "Beginner" in March and has since
+     * synced four months of running is not a beginner, and every surface that reads the
+     * assessment to personalise itself was getting that wrong.
+     *
+     * **Kept alongside the assessment, never written over it.** The same rule the medication
+     * checker follows for `healthAssessment.medications`: the onboarding answers are a
+     * snapshot a clinician may have reviewed, and letting a device sync silently rewrite them
+     * destroys the record of what the person actually reported. Consumers read `observed`
+     * first and fall back to the assessment, which is exactly what `labtrackScore` does with
+     * its `observed` / `reported` provenance.
+     *
+     * Every field is derived, rebuilt by `profileObserver.refresh()` from the rows behind it,
+     * and carries the window it was derived over. Nothing here is ever edited by hand — an
+     * editable field would drift from the data it claims to summarise, which is the mistake
+     * `DailyMetrics` documents at length.
+     */
+    observed: {
+        /** Most recent weight from a scale, a health store, or a manual weight log. */
+        weightKg: { type: Number, default: null },
+        weightAt: { type: Date, default: null },
+        weightSource: { type: String, default: null },
+
+        /** Median resting heart rate over the window. */
+        restingBpm: { type: Number, default: null },
+        /** Median HRV in ms, where the device reports it. */
+        hrvMs: { type: Number, default: null },
+
+        /** Mean minutes asleep a night, and the mean nightly sleep score. */
+        sleepMinutes: { type: Number, default: null },
+        sleepScore: { type: Number, default: null },
+        nightsRecorded: { type: Number, default: 0 },
+
+        /** Weekly means, so the plan can be written against what someone actually does. */
+        weeklyExerciseMin: { type: Number, default: null },
+        weeklySessions: { type: Number, default: null },
+        dailySteps: { type: Number, default: null },
+
+        /**
+         * The assessment's `fitnessLevel` vocabulary, derived from the above rather than
+         * claimed — so the two are directly comparable and a consumer can swap one for the
+         * other without translating.
+         */
+        fitnessLevel: { type: String, enum: ['Beginner', 'Intermediate', 'Advanced', null], default: null },
+        /** The assessment's `exerciseFrequency` vocabulary, derived the same way. */
+        exerciseFrequency: {
+            type: String,
+            enum: ['None', 'Light', 'Moderate', 'Active', 'Very Active', null],
+            default: null,
+        },
+        /** Activity types actually recorded, commonest first. Not the ones they said they like. */
+        exerciseTypes: { type: [String], default: undefined },
+
+        /** Mean daily calories from logged meals, and how many days carried a log. */
+        dailyCalories: { type: Number, default: null },
+        daysLogged: { type: Number, default: 0 },
+
+        /** Dose adherence over the window, 0-100. Null when nothing came due. */
+        medicationAdherence: { type: Number, default: null },
+
+        /** The window everything above was derived over, and when that happened. */
+        windowDays: { type: Number, default: 30 },
+        refreshedAt: { type: Date, default: null },
+    },
 }, { timestamps: true });
 
 const User = mongoose.model('User', UserSchema);

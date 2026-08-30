@@ -25,6 +25,7 @@ const catalogue = require('../utils/medicationCatalogue');
 const schedule = require('../utils/medicationSchedule');
 const engine = require('../utils/medicationEngine');
 const { uploadImageOrNull } = require('../utils/imageStore');
+const scoreController = require('./scoreController');
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -503,6 +504,11 @@ exports.updateDose = async (req, res) => {
                 await medication.save();
             }
         }
+
+        // Recomputed in the background so the score reflects this the next time the home
+        // screen asks, rather than fifteen minutes later. Never awaited: a scoring failure
+        // must not be able to fail the write the person actually made.
+        scoreController.touch(req.auth.userId, 'log');
 
         res.json({
             dose: { ...dose.toObject(), punctuality: schedule.punctuality(dose) },

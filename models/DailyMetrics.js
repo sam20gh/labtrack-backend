@@ -57,6 +57,27 @@ const ActivityTotalsSchema = new mongoose.Schema({
     score: { type: Number, default: null },
 }, { _id: false });
 
+/**
+ * Body measurements the health store reports, or the person logs on the weight screen.
+ *
+ * One row a day rather than a series: weighing yourself four times in a morning is four
+ * readings of one fact, and the trend chart wants the day. A later reading replaces the
+ * day's value rather than averaging with it — the most recent measurement is the one the
+ * person would recognise, and a mean of a clothed and an unclothed weigh-in is neither.
+ *
+ * Nulls, not zeros. A day nobody stood on a scale is unknown, and a zero here would draw a
+ * weight chart through the floor.
+ */
+const BodyTotalsSchema = new mongoose.Schema({
+    weightKg: { type: Number, default: null },
+    /** Percent, where the scale reports it. */
+    bodyFatPct: { type: Number, default: null },
+    leanMassKg: { type: Number, default: null },
+    /** `healthkit` | `health_connect` | `manual` — provenance travels with the measurement. */
+    weightSource: { type: String, default: null },
+    measuredAt: { type: Date, default: null },
+}, { _id: false });
+
 const DailyMetricsSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
@@ -66,6 +87,7 @@ const DailyMetricsSchema = new mongoose.Schema({
     activity: { type: ActivityTotalsSchema, default: () => ({}) },
     sleep: { type: SleepTotalsSchema, default: () => ({}) },
     heart: { type: HeartTotalsSchema, default: () => ({}) },
+    body: { type: BodyTotalsSchema, default: () => ({}) },
 
     /**
      * Whole-day figures the health store reports directly (steps, resting energy) rather

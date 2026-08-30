@@ -5,6 +5,7 @@ const HeartRateSample = require('../models/HeartRateSample');
 const DailyMetrics = require('../models/DailyMetrics');
 const SleepPlan = require('../models/SleepPlan');
 const { ingestBatch, ACCEPTED_HR_CONTEXTS } = require('../utils/healthSync');
+const scoreController = require('./scoreController');
 
 /** A batch larger than this is a client bug or a first-ever backfill run without paging. */
 const MAX_ROWS_PER_BATCH = 2000;
@@ -118,6 +119,11 @@ exports.sync = async (req, res) => {
             `a=${result.counts.activities} s=${result.counts.sleep} ` +
             `h=${result.counts.heart} d=${result.counts.days} → ${result.days.length} days`
         );
+
+        // A sync is the single biggest mover of the score — it is the moment a month of
+        // activity, sleep and heart data lands. Fired after the response is shaped so the
+        // client is never waiting on a recalculation it did not ask for.
+        scoreController.touch(userId, 'sync', { tzOffset: Number(req.body.tzOffset) || 0 });
 
         res.json({
             received: result.counts,

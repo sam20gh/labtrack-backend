@@ -3,6 +3,7 @@ const NutritionPlan = require('../models/NutritionPlan');
 const MealLog = require('../models/MealLog');
 const PlanItem = require('../models/PlanItem');
 const User = require('../models/userModel');
+const scoreController = require('./scoreController');
 const {
     computeTargets, deriveGuidance, explain,
 } = require('../utils/nutritionTargets');
@@ -424,6 +425,11 @@ exports.createMeal = async (req, res) => {
             eatenAt,
             day: resolveDay({ day: req.body.day, eatenAt, tzOffset: req.body.tzOffset }),
         });
+
+        // Recomputed in the background so the score reflects this the next time the home
+        // screen asks, rather than fifteen minutes later. Never awaited: a scoring failure
+        // must not be able to fail the write the person actually made.
+        scoreController.touch(req.auth.userId, 'log');
 
         res.status(201).json({ message: 'Meal logged', meal });
     } catch (error) {
