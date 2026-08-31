@@ -143,6 +143,17 @@ const UserSchema = new mongoose.Schema({
      * depends on it being set.
      */
     profileImage: { type: String, default: null },
+
+    /**
+     * Whether this account can read Pro-gated health resources.
+     *
+     * A flag rather than a subscription object on purpose: nothing bills for it yet, and
+     * modelling a plan, a period and a renewal date before anything writes them produces
+     * four fields that are always null and a screen that reads them anyway. When billing
+     * arrives this becomes derived from the subscription; `utils/resourceView.gateBody` is
+     * the only thing that reads it, so that is a one-line change.
+     */
+    proMember: { type: Boolean, default: false },
     dob: { type: String, default: '' },
     gender: { type: String, enum: ['Male', 'Female', 'Other', null], default: null },
     height: { type: Number, default: null },

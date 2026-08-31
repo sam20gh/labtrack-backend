@@ -28,6 +28,7 @@ const activityRoutes = require('./routes/activityRoutes');
 const medicationRoutes = require('./routes/medicationRoutes');
 const scoreRoutes = require('./routes/scoreRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
+const resourceRoutes = require('./routes/resourceRoutes');
 
 const app = express();
 app.use(cors());
@@ -87,6 +88,7 @@ app.use('/api/activity', activityRoutes);
 app.use('/api/medications', medicationRoutes);
 app.use('/api/score', scoreRoutes);
 app.use('/api/metrics', metricsRoutes);
+app.use('/api/resources', resourceRoutes);
 
 
 /**
