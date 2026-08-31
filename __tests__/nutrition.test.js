@@ -11,7 +11,8 @@ const NutritionPlan = require('../models/NutritionPlan');
 const MealLog = require('../models/MealLog');
 const PlanItem = require('../models/PlanItem');
 const User = require('../models/userModel');
-const { _syncGuidance, _summarise, _localDay } = require('../controllers/nutritionController');
+const controller = require('../controllers/nutritionController');
+const { _syncGuidance, _summarise, _localDay } = controller;
 const { buildGuidanceBlock } = require('../utils/nutritionEngine');
 
 const makeUser = () => User.create({
@@ -197,5 +198,142 @@ describe('MealLog', () => {
         await expect(MealLog.create({
             userId: user._id, eatenAt: new Date(), name: 'Toast', calories: 200,
         })).rejects.toThrow(/day/);
+    });
+});
+
+/** Minimal req/res doubles, matching how the other controller tests drive handlers. */
+const mockRes = () => {
+    const res = { statusCode: 200, body: null };
+    res.status = (code) => { res.statusCode = code; return res; };
+    res.json = (body) => { res.body = body; return res; };
+    return res;
+};
+
+const photoMeal = (userId, over = {}) => MealLog.create({
+    userId,
+    eatenAt: new Date('2026-08-30T12:00:00Z'),
+    day: '2026-08-30',
+    name: 'Omelette and greens',
+    calories: 420,
+    protein: 28,
+    carbs: 12,
+    fat: 26,
+    source: 'photo',
+    imageUrl: 'https://imagedelivery.net/hash/id/public',
+    ...over,
+});
+
+describe('the gallery — the photographs, across the whole history', () => {
+    const getGallery = async (userId, query = {}) => {
+        const res = mockRes();
+        await controller.getGallery({ auth: { userId }, query }, res);
+        return res;
+    };
+
+    it('lists only meals that actually have a photograph', async () => {
+        const user = await makeUser();
+        await photoMeal(user._id);
+        // A typed meal. A placeholder tile for this would pad the grid with squares that
+        // say nothing, and would make the count under the rail mean something other than
+        // photographs.
+        await photoMeal(user._id, { name: 'Toast', source: 'manual', imageUrl: null });
+        await photoMeal(user._id, { name: 'Apple', source: 'manual', imageUrl: '' });
+
+        const res = await getGallery(user._id);
+
+        expect(res.body.items).toHaveLength(1);
+        expect(res.body.total).toBe(1);
+        expect(res.body.items[0].name).toBe('Omelette and greens');
+    });
+
+    it('never returns another person\'s photographs', async () => {
+        const [mine, theirs] = [await makeUser(), await makeUser()];
+        await photoMeal(mine._id, { name: 'Mine' });
+        await photoMeal(theirs._id, { name: 'Theirs' });
+
+        const res = await getGallery(mine._id);
+
+        expect(res.body.items.map((i) => i.name)).toEqual(['Mine']);
+        expect(res.body.total).toBe(1);
+    });
+
+    it('pages newest-first on a cursor, without repeating or skipping a tile', async () => {
+        const user = await makeUser();
+        for (let i = 0; i < 5; i += 1) {
+            await photoMeal(user._id, {
+                name: `Meal ${i}`,
+                eatenAt: new Date(Date.UTC(2026, 7, 30, 8 + i)),
+            });
+        }
+
+        const first = await getGallery(user._id, { limit: '2' });
+        expect(first.body.items.map((i) => i.name)).toEqual(['Meal 4', 'Meal 3']);
+        expect(first.body.nextCursor).toBeTruthy();
+        // The count is of everything on record, not of this page — it captions the rail.
+        expect(first.body.total).toBe(5);
+
+        const second = await getGallery(user._id, { limit: '2', before: first.body.nextCursor });
+        expect(second.body.items.map((i) => i.name)).toEqual(['Meal 2', 'Meal 1']);
+
+        const third = await getGallery(user._id, { limit: '2', before: second.body.nextCursor });
+        expect(third.body.items.map((i) => i.name)).toEqual(['Meal 0']);
+        // Last page: nothing more to fetch, so the button that would fetch it is not drawn.
+        expect(third.body.nextCursor).toBeNull();
+    });
+
+    it('carries the alignment verdict, flattened, so a tile can render it', async () => {
+        const user = await makeUser();
+        await photoMeal(user._id, { analysis: { alignment: 'aligned', rationale: 'Fits your plan.' } });
+
+        const res = await getGallery(user._id);
+
+        expect(res.body.items[0].alignment).toBe('aligned');
+    });
+
+    it('reports unassessed rather than nothing when a meal had no guidance to be judged against', async () => {
+        const user = await makeUser();
+        await photoMeal(user._id);
+
+        const res = await getGallery(user._id);
+
+        // Same distinction the adherence score makes: nobody has failed at something
+        // nobody asked of them, so the field is never left undefined for a tile to guess at.
+        expect(res.body.items[0].alignment).toBe('unassessed');
+    });
+
+    it('rejects an unreadable cursor rather than silently serving the first page again', async () => {
+        const user = await makeUser();
+        const res = await getGallery(user._id, { before: 'not-a-date' });
+        expect(res.statusCode).toBe(400);
+    });
+});
+
+describe('safeImageUrl — what may reach a gallery tile', () => {
+    const create = async (userId, imageUrl) => {
+        const res = mockRes();
+        await controller.createMeal({
+            auth: { userId },
+            body: { name: 'Lunch', calories: 300, day: '2026-08-30', imageUrl },
+        }, res);
+        return res;
+    };
+
+    it('stores an https delivery URL', async () => {
+        const user = await makeUser();
+        const res = await create(user._id, 'https://imagedelivery.net/hash/id/public');
+        expect(res.body.meal.imageUrl).toBe('https://imagedelivery.net/hash/id/public');
+    });
+
+    it.each([
+        ['javascript:alert(1)'],
+        ['http://example.com/x.jpg'],
+        ['file:///var/tmp/photo.jpg'],
+        ['not a url'],
+    ])('drops %s', async (value) => {
+        const user = await makeUser();
+        const res = await create(user._id, value);
+        // `createMeal` spreads the request body, so without the guard the gallery would
+        // render whatever string a client put here.
+        expect(res.body.meal.imageUrl).toBeNull();
     });
 });

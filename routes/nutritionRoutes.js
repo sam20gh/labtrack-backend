@@ -21,6 +21,7 @@ router.put('/plan', c.upsertNutritionPlan);
 
 router.get('/day', c.getDay);
 router.get('/history', c.getHistory);
+router.get('/gallery', c.getGallery);
 
 // Analysis returns a draft for review; neither route writes to the record.
 router.post('/analyse', upload.single('image'), c.analyseMealPhoto);

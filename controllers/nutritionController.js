@@ -11,6 +11,7 @@ const {
     analysePhoto, analyseDescription, toMealDraft,
     isConfigured, CONFIDENCE_THRESHOLD, ACCEPTED_MEDIA, MODEL,
 } = require('../utils/nutritionEngine');
+const imageStore = require('../utils/imageStore');
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -33,6 +34,24 @@ const isDayString = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s
 const resolveDay = ({ day, eatenAt, tzOffset }) => {
     if (isDayString(day)) return day;
     return localDay(eatenAt || new Date(), Number(tzOffset) || 0);
+};
+
+/**
+ * Accept a stored photo URL, or nothing.
+ *
+ * `createMeal` spreads the request body, so without this the gallery would render whatever
+ * string a client put in `imageUrl` — including an `http://` or `javascript:` one. The only
+ * URLs this app ever produces come from `imageStore`, which returns an https Cloudflare
+ * delivery URL, so anything else is either a mistake or an injection and is dropped rather
+ * than stored.
+ */
+const safeImageUrl = (value) => {
+    if (typeof value !== 'string' || !value) return null;
+    try {
+        return new URL(value).protocol === 'https:' ? value : null;
+    } catch {
+        return null;
+    }
 };
 
 /** Food-relevant allergens from the health assessment, for the analyser's hard constraints. */
@@ -353,8 +372,24 @@ exports.analyseMealPhoto = async (req, res) => {
             });
         }
 
+        /*
+          Only now is the picture kept.
+          
+          It is uploaded *after* detection succeeded, so a photograph of a wall never
+          reaches permanent storage, and it is best-effort in exactly the sense
+          `imageStore.uploadImageOrNull` documents for the assistant: a Cloudflare outage
+          must cost the person a thumbnail, never the estimate they were waiting for.
+          
+          The URL is returned rather than written. Analysis still saves nothing — the
+          review screen carries it into `POST /meals` along with the numbers the person
+          confirmed, so abandoning the review leaves an orphaned Cloudflare image and no
+          record, which is the right way round.
+        */
+        const imageUrl = await imageStore.uploadImageOrNull(tempPath);
+
         res.json({
             draft: toMealDraft(result.data, { source: 'photo', model: result.model }),
+            imageUrl,
             needsConfirmation: (result.data.confidence ?? 0) < CONFIDENCE_THRESHOLD,
             uncertainties: result.data.uncertainties || [],
         });
@@ -424,6 +459,7 @@ exports.createMeal = async (req, res) => {
             userId: req.auth.userId,
             eatenAt,
             day: resolveDay({ day: req.body.day, eatenAt, tzOffset: req.body.tzOffset }),
+            imageUrl: safeImageUrl(req.body.imageUrl),
         });
 
         // Recomputed in the background so the score reflects this the next time the home
@@ -483,6 +519,75 @@ exports.deleteMeal = async (req, res) => {
         res.json({ message: 'Meal deleted' });
     } catch (error) {
         res.status(500).json({ message: 'Error deleting meal', error: error.message });
+    }
+};
+
+/**
+ * GET /api/nutrition/gallery?limit=&before= — every meal the person photographed.
+ *
+ * The photographs are the one part of this record a person recognises at a glance. A row
+ * reading "Roasted caramel bread, 258 kcal" is a fact about a day they cannot picture; the
+ * picture is the day. So the gallery is a read across the whole history rather than a
+ * per-meal detail — "what have I been eating" is a question about the run of days, not
+ * about lunch on Tuesday.
+ *
+ * Only meals with a stored photo appear. A placeholder tile for a typed meal would pad the
+ * grid with squares that say nothing, and the count under the rail has to mean photographs
+ * or it means nothing.
+ *
+ * Cursored on `eatenAt` rather than paged by offset: meals are logged while someone is
+ * scrolling, and an offset page would then repeat or skip a tile.
+ */
+exports.getGallery = async (req, res) => {
+    try {
+        const userId = req.auth.userId;
+        const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30));
+
+        const query = { userId, imageUrl: { $nin: [null, ''] } };
+
+        // `before` is the previous page's last `eatenAt`, so the next page starts strictly
+        // after it. An equal timestamp would re-serve that tile.
+        if (req.query.before) {
+            const before = new Date(req.query.before);
+            if (Number.isNaN(before.getTime())) {
+                return res.status(400).json({ message: 'before is not a valid date' });
+            }
+            query.eatenAt = { $lt: before };
+        }
+
+        // One extra row decides whether there is another page, without a second count query
+        // over the same filter.
+        const rows = await MealLog.find(query)
+            .sort({ eatenAt: -1 })
+            .limit(limit + 1)
+            .select('imageUrl name mealType calories protein carbs fat day eatenAt source analysis.alignment')
+            .lean();
+
+        const hasMore = rows.length > limit;
+        const items = (hasMore ? rows.slice(0, limit) : rows).map((m) => ({
+            _id: m._id,
+            imageUrl: m.imageUrl,
+            name: m.name,
+            mealType: m.mealType,
+            calories: m.calories,
+            protein: m.protein,
+            carbs: m.carbs,
+            fat: m.fat,
+            day: m.day,
+            eatenAt: m.eatenAt,
+            source: m.source,
+            alignment: m.analysis?.alignment || 'unassessed',
+        }));
+
+        res.json({
+            items,
+            /** Total photographs, so the rail can say "18 photos" without fetching them all. */
+            total: await MealLog.countDocuments({ userId, imageUrl: { $nin: [null, ''] } }),
+            nextCursor: hasMore ? items[items.length - 1].eatenAt : null,
+        });
+    } catch (error) {
+        console.error('❌ Error fetching nutrition gallery:', error);
+        res.status(500).json({ message: 'Error fetching gallery', error: error.message });
     }
 };
 
