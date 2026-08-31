@@ -19,6 +19,29 @@ const isConfigured = () =>
     Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN);
 
 /**
+ * Pick the delivery URL out of a Cloudflare upload response.
+ *
+ * **The delivery URL must be read from `result.variants`, never assembled.** It looks like
+ * `https://imagedelivery.net/<ACCOUNT_HASH>/<IMAGE_ID>/<VARIANT>`, and that account hash is
+ * a different value from `CLOUDFLARE_ACCOUNT_ID` — the ID is the 32-hex account identifier
+ * the API is addressed with, the hash is a short opaque string belonging to Images. This
+ * function exists because they were confused for each other: every URL this module returned
+ * was built from the account ID and therefore 404'd, while the upload itself succeeded. The
+ * failure is invisible from the server — Cloudflare accepted the file and answered 200 — so
+ * it only ever showed up as an image that would not render.
+ *
+ * Prefers the `public` variant, which is the one every consumer in this codebase expects,
+ * and falls back to the first variant offered so a differently-configured account still
+ * gets a working URL rather than an exception.
+ */
+const deliveryUrlFrom = (result) => {
+    const variants = Array.isArray(result?.variants) ? result.variants : [];
+    const chosen = variants.find((url) => url.endsWith('/public')) || variants[0] || null;
+    if (!chosen) throw new Error('Cloudflare upload returned no delivery URL');
+    return chosen;
+};
+
+/**
  * Upload one file to Cloudflare Images.
  *
  * @param {string} path     a readable path on disk; the caller still owns unlinking it
@@ -42,7 +65,7 @@ const uploadImage = async (path) => {
 
     if (!response.data?.success) throw new Error('Cloudflare upload failed');
 
-    return `https://imagedelivery.net/${process.env.CLOUDFLARE_ACCOUNT_ID}/${response.data.result.id}/public`;
+    return deliveryUrlFrom(response.data.result);
 };
 
 /** Upload, or return null. For callers where the picture is a nicety and the work is not. */
@@ -55,4 +78,4 @@ const uploadImageOrNull = async (path) => {
     }
 };
 
-module.exports = { uploadImage, uploadImageOrNull, isConfigured };
+module.exports = { uploadImage, uploadImageOrNull, isConfigured, deliveryUrlFrom };

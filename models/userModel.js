@@ -133,7 +133,9 @@ const UserSchema = new mongoose.Schema({
      * Delivery URL of the person's avatar, or null.
      *
      * Holds a URL, never the bytes: `POST /api/images/upload` sends the file to Cloudflare
-     * Images and returns `https://imagedelivery.net/{account}/{id}/public`, and that string
+     * Images and returns `https://imagedelivery.net/{account-hash}/{id}/public`, read from
+     * the upload response rather than assembled — the hash is not `CLOUDFLARE_ACCOUNT_ID`.
+     * That string
      * is what lands here. A base64 avatar on the user document would be re-sent on every
      * authenticated request that loads a user — the same mistake `Plan.plan[]` made.
      *
