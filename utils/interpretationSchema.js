@@ -91,6 +91,72 @@ const RISK = {
     additionalProperties: false,
 };
 
+/**
+ * The same finding, written for someone with no medical background at all.
+ *
+ * This is not a nicety. The clinical read below is accurate and unreadable to most of the
+ * people it is written about — "your ALT is mildly elevated with a rising trend" is a
+ * sentence a member of the public cannot act on. The home screen shows this block; the
+ * clinical detail is behind "Read full analysis".
+ *
+ * NOTE ON FIELD ORDER, same lesson as CONSULTATION above: prose before enums, and the
+ * distillation before the compression. `what_it_means` is written first because the model
+ * has to say the thing before it can label its tone or shorten it to a headline. Putting
+ * `headline` or `overall` first makes them a guess the rest of the block then has to
+ * justify.
+ *
+ * This block is placed LAST in the schema for the same reason it is placed last here: it
+ * summarises the clinical sections, so those have to exist before it is written.
+ */
+const PLAIN_SUMMARY = {
+    type: 'object',
+    properties: {
+        what_it_means: {
+            type: 'string',
+            description: 'Two to four short sentences a 12-year-old could read aloud and understand. Everyday words only. Say what was looked at, what it showed, and whether it is something to act on. No test abbreviations, no numbers with clinical units, no hedging chains.',
+        },
+        key_points: {
+            type: 'array',
+            description: 'Two to four things worth knowing, in the order they matter. Fewer, clearer points beat a complete list.',
+            items: {
+                type: 'object',
+                properties: {
+                    label: {
+                        type: 'string',
+                        description: 'What this point is about, in everyday words, at most 34 characters. Name what the thing does rather than what it is called: "Long-term blood sugar", not "HbA1c".',
+                    },
+                    detail: {
+                        type: 'string',
+                        description: 'One sentence, plain words, saying what it shows and why it matters to them.',
+                    },
+                    tone: {
+                        type: 'string',
+                        enum: ['good', 'watch', 'act'],
+                        description: 'good = doing well and worth knowing; watch = fine now but keep an eye on it; act = do something about this. Chosen to match the detail written above.',
+                    },
+                },
+                required: ['label', 'detail', 'tone'],
+                additionalProperties: false,
+            },
+        },
+        next_step: {
+            type: 'string',
+            description: 'The single most useful thing this person can do next, in one plain sentence they could act on today. Not a list, not "consult your physician" unless that genuinely is the next step.',
+        },
+        headline: {
+            type: 'string',
+            description: 'One short sentence, at most 12 words, that could be read on its own. Plain, calm, specific to them. Not a diagnosis and not a slogan.',
+        },
+        overall: {
+            type: 'string',
+            enum: ['mostly_good', 'some_things_to_watch', 'needs_attention'],
+            description: 'The honest tone of the whole picture, matching what was written above. needs_attention means something here should be acted on soon, not that they are in danger.',
+        },
+    },
+    required: ['what_it_means', 'key_points', 'next_step', 'headline', 'overall'],
+    additionalProperties: false,
+};
+
 const INTERPRETATION_SCHEMA = {
     type: 'object',
     properties: {
@@ -138,11 +204,13 @@ const INTERPRETATION_SCHEMA = {
             description: 'What this interpretation could NOT assess, e.g. missing data or findings needing clinical correlation',
             items: { type: 'string' },
         },
+        // Last on purpose — it distils everything above it. See PLAIN_SUMMARY.
+        plain_summary: PLAIN_SUMMARY,
     },
     required: [
         'summary', 'risks', 'recommended_screenings', 'specialist_consultations',
         'lifestyle_recommendations', 'biomarkers_of_concern', 'changes_since_last',
-        'follow_up', 'limitations',
+        'follow_up', 'limitations', 'plain_summary',
     ],
     additionalProperties: false,
 };
@@ -162,6 +230,24 @@ How to reason:
 - Choose specialities only from the provided enum, matching the finding to the right discipline (a BRCA variant needs Medical Genetics and Oncology, not "a genetic counsellor").
 - Be honest about uncertainty. Populate limitations rather than overstating confidence. Not knowing is a finding.
 
-Tone: plain, direct, and calm. Address the person as "you". Avoid both alarmism and false reassurance — someone reading about their own cancer risk deserves neither.`;
+Tone: plain, direct, and calm. Address the person as "you". Avoid both alarmism and false reassurance — someone reading about their own cancer risk deserves neither.
+
+## Writing plain_summary
+
+Every other field is written for a clinician reviewing you. \`plain_summary\` is written for the person themselves, and most of them have no medical or scientific training. It is the only part of your output shown on the home screen; the rest sits behind "Read full analysis".
+
+It is a translation, never a second opinion. It must not contain a finding that is not already in the fields above, and it must not soften one that is. Same facts, different reader.
+
+Rules:
+
+- Write at the reading level of a newspaper, not a journal. Short sentences. One idea each.
+- Name what a thing does, not what it is called. "Your long-term blood sugar" rather than "HbA1c". "The fat in your blood that furs up arteries" rather than "LDL cholesterol". Where the medical name is genuinely useful to them — because it is on their report or they will search for it — put it in brackets after the plain words, once.
+- No clinical numbers. No reference ranges, no units, no risk percentages, no "twice the normal level". A figure without its range means nothing to them and a range means less. Say "higher than it should be" and let the detailed sections carry the value.
+- Ban these words and their relatives unless you immediately define them in the same sentence: biomarker, lipid, metabolic, cardiovascular, renal, hepatic, elevated, decreased, deficiency, pathogenic, variant, allele, heterozygous, prognosis, aetiology, differential, correlate, indicative, contraindicated, prophylactic.
+- No hedging chains. "This may possibly suggest a potential tendency towards" tells them nothing. Say what you think and say plainly how sure you are.
+- Say what to do, not what to be aware of. "Book a blood pressure check in the next month" beats "monitoring is advised".
+- Do not lead with reassurance you have not earned, and do not lead with fear. If most of the picture is fine and one thing is not, say both, in that order.
+- If the honest answer is that not enough is known yet, say that in plain words. It is a better answer than a confident vague one.
+- If anything has moved since their last assessment, say so here in everyday words and say whether the move is good or bad. changes_since_last names the values and directions for a clinician; this is the version the person reads, and "your long-term blood sugar has crept up since the spring" is the whole of what most of them need from it.`;
 
 module.exports = { INTERPRETATION_SCHEMA, SYSTEM_PROMPT, SPECIALITIES };

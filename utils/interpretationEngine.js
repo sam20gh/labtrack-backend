@@ -355,6 +355,52 @@ const isDegenerate = (text, minLength = 20) => {
 };
 
 /**
+ * Words the plain-language summary is not allowed to use unexplained.
+ *
+ * The prompt asks for plain English; this checks it got some. A prompt is a request and
+ * this had to be closer to a guarantee — the same argument `mergeFindings` makes in the
+ * medication checker. It is deliberately a *soft* check (see `findPlainLanguageWarnings`):
+ * failing a whole interpretation over one word would cost the person their entire analysis
+ * to fix a readability problem, which is the wrong trade.
+ *
+ * A term is forgiven when the sentence defines it — "your LDL (the fat that furs up
+ * arteries)" is exactly what the prompt asks for, so a term immediately followed by a
+ * parenthesis is not counted.
+ */
+const JARGON = [
+    'biomarker', 'lipid', 'lipids', 'metabolic', 'cardiovascular', 'renal', 'hepatic',
+    'elevated', 'decreased', 'deficiency', 'pathogenic', 'heterozygous', 'homozygous',
+    'allele', 'prognosis', 'aetiology', 'etiology', 'differential', 'contraindicated',
+    'prophylactic', 'indicative', 'correlate', 'correlation', 'dyslipidaemia',
+    'dyslipidemia', 'hypertension', 'hyperglycaemia', 'hyperglycemia', 'atherosclerosis',
+];
+
+/** Every plain-language string in the block, as one searchable body of text. */
+const plainText = (plain) => [
+    plain?.headline,
+    plain?.what_it_means,
+    plain?.next_step,
+    ...(plain?.key_points || []).flatMap((k) => [k?.label, k?.detail]),
+].filter(Boolean).join(' ');
+
+/**
+ * Readability problems in `plain_summary`. Logged, never fatal.
+ *
+ * @returns {string[]} terms a member of the public would not understand
+ */
+const findPlainLanguageWarnings = (data) => {
+    const text = plainText(data.plain_summary);
+    if (!text) return [];
+
+    return JARGON.filter((word) => {
+        // Not "( ... )" straight after the term — that is the defined-in-place form the
+        // prompt explicitly allows.
+        const used = new RegExp(`\\b${word}\\b(?!\\s*\\()`, 'i');
+        return used.test(text);
+    });
+};
+
+/**
  * Reject output that validates but says nothing.
  *
  * This is a medical product: shipping "Placeholder" where a person's care plan should be is
@@ -366,6 +412,21 @@ const findQualityIssues = (data) => {
     const issues = [];
 
     if (isDegenerate(data.summary, 60)) issues.push('summary is empty or placeholder text');
+
+    // The plain-language block is what the home screen shows. A degenerate one is not a
+    // cosmetic fault — it is the only part of the analysis most people will ever read.
+    const plain = data.plain_summary;
+    if (!plain) {
+        issues.push('plain_summary is missing');
+    } else {
+        if (isDegenerate(plain.what_it_means, 60)) issues.push('plain_summary.what_it_means is empty or placeholder text');
+        if (isDegenerate(plain.headline, 10)) issues.push('plain_summary.headline is empty or placeholder text');
+        if (isDegenerate(plain.next_step, 15)) issues.push('plain_summary.next_step is empty or placeholder text');
+        if (!plain.key_points?.length) issues.push('plain_summary has no key points');
+        plain.key_points?.forEach((k, i) => {
+            if (isDegenerate(k.detail, 15)) issues.push(`plain_summary key point ${i + 1} (${k.label}) says nothing`);
+        });
+    }
 
     data.specialist_consultations?.forEach((c, i) => {
         if (isDegenerate(c.reason)) issues.push(`consultation ${i + 1} (${c.speciality}) has no real reason`);
@@ -453,6 +514,13 @@ const interpret = async (input, attempt = 1) => {
 
         const data = JSON.parse(textBlock.text);
 
+        const jargon = findPlainLanguageWarnings(data);
+        if (jargon.length) {
+            // Not a retry: the analysis is correct, it just reads worse than it should.
+            // Surfaced so the prompt can be tuned against real output rather than guesses.
+            console.warn(`⚠️ plain_summary used clinical wording: ${jargon.join(', ')}`);
+        }
+
         const issues = findQualityIssues(data);
         if (issues.length) {
             console.warn(`⚠️ Interpretation quality issues (attempt ${attempt}):`, issues);
@@ -473,4 +541,7 @@ const interpret = async (input, attempt = 1) => {
     }
 };
 
-module.exports = { interpret, buildContext, isConfigured, findQualityIssues, dedupeConsultations, MODEL };
+module.exports = {
+    interpret, buildContext, isConfigured, findQualityIssues,
+    findPlainLanguageWarnings, dedupeConsultations, MODEL,
+};
