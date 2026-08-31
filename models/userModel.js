@@ -129,6 +129,18 @@ const UserSchema = new mongoose.Schema({
     // create a duplicate account instead of linking (see KNOWN-ISSUES #25).
     email: { type: String, unique: true, required: true, lowercase: true, trim: true },
     phone: { type: String, default: '' },
+    /**
+     * Delivery URL of the person's avatar, or null.
+     *
+     * Holds a URL, never the bytes: `POST /api/images/upload` sends the file to Cloudflare
+     * Images and returns `https://imagedelivery.net/{account}/{id}/public`, and that string
+     * is what lands here. A base64 avatar on the user document would be re-sent on every
+     * authenticated request that loads a user — the same mistake `Plan.plan[]` made.
+     *
+     * Null is the normal state and every consumer falls back to initials, so nothing
+     * depends on it being set.
+     */
+    profileImage: { type: String, default: null },
     dob: { type: String, default: '' },
     gender: { type: String, enum: ['Male', 'Female', 'Other', null], default: null },
     height: { type: Number, default: null },
