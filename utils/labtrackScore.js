@@ -56,10 +56,44 @@ const SCORE_DISCLAIMER =
  * must not be told they are in a critical state by a number that does not know anything about
  * them. The thresholds are the kit's.
  */
+/**
+ * `description` is the body the score screen's band accordion opens onto. It lives here
+ * rather than in the app for the reason `biomarkerGlossary.js` gives about clinical copy:
+ * a sentence that reads wrong to a worried person has to be fixable the same day, not on
+ * the next app-store release. Same argument as `SCORE_DISCLAIMER` directly above.
+ *
+ * None of them promises health or diagnoses its absence — they describe what the records
+ * in LabTrack look like, which is the only thing this number actually knows.
+ */
 const BANDS = [
-    { key: 'healthy', label: 'Healthy', min: 71, max: 100 },
-    { key: 'suboptimal', label: 'Suboptimal', min: 40, max: 70 },
-    { key: 'attention', label: 'Needs attention', min: 0, max: 39 },
+    {
+        key: 'healthy',
+        label: 'Healthy',
+        min: 71,
+        max: 100,
+        description:
+            'Most of what LabTrack tracks for you is sitting where it should. Keep logging — '
+            + 'the score leans hardest on the areas your devices and records actually measure.',
+    },
+    {
+        key: 'suboptimal',
+        label: 'Suboptimal',
+        min: 40,
+        max: 70,
+        description:
+            'Some areas are behind the rest. Open the analysis below to see which ones, and '
+            + 'whether the gap is something measured or simply something not yet recorded.',
+    },
+    {
+        key: 'attention',
+        label: 'Needs attention',
+        min: 0,
+        max: 39,
+        description:
+            'Several tracked areas are low, or too little has been recorded to say otherwise. '
+            + 'This is a summary of your records, not a diagnosis — talk to a clinician about '
+            + 'anything that concerns you.',
+    },
 ];
 
 const bandFor = (score) => {
