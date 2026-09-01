@@ -147,4 +147,115 @@ SWAPS
 You are not a clinician. Do not diagnose, do not mention conditions or biomarkers, and do
 not tell anyone to change medication. Nutrition estimates only.`;
 
-module.exports = { ANALYSIS_SCHEMA, SYSTEM_PROMPT };
+// ---------------------------------------------------------------------------
+// Meal recommendations
+// ---------------------------------------------------------------------------
+
+/**
+ * One suggested meal.
+ *
+ * `ingredients` is required rather than nice-to-have: `nutritionSafety.screen()` reads it
+ * to decide whether the suggestion may be shown at all, and a dish named "Green curry"
+ * with no ingredient list is one the allergen screen cannot see inside.
+ */
+const SUGGESTION = {
+    type: 'object',
+    properties: {
+        name: { type: 'string', description: 'The dish as a menu or a recipe would name it, e.g. "Baked salmon with new potatoes and greens"' },
+        meal_type: { enum: ['breakfast', 'lunch', 'dinner', 'snack'], description: 'The occasion this suits' },
+        why: {
+            type: 'string',
+            description: 'One or two sentences addressed to the person, naming the guidance from their plan this moves them towards. Never generic healthy-eating advice.',
+        },
+        ingredients: {
+            type: 'array',
+            description: 'Every significant ingredient, named plainly. This is read by an allergen filter, so nothing may be left implicit — name the oil, the dairy, the nuts and the sauce.',
+            items: { type: 'string' },
+        },
+        tags: {
+            type: 'array',
+            description: 'Two or three short labels, e.g. "high fibre", "one pan", "make ahead".',
+            items: { type: 'string' },
+        },
+        prep_minutes: { type: 'number', description: 'Rough active time to make it' },
+        ...MACROS,
+        fibre: { anyOf: [{ type: 'number' }, { type: 'null' }], description: 'grams, or null' },
+        guidance_keys: {
+            type: 'array',
+            description: 'The `key` values of the supplied guidance this suggestion serves. Empty when none applied.',
+            items: { type: 'string' },
+        },
+    },
+    required: ['name', 'meal_type', 'why', 'ingredients', 'tags', 'prep_minutes',
+        'calories', 'protein', 'carbs', 'fat', 'fibre', 'guidance_keys'],
+    additionalProperties: false,
+};
+
+const RECOMMENDATION_SCHEMA = {
+    type: 'object',
+    properties: {
+        /**
+         * The headline is generated last for the reason `plain_summary` records in
+         * `INTERPRETATION_SCHEMA`: structured output is produced in schema order, so a
+         * sentence that summarises the set has to come after the set exists. Written here
+         * as the first property would be written before there was anything to summarise.
+         */
+        suggestions: { type: 'array', items: SUGGESTION },
+        headline: {
+            type: 'string',
+            description: 'One short sentence tying the set to what this person is working on today, e.g. "Higher-fibre options to fill the 900 kcal you have left."',
+        },
+    },
+    required: ['suggestions', 'headline'],
+    additionalProperties: false,
+};
+
+/**
+ * A suggestion is an instruction someone may act on today, so this prompt is stricter about
+ * grounding than the analyser's: the analyser describes food that already exists, this one
+ * proposes food that does not.
+ *
+ * Nothing here is the last line of defence on allergies. `utils/nutritionSafety.js` screens
+ * every suggestion after the model returns, and drops rather than flags. This prompt asks;
+ * that file guarantees.
+ */
+const RECOMMENDATION_PROMPT = `You suggest meals for one person, using their health plan's
+dietary guidance and what they have already eaten today. Your output is shown directly to a
+member of the public in a health app.
+
+THEIR PLAN IS THE ONLY AUTHORITY.
+- Every suggestion must serve a directive you were actually given, and the "why" field must name it in
+  the person's own terms. If their plan says nothing about diet, suggest ordinary balanced
+  meals and say plainly that this is general — never dress generic advice up as their plan.
+- Do not invent a condition, a biomarker or a reason. You are given the guidance; you are not
+  given the clinical record behind it, and guessing at it is how a food app ends up telling
+  someone why they have a diagnosis.
+
+FIT THE DAY, NOT AN IDEAL.
+- You are told what they have eaten today and what is left of their targets. Suggest for the
+  gap that is actually there. Proposing a 900 kcal dinner to someone with 300 kcal left is
+  advice they will ignore, and being ignored is how a tracker stops being opened.
+- Suggest for the occasion that is next, not for breakfast at nine in the evening.
+
+CONSTRAINTS ARE ABSOLUTE.
+- A stated allergy rules out the allergen and everything containing it, with no exception
+  and no "if tolerated". A stated dietary preference is treated the same way.
+- List EVERY significant ingredient, including cooking fat, dairy, nuts, sauces and
+  dressings. An unlisted ingredient is one nobody can check.
+- If you cannot fill the set safely, return fewer suggestions. A short list is a good
+  outcome; an unsafe one is not.
+
+BE ORDINARY AND SPECIFIC.
+- Real dishes a person would actually cook or order, named the way they would name them.
+  No invented superfoods, no supplements, no branded products.
+- Keep prep realistic and state it honestly.
+- Numbers are estimates for one serving of what you described.
+
+TONE.
+- Neutral and practical. No exclamation marks, no praise, no scolding, no promises about
+  what a meal will do to a symptom or a test result.
+- You are not a clinician. Do not diagnose, do not mention medication, and do not tell
+  anyone to change treatment.`;
+
+module.exports = { ANALYSIS_SCHEMA, SYSTEM_PROMPT, RECOMMENDATION_SCHEMA, RECOMMENDATION_PROMPT };
+

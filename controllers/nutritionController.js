@@ -12,6 +12,9 @@ const {
     isConfigured, CONFIDENCE_THRESHOLD, ACCEPTED_MEDIA, MODEL,
 } = require('../utils/nutritionEngine');
 const imageStore = require('../utils/imageStore');
+const NutritionRecommendation = require('../models/NutritionRecommendation');
+const recommender = require('../utils/nutritionRecommender');
+const { summariseWindow } = require('../utils/nutritionInsight');
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -588,6 +591,257 @@ exports.getGallery = async (req, res) => {
     } catch (error) {
         console.error('❌ Error fetching nutrition gallery:', error);
         res.status(500).json({ message: 'Error fetching gallery', error: error.message });
+    }
+};
+
+/**
+ * Which meal to suggest for.
+ *
+ * The next slot they have *not* filled today, falling back to whatever the clock implies.
+ * Suggesting breakfast at nine in the evening is the failure this avoids, and so is
+ * suggesting a second lunch to someone who logged one an hour ago.
+ */
+const nextMealSlot = (meals, tzOffsetMinutes = 0) => {
+    const logged = new Set(meals.map((m) => m.mealType));
+    const localHour = new Date(Date.now() - tzOffsetMinutes * 60_000).getUTCHours();
+
+    const byClock = localHour < 11 ? 'breakfast'
+        : localHour < 15 ? 'lunch'
+            : localHour < 21 ? 'dinner' : 'snack';
+
+    if (!logged.has(byClock)) return byClock;
+    // Their usual next slot, or a snack when the day is already accounted for
+    const order = ['breakfast', 'lunch', 'dinner', 'snack'];
+    return order.slice(order.indexOf(byClock) + 1).find((slot) => !logged.has(slot)) || 'snack';
+};
+
+/** Escape a user-supplied string for use inside a RegExp. */
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * GET /api/nutrition/meals/:id — one meal, as the Nutrition Details screen draws it.
+ *
+ * Three things travel with the meal, and each is here because the screen would otherwise
+ * have to make a claim it cannot back:
+ *
+ *   - `percentOfDay` — the design's "Percent of daily goals" bars. Computed here against
+ *     the plan's targets, and **null when there is no target**. A bar drawn against a
+ *     target nobody set is a number with no denominator.
+ *   - `dayContext` — what else was eaten that day. A 900 kcal dinner reads differently on
+ *     a day that started with nothing than on one that did not, and the detail screen is
+ *     where someone goes to ask exactly that.
+ *   - `photos` — the person's own photographs of meals by this name. The design draws a
+ *     gallery carousel here; ours holds only pictures they actually took. Stock imagery of
+ *     someone else's omelette in a health record is decoration presented as evidence.
+ */
+exports.getMeal = async (req, res) => {
+    try {
+        const userId = req.auth.userId;
+        const meal = await MealLog.findOne({ _id: req.params.id, userId }).lean();
+        if (!meal) return res.status(404).json({ message: 'Meal not found' });
+
+        const [plan, sameDay, photos] = await Promise.all([
+            NutritionPlan.findOne({ userId }).lean(),
+            MealLog.find({ userId, day: meal.day }).sort({ eatenAt: 1 })
+                .select('name mealType calories protein carbs fat eatenAt').lean(),
+            MealLog.find({
+                userId,
+                imageUrl: { $nin: [null, ''] },
+                // Escaped: a meal named "Egg & chips (large)" is a valid name and an
+                // invalid regex, and an unescaped one here is a 500 on someone's own record.
+                name: new RegExp(`^${escapeRegex(meal.name)}$`, 'i'),
+            }).sort({ eatenAt: -1 }).limit(8).select('imageUrl eatenAt day').lean(),
+        ]);
+
+        const targets = plan?.targets || {};
+        const percentOfDay = ['calories', 'protein', 'carbs', 'fat'].reduce((acc, key) => {
+            acc[key] = targets[key] ? Math.round(((meal[key] || 0) / targets[key]) * 100) : null;
+            return acc;
+        }, {});
+
+        res.json({
+            meal,
+            targets: plan?.targets || null,
+            percentOfDay,
+            dayContext: {
+                day: meal.day,
+                mealCount: sameDay.length,
+                ...summarise(sameDay, plan),
+            },
+            photos: photos.map((p) => ({ _id: p._id, imageUrl: p.imageUrl, eatenAt: p.eatenAt, day: p.day })),
+            /** The guidance this meal was judged against, resolved from the keys it stored. */
+            guidance: (plan?.guidance || []).filter((g) =>
+                (meal.analysis?.guidanceKeys || []).includes(g.key)),
+        });
+    } catch (error) {
+        console.error('❌ Error fetching meal:', error);
+        res.status(500).json({ message: 'Error fetching meal', error: error.message });
+    }
+};
+
+/**
+ * GET /api/nutrition/insight?days=30 — the Nutrition Insight screen.
+ *
+ * The arithmetic is in `utils/nutritionInsight.js` and not here, so the "a blank day is
+ * absent, never zero" rule is testable without a database. See that file's header.
+ */
+exports.getInsight = async (req, res) => {
+    try {
+        const userId = req.auth.userId;
+        const days = Math.min(365, Math.max(7, Number(req.query.days) || 30));
+        const tzOffset = Number(req.query.tzOffset) || 0;
+
+        const from = new Date();
+        from.setDate(from.getDate() - (days - 1));
+        const fromDay = localDay(from, tzOffset);
+
+        const [plan, meals] = await Promise.all([
+            NutritionPlan.findOne({ userId }).lean(),
+            MealLog.find({ userId, day: { $gte: fromDay } }).sort({ eatenAt: 1 }).lean(),
+        ]);
+
+        res.json({
+            from: fromDay,
+            to: localDay(new Date(), tzOffset),
+            targets: plan?.targets || null,
+            guidance: plan?.guidance || [],
+            ...summariseWindow(meals, plan?.targets || null, days),
+        });
+    } catch (error) {
+        console.error('❌ Error fetching nutrition insight:', error);
+        res.status(500).json({ message: 'Error fetching insight', error: error.message });
+    }
+};
+
+/**
+ * GET /api/nutrition/calendar?from=&to= — one row per day that has meals on it.
+ *
+ * Feeds both the schedule screen's week strip and the dashboard's month grid. Days with
+ * nothing logged are **absent from the response**, not present with zeros, so a client
+ * cannot accidentally draw an empty day as a day of no eating. `meetsTarget` is null rather
+ * than false when there is no target, for the same reason.
+ */
+exports.getCalendar = async (req, res) => {
+    try {
+        const userId = req.auth.userId;
+        const tzOffset = Number(req.query.tzOffset) || 0;
+
+        const to = isDayString(req.query.to) ? req.query.to : localDay(new Date(), tzOffset);
+        const fromDefault = new Date();
+        fromDefault.setDate(fromDefault.getDate() - 34);
+        const from = isDayString(req.query.from) ? req.query.from : localDay(fromDefault, tzOffset);
+
+        const [plan, meals] = await Promise.all([
+            NutritionPlan.findOne({ userId }).select('targets').lean(),
+            MealLog.find({ userId, day: { $gte: from, $lte: to } })
+                .select('day mealType calories protein carbs fat analysis.alignment').lean(),
+        ]);
+
+        const target = plan?.targets?.calories ?? null;
+        const grouped = new Map();
+        for (const m of meals) {
+            if (!grouped.has(m.day)) grouped.set(m.day, []);
+            grouped.get(m.day).push(m);
+        }
+
+        const days = [...grouped.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([day, rows]) => {
+                const calories = Math.round(rows.reduce((n, m) => n + (m.calories || 0), 0));
+                return {
+                    day,
+                    mealCount: rows.length,
+                    calories,
+                    protein: Math.round(rows.reduce((n, m) => n + (m.protein || 0), 0)),
+                    carbs: Math.round(rows.reduce((n, m) => n + (m.carbs || 0), 0)),
+                    fat: Math.round(rows.reduce((n, m) => n + (m.fat || 0), 0)),
+                    /** Which meal slots were filled — the dots under a date in the design. */
+                    mealTypes: [...new Set(rows.map((m) => m.mealType))],
+                    /** Null, not false, when nothing was targeted. */
+                    meetsTarget: target ? calories <= target : null,
+                };
+            });
+
+        res.json({ from, to, target, days });
+    } catch (error) {
+        console.error('❌ Error fetching nutrition calendar:', error);
+        res.status(500).json({ message: 'Error fetching calendar', error: error.message });
+    }
+};
+
+/**
+ * GET /api/nutrition/recommendations — the AI Recommendations rail.
+ *
+ * Cached on a signature of the person's guidance, constraints and the day's remaining gap,
+ * so the set holds still until something about their day actually changed. See
+ * `nutritionRecommender.signatureFor`. `?refresh=1` forces a new one; a person who asks for
+ * different ideas should get them.
+ *
+ * Answers 200 with an empty set rather than 503 when the key is absent. This rail sits
+ * below the day's totals on the dashboard, and an error card there would be the loudest
+ * thing on a screen whose actual job — what did I eat, what is left — is working fine.
+ */
+exports.getRecommendations = async (req, res) => {
+    try {
+        const userId = req.auth.userId;
+        const day = isDayString(req.query.date)
+            ? req.query.date
+            : localDay(new Date(), Number(req.query.tzOffset) || 0);
+
+        const [existingPlan, user] = await Promise.all([
+            NutritionPlan.findOne({ userId }),
+            User.findById(userId).select('dob gender height weight healthAssessment').lean(),
+        ]);
+        const planDoc = await syncGuidance(userId, existingPlan, user);
+        const plan = planDoc ? planDoc.toObject() : null;
+
+        const meals = await MealLog.find({ userId, day }).sort({ eatenAt: 1 }).lean();
+        const { totals, targets, remaining } = summarise(meals, planDoc);
+
+        const mealType = nextMealSlot(meals, Number(req.query.tzOffset) || 0);
+        const signature = recommender.signatureFor({ plan, remaining, mealType, day });
+
+        if (!req.query.refresh) {
+            const cached = await NutritionRecommendation
+                .findOne({ userId, signature })
+                .sort({ createdAt: -1 })
+                .lean();
+            if (cached) return res.json({ ...cached, cached: true, available: true });
+        }
+
+        if (!recommender.isConfigured()) {
+            return res.json({
+                available: false,
+                reason: 'Meal suggestions are unavailable at the moment.',
+                suggestions: [],
+                grounded: false,
+            });
+        }
+
+        const result = await recommender.recommend({
+            plan, meals, totals, targets, remaining, mealType, day,
+        });
+        if (!result.ok) {
+            return res.json({ available: false, reason: result.error, suggestions: [], grounded: false });
+        }
+
+        const saved = await NutritionRecommendation.create({
+            userId,
+            day,
+            signature,
+            headline: result.data.headline,
+            suggestions: result.data.suggestions,
+            // Grounded means their plan actually had dietary advice behind this. The client
+            // captions the rail differently when it did not — see the model.
+            grounded: (plan?.guidance || []).length > 0,
+            droppedCount: result.data.dropped,
+            model: result.model,
+        });
+
+        res.json({ ...saved.toObject(), cached: false, available: true });
+    } catch (error) {
+        console.error('❌ Error fetching nutrition recommendations:', error);
+        res.status(500).json({ message: 'Error fetching recommendations', error: error.message });
     }
 };
 
