@@ -77,12 +77,22 @@ const send = async (messages) => {
  *
  * A medical reminder at 03:00 is worse than one that waits until morning — the job runs
  * daily, so a deferred reminder simply goes out on the next run.
+ *
+ * **The hour must be the person's, not the server's.** `now.getHours()` is the hour where
+ * the process happens to run, which in production is UTC: a quiet window of 22→8 set by
+ * someone in Dubai silenced their evening and let through their small hours, exactly
+ * inverted. `tzOffsetMinutes` follows the same convention as `medicationSchedule` and the
+ * client's `getTimezoneOffset()` — minutes west of UTC, so UTC+4 is `-240`. Callers that
+ * genuinely have no offset to hand pass none and keep the old server-local behaviour.
  */
-const inQuietHours = (preferences, now = new Date()) => {
+const inQuietHours = (preferences, now = new Date(), tzOffsetMinutes = null) => {
     const quiet = preferences?.quietHours;
     if (!quiet || typeof quiet.start !== 'number' || typeof quiet.end !== 'number') return false;
 
-    const hour = now.getHours();
+    const hour = Number.isFinite(tzOffsetMinutes)
+        ? new Date(now.getTime() - tzOffsetMinutes * 60_000).getUTCHours()
+        : now.getHours();
+
     // A window like 22→8 wraps past midnight
     return quiet.start > quiet.end
         ? hour >= quiet.start || hour < quiet.end

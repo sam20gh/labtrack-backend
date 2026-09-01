@@ -9,7 +9,11 @@
  *
  *   1. **`remindedAt` is set before the push is attempted.** A dose is announced once, ever.
  *      A restarted server mid-send must not re-notify — being pestered twice about the same
- *      tablet is how notifications get turned off for the whole app.
+ *      tablet is how notifications get turned off for the whole app. The one exception is a
+ *      person with no registered device: nothing was announced, nothing can be duplicated,
+ *      and stamping it would mean that enabling notifications at 21:05 still loses the 21:00
+ *      dose. That is indistinguishable from the feature not working, which is how this was
+ *      found.
  *   2. **A grace window, not "everything overdue".** A dose more than `LATE_GRACE_MINUTES`
  *      past due is marked reminded and skipped silently. Coming back from a weekend offline
  *      should not produce forty notifications.
@@ -73,18 +77,30 @@ const runMedicationReminders = async (now = new Date()) => {
     const messages = [];
     const announced = [];
     let suppressed = 0;
+    let undeliverable = 0;
 
     for (const dose of due) {
         const medication = medById.get(String(dose.medicationId));
         const user = userById.get(String(dose.userId));
 
-        // Mark every considered dose as announced, whether or not a push actually goes out.
-        // A dose we chose not to send for is still a dose that has had its moment; leaving
-        // remindedAt null would have it reconsidered on every sweep for the next 90 minutes.
+        /**
+         * No device on the account — the person has never granted notification permission,
+         * or their token never reached us. Checked before anything is stamped, and
+         * deliberately NOT marked as announced: this is the one suppression reason that can
+         * become deliverable within the same grace window, and burning the row means the
+         * reminder they just turned on still never arrives. Re-considering it costs one
+         * indexed query every five minutes for at most 90 minutes, and sends nothing until
+         * there is somewhere to send it.
+         */
+        if (!user || !(user.pushTokens || []).length) { undeliverable++; suppressed++; continue; }
+
+        // Mark every dose we could have reached them about as announced, whether or not a
+        // push actually goes out. A dose we chose not to send for is still a dose that has
+        // had its moment; leaving remindedAt null would have it reconsidered on every sweep
+        // for the next 90 minutes.
         announced.push(dose._id);
 
         if (!medication || !medication.remindersEnabled || !medication.active) { suppressed++; continue; }
-        if (!user || !(user.pushTokens || []).length) { suppressed++; continue; }
 
         /**
          * Quiet hours, with one exception.
@@ -96,7 +112,10 @@ const runMedicationReminders = async (now = new Date()) => {
          * night because a dose was missed — not punctual ones.
          */
         const minutesLate = (now.getTime() - new Date(dose.scheduledFor).getTime()) / 60_000;
-        if (minutesLate > 15 && inQuietHours(user.notificationPreferences, now)) { suppressed++; continue; }
+        if (minutesLate > 15 && inQuietHours(user.notificationPreferences, now, medication.tzOffset)) {
+            suppressed++;
+            continue;
+        }
 
         messages.push(...messagesFor(user, composeMessage(dose, medication)));
     }
@@ -108,11 +127,14 @@ const runMedicationReminders = async (now = new Date()) => {
 
     const result = messages.length ? await send(messages) : { sent: 0 };
 
-    if (messages.length) {
-        console.log(`💊 Dose reminders: ${result.sent} sent, ${suppressed} suppressed, ${due.length} considered`);
+    if (messages.length || undeliverable) {
+        console.log(
+            `💊 Dose reminders: ${result.sent} sent, ${suppressed} suppressed ` +
+            `(${undeliverable} with no registered device), ${due.length} considered`
+        );
     }
 
-    return { considered: due.length, sent: result.sent, suppressed };
+    return { considered: due.length, sent: result.sent, suppressed, undeliverable };
 };
 
 /**
@@ -139,7 +161,7 @@ const runRefillReminders = async () => {
     const messages = [];
     for (const med of needing) {
         const user = userById.get(String(med.userId));
-        if (!user || inQuietHours(user.notificationPreferences)) continue;
+        if (!user || inQuietHours(user.notificationPreferences, new Date(), med.tzOffset)) continue;
         messages.push(...messagesFor(user, {
             title: 'Running low',
             body: `You have ${med.remainingDoses} ${med.remainingDoses === 1 ? 'dose' : 'doses'} of ${med.name} left.`,
