@@ -31,7 +31,40 @@ const metricsRoutes = require('./routes/metricsRoutes');
 const resourceRoutes = require('./routes/resourceRoutes');
 
 const app = express();
-app.use(cors());
+
+/**
+ * CORS.
+ *
+ * Open to every origin until the staff web portal existed, which was harmless while the
+ * only clients were native: an Expo app sends no `Origin` header and is unaffected by CORS
+ * either way. A browser client changes that — an open policy lets any page on the internet
+ * make credentialed calls to this API from a signed-in staff member's browser.
+ *
+ * `WEB_ORIGINS` is a comma-separated allow list. Requests with **no** Origin are permitted:
+ * that is the native apps, curl, uptime monitors and server-to-server calls, none of which
+ * CORS governs. Only a browser sends Origin, and only a browser is being restricted here.
+ *
+ * An unset WEB_ORIGINS falls back to localhost so a fresh checkout runs the portal without
+ * configuration; production sets it explicitly.
+ */
+const DEFAULT_WEB_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+const webOrigins = (process.env.WEB_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+const allowedOrigins = webOrigins.length ? webOrigins : DEFAULT_WEB_ORIGINS;
+
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin.replace(/\/$/, ''))) return callback(null, true);
+        // Not an Error: an error here becomes a 500. A plain refusal omits the CORS headers,
+        // which is what the browser is meant to see.
+        return callback(null, false);
+    },
+    credentials: true,
+}));
+console.log(`🌐 CORS allow list: ${allowedOrigins.join(', ')}`);
 
 /**
  * Stripe webhook — mounted before express.json() on purpose.

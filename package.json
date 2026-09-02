@@ -32,13 +32,11 @@
   },
   "jest": {
     "testEnvironment": "node",
-    "setupFilesAfterEach": [],
     "setupFilesAfterEnv": [
-      "<rootDir>/__tests__/setup.js"
+      "<rootDir>/jest.setup.js"
     ],
     "testPathIgnorePatterns": [
-      "/node_modules/",
-      "/__tests__/setup.js"
+      "/node_modules/"
     ],
     "testTimeout": 30000
   }
