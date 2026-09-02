@@ -105,6 +105,37 @@ describe('a dose that could not be delivered', () => {
         expect(after.remindedAt).not.toBeNull();
     });
 
+    it('is retried when every push was rejected', async () => {
+        const user = await makeUser({ pushTokens: [{ token: TOKEN, platform: 'ios' }] });
+        const med = await makeMedication(user._id);
+        const dueAt = new Date('2026-03-02T21:00:00Z');
+        const dose = await makeDose(med, dueAt);
+
+        // What a misconfigured FCM credential looks like: a ticket, and no delivery
+        pushSender.send.mockResolvedValueOnce({ sent: 0, failed: 1, pruned: 0 });
+        await runMedicationReminders(dueAt);
+
+        // Given back, so the sweep after the credential is fixed still finds it
+        const afterFailure = await MedicationDose.findById(dose._id).lean();
+        expect(afterFailure.remindedAt).toBeNull();
+
+        const result = await runMedicationReminders(new Date('2026-03-02T21:05:00Z'));
+        expect(result.sent).toBe(1);
+        expect((await MedicationDose.findById(dose._id).lean()).remindedAt).not.toBeNull();
+    });
+
+    it('keeps its stamp when the push succeeded, so a retry cannot double-notify', async () => {
+        const user = await makeUser({ pushTokens: [{ token: TOKEN, platform: 'ios' }] });
+        const med = await makeMedication(user._id);
+        const dueAt = new Date('2026-03-02T21:00:00Z');
+        const dose = await makeDose(med, dueAt);
+
+        await runMedicationReminders(dueAt);
+
+        expect((await MedicationDose.findById(dose._id).lean()).remindedAt).not.toBeNull();
+        expect(pushSender.send).toHaveBeenCalledTimes(1);
+    });
+
     it('is announced only once, however many sweeps run', async () => {
         const user = await makeUser({ pushTokens: [{ token: TOKEN, platform: 'ios' }] });
         const med = await makeMedication(user._id);

@@ -127,10 +127,30 @@ const runMedicationReminders = async (now = new Date()) => {
 
     const result = messages.length ? await send(messages) : { sent: 0 };
 
+    /**
+     * Nothing got through at all — give the batch back.
+     *
+     * `remindedAt` is written before sending so a crash mid-send cannot double-notify, and
+     * that is right whenever a push actually left. It is wrong when *every* push was
+     * rejected: an Expo error ticket means the notification was not delivered, so there is
+     * nothing to duplicate, and the usual cause — misconfigured or expired FCM credentials
+     * — is fixed by someone in minutes. Burning the row means the first dose after the fix
+     * is still silent, which reads as the fix not having worked. Costs at most one retry
+     * per sweep until the dose falls out of the 90-minute grace window.
+     *
+     * Deliberately all-or-nothing: `send` reports totals, not which message failed, so a
+     * batch where one person's push succeeded keeps its stamps rather than risk re-notifying
+     * them. Per-dose retry would need `send` to return per-message tickets.
+     */
+    if (announced.length && messages.length && !result.sent) {
+        await MedicationDose.updateMany({ _id: { $in: announced } }, { remindedAt: null });
+    }
+
     if (messages.length || undeliverable) {
         console.log(
             `💊 Dose reminders: ${result.sent} sent, ${suppressed} suppressed ` +
-            `(${undeliverable} with no registered device), ${due.length} considered`
+            `(${undeliverable} with no registered device), ${due.length} considered` +
+            (messages.length && !result.sent ? ' — every push was rejected, will retry' : '')
         );
     }
 
