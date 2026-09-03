@@ -58,7 +58,16 @@ const request = async (path, options = {}) => {
             `Supabase admin request failed (${res.status})`;
         // The status travels so the caller can distinguish "you asked for something
         // impossible" from "Supabase is unavailable" — a 4xx must not surface as a 500.
-        throw Object.assign(new Error(message), { status: res.status });
+        //
+        // `supabaseCode` and `errorId` travel too. Supabase's own failures are the ones an
+        // operator has to act on, and its `error_id` is what a support request or an Auth
+        // Logs search is keyed on — losing it means the only copy is in a browser console
+        // that has since been closed.
+        throw Object.assign(new Error(message), {
+            status: res.status,
+            supabaseCode: body?.error_code || null,
+            errorId: body?.error_id || null,
+        });
     }
 
     return body;

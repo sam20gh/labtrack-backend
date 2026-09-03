@@ -123,6 +123,51 @@ describe('inviteStaff', () => {
         expect(body.note).toMatch(/no longer works/i);
     });
 
+    it('reports a Supabase email failure as an upstream problem, with its reason', async () => {
+        /**
+         * The failure this rescues from silence. Supabase answers `500 Error sending invite
+         * email` when its mailer is rate-limited or unconfigured — and a 500 handed to the
+         * global error handler is deliberately stripped of its message, because a 5xx there
+         * means *our* fault and must not leak internals. So a completely actionable problem
+         * on somebody else's side reached the admin as "Something went wrong on our side".
+         */
+        admin.findByEmail.mockResolvedValue(null);
+        admin.invite.mockRejectedValue(
+            Object.assign(new Error('Error sending invite email'), {
+                status: 500,
+                errorId: '01a068b9-df33-7863',
+            })
+        );
+
+        const res = mockRes();
+        await inviteStaff({ body: { email: 'new@x.co', role: 'admin' }, auth: {} }, res, next);
+
+        // 502, not 500: the upstream did not do its job. And not `next(error)`, which is what
+        // discarded the message.
+        expect(res.status).toHaveBeenCalledWith(502);
+        expect(next).not.toHaveBeenCalled();
+
+        const body = res.json.mock.calls[0][0];
+        expect(body.message).toMatch(/custom SMTP/i);
+        expect(body.providerMessage).toBe('Error sending invite email');
+        // Keyed on by an Auth Logs search; the console holding it will be closed by then.
+        expect(body.errorId).toBe('01a068b9-df33-7863');
+        // GoTrue rolls the account back, and saying so stops a hunt for a half-made one.
+        expect(body.accountCreated).toBe(false);
+    });
+
+    it('does not swallow a failure that is not about email', async () => {
+        // A bad request must keep its own status and reach the error handler unchanged.
+        admin.findByEmail.mockResolvedValue(null);
+        admin.invite.mockRejectedValue(Object.assign(new Error('Invalid role'), { status: 400 }));
+
+        const res = mockRes();
+        await inviteStaff({ body: { email: 'new@x.co', role: 'admin' }, auth: {} }, res, next);
+
+        expect(res.status).not.toHaveBeenCalledWith(502);
+        expect(next).toHaveBeenCalled();
+    });
+
     it('treats a past sign-in as a working account even without a confirmation date', async () => {
         admin.findByEmail.mockResolvedValue(
             supabaseUser({ email: 'oauth@x.co', last_sign_in_at: '2026-02-02T00:00:00Z' })

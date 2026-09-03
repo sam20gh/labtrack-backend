@@ -100,7 +100,50 @@ exports.inviteStaff = async (req, res, next) => {
             );
         }
 
-        const user = await admin.invite(email, { role, redirectTo });
+        let user;
+        try {
+            user = await admin.invite(email, { role, redirectTo });
+        } catch (error) {
+            /**
+             * Supabase accepted the request and could not send the email.
+             *
+             * It answers **500 `Error sending invite email`**, and a 500 forwarded to the
+             * global handler is deliberately stripped of its message — a 5xx there means
+             * *our* failure and must not leak internals. So the admin got a bare "Something
+             * went wrong on our side" for a problem that is entirely actionable and nothing
+             * to do with this service. Reproduced against this project; the cause is on the
+             * Supabase side every time.
+             *
+             * Answered **502**: the upstream did not do its job. The provider's own message
+             * and `error_id` travel with it, because the `error_id` is what an Auth Logs
+             * search is keyed on and the browser console holding it will be closed by the
+             * time anyone looks.
+             */
+            const mailFailure =
+                error.status >= 500 || /sending|smtp|mail|rate limit/i.test(error.message || '');
+
+            if (!mailFailure) throw error;
+
+            // GoTrue rolls the account back when the email fails — verified — but saying so
+            // out loud is what stops somebody assuming a half-made account is lying around.
+            const account = await admin.findByEmail(email).catch(() => null);
+
+            console.error(
+                `❌ Invite to ${email} failed at Supabase: ${error.message}` +
+                `${error.errorId ? ` (error_id ${error.errorId})` : ''}`
+            );
+
+            return res.status(502).json({
+                message:
+                    `Supabase could not send the invitation to ${email}. This is its email ` +
+                    'delivery, not LabTrack: the built-in service is rate-limited to a few ' +
+                    'messages an hour and is not meant for production. Configure custom SMTP ' +
+                    'under Project Settings → Authentication, then try again.',
+                providerMessage: error.message,
+                errorId: error.errorId || undefined,
+                accountCreated: Boolean(account),
+            });
+        }
 
         const resent = Boolean(existing);
         console.log(
