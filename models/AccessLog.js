@@ -31,7 +31,16 @@ const AccessLogSchema = new mongoose.Schema({
     resource: {
         type: String,
         required: true,
-        enum: ['queue', 'interpretation', 'patient_context', 'biomarkers', 'plan', 'review_history', 'appointments'],
+        enum: [
+            'queue', 'interpretation', 'patient_context', 'biomarkers', 'plan',
+            'review_history', 'appointments',
+            /**
+             * Reading the audit trail is itself audited. An administrator who can see every
+             * clinician's reads is the one account with no other check on it, so the export
+             * and the viewer write entries of their own — with a count, never the rows.
+             */
+            'access_log',
+        ],
         index: true,
     },
     /** The specific document, where the read addressed one. */

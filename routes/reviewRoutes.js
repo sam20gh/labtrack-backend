@@ -13,6 +13,16 @@ router.get('/mine', c.getMyReviews);
 router.get('/profile', c.getProfile);
 
 /**
+ * Operational reporting. Declared above `/:reportId` so 'metrics' is never read as an
+ * interpretation id — the same reason `/patient/...` is declared where it is.
+ *
+ * Open to clinicians as well as admins on purpose: turnaround and amendment rate are the
+ * numbers the people doing the reviewing need in order to change them, and a dashboard only
+ * management can see is a dashboard about people rather than about work.
+ */
+router.get('/metrics', c.getReviewMetrics);
+
+/**
  * A patient's record, for a clinician reviewing their case.
  *
  * Declared above `/:reportId` so 'patient' is never read as an interpretation id, and
@@ -24,5 +34,9 @@ router.get('/patient/:userId/context', requireReviewScope, c.getPatientContext);
 router.get('/:reportId', c.getReportForReview);
 router.post('/:reportId', c.submitReview);
 router.post('/:reportId/plan-items', c.addPlanItem);
+
+// Claiming coordinates who is working on what. It grants nothing — see `claimReview`.
+router.post('/:reportId/claim', c.claimReview);
+router.post('/:reportId/release', c.releaseReview);
 
 module.exports = router;

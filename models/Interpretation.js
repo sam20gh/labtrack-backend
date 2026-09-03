@@ -67,6 +67,22 @@ const InterpretationSchema = new mongoose.Schema({
         reviewedAt: { type: Date },
         notes: { type: String },
         edits: { type: [EditSchema], default: [] },
+
+        /**
+         * Who has claimed this case.
+         *
+         * Assignment is a coordination signal, not a permission: it stops two clinicians
+         * spending an hour each on the same interpretation and then racing to sign it. It
+         * deliberately does **not** widen access — `middleware/reviewScope.js` already
+         * grants a clinician sight of anything in the queue, and narrowing that to
+         * assignment-only would mean nobody could pick up an unclaimed case.
+         *
+         * Held under the same id `review.professionalId` uses: the linked `Professional`
+         * where one exists, the authenticated `User` otherwise (`actingProfessionalId`), so
+         * a claim and the sign-off that follows it name the same actor.
+         */
+        assignedTo: { type: mongoose.Schema.Types.ObjectId, default: null },
+        assignedAt: { type: Date, default: null },
     },
 
     /**
@@ -84,6 +100,8 @@ const InterpretationSchema = new mongoose.Schema({
     migratedFrom: { type: mongoose.Schema.Types.ObjectId, default: null },
 }, { timestamps: true });
 
+// "What have I claimed" — the queue's own filter, and the guard on sign-off.
+InterpretationSchema.index({ 'review.assignedTo': 1, 'review.status': 1 });
 // The two queries this model exists to serve: a patient's newest, and the review queue.
 InterpretationSchema.index({ userId: 1, generatedAt: -1 });
 InterpretationSchema.index({ 'review.status': 1, generatedAt: 1 });

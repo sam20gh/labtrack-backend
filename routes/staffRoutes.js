@@ -13,6 +13,14 @@ const { authenticateToken, requireRole } = require('../middleware/authMiddleware
 router.use(authenticateToken, requireRole('admin'));
 
 router.get('/status', c.getStaffStatus);
+
+/**
+ * The access log. Declared before `/:supabaseId/...` for the usual reason, and admin-only
+ * like everything else here: it names every patient every clinician has opened.
+ */
+router.get('/access-log', c.getAccessLog);
+router.get('/access-log/export', c.exportAccessLog);
+
 router.get('/', c.listStaff);
 router.post('/invite', c.inviteStaff);
 router.patch('/:supabaseId/role', c.setStaffRole);
