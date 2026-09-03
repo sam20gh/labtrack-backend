@@ -25,8 +25,10 @@ const PlanItem = require('../models/PlanItem');
 const Professional = require('../models/Professional');
 const Product = require('../models/Product');
 const User = require('../models/userModel');
+const Biomarker = require('../models/Biomarker');
 const { firstDueDate } = require('../utils/planGeneratorV2');
 const { notifyUser } = require('../jobs/reminderJob');
+const { recordAccess } = require('../utils/accessLog');
 
 /** Fields of an interpretation a clinician may amend. */
 const AMENDABLE = ['summary', 'risks', 'recommended_screenings', 'specialist_consultations', 'lifestyle_recommendations', 'follow_up', 'limitations'];
@@ -51,6 +53,15 @@ exports.getQueue = async (req, res) => {
             ? await DnaReport.find({ _id: { $in: dnaIds } }).select('mutations').lean()
             : [];
         const mutationsById = new Map(dnaReports.map((d) => [String(d._id), d.mutations || []]));
+
+        // The queue names patients, so opening it is itself a read of patient data — logged
+        // as one entry with a count rather than one per row, which is what makes a bulk
+        // browse distinguishable from opening a single case.
+        await recordAccess({
+            actor: req.auth,
+            resource: 'queue',
+            count: pending.length,
+        });
 
         res.json({
             count: pending.length,
@@ -110,6 +121,15 @@ exports.getReportForReview = async (req, res) => {
                 : null,
         ]);
 
+        // This response carries the patient's health assessment — medications, conditions,
+        // allergies, family history — so it is the single most sensitive read in the API.
+        await recordAccess({
+            actor: req.auth,
+            patientId: interpretation.userId?._id || interpretation.userId,
+            resource: 'interpretation',
+            resourceId: interpretation._id,
+        });
+
         res.json({ interpretation, sources: { dnaReports, testResults }, previous });
     } catch (error) {
         console.error('❌ Could not load interpretation for review:', error);
@@ -118,6 +138,69 @@ exports.getReportForReview = async (req, res) => {
 };
 
 /** GET /api/reviews/mine — what this clinician has already signed. */
+/**
+ * GET /api/reviews/patient/:userId/context — a patient's record, for a reviewing clinician.
+ *
+ * Reviewing a variant without the person's history is reviewing half the case: a raised
+ * potassium in someone on spironolactone and an ACE inhibitor is a different finding from
+ * the same number in someone on neither. That context lives behind `requireSelf` everywhere
+ * else in the API, so this endpoint is the deliberate exception — and therefore the most
+ * security-sensitive route in the product.
+ *
+ * Three things hold the line:
+ *
+ *  1. **Access is scoped, not blanket.** `requireReviewScope` (see below) requires this
+ *     clinician to have a reason to be here — an interpretation of this patient's that is
+ *     in the queue or that they reviewed. Holding a professional token is not a reason.
+ *  2. **Every call is logged**, with the patient id, before the response is sent.
+ *  3. **It is read-only and projected.** No credentials, no Supabase id, no push tokens —
+ *     the clinical picture and nothing else.
+ */
+exports.getPatientContext = async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        const [patient, interpretations, planItems, biomarkers] = await Promise.all([
+            User.findById(userId)
+                .select('firstName lastName dob gender height weight bloodType healthAssessment observed')
+                .lean(),
+            Interpretation.find({ userId })
+                .select('generatedAt review content.summary content.plain_summary supersedes')
+                .sort({ generatedAt: -1 })
+                .limit(20)
+                .populate('review.professionalId', 'firstname lastname')
+                .lean(),
+            PlanItem.find({ userId })
+                .select('type title condition status dueDate scheduledAge source frequency')
+                .sort({ dueDate: 1 })
+                .limit(200)
+                .lean(),
+            Biomarker.find({ userId })
+                .sort({ measuredAt: -1 })
+                .limit(400)
+                .lean(),
+        ]);
+
+        if (!patient) return res.status(404).json({ message: 'Patient not found' });
+
+        await recordAccess({
+            actor: req.auth,
+            patientId: userId,
+            resource: 'patient_context',
+        });
+
+        res.json({
+            patient,
+            interpretations,
+            planItems,
+            biomarkers,
+        });
+    } catch (error) {
+        console.error('❌ Could not load patient context:', error);
+        res.status(500).json({ message: 'Could not load the patient record', error: error.message });
+    }
+};
+
 exports.getMyReviews = async (req, res) => {
     try {
         const interpretations = await Interpretation.find({ 'review.professionalId': req.auth.userId })
