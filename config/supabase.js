@@ -96,4 +96,18 @@ const verifySupabaseToken = async (token) => {
  */
 const roleFromClaims = (claims) => claims?.app_metadata?.role || 'user';
 
-module.exports = { verifySupabaseToken, isConfigured, roleFromClaims, SUPABASE_URL };
+/**
+ * Authenticator assurance level — how the holder of this token proved who they are.
+ *
+ * Supabase puts `aal` on the access token: `aal1` is a password (or an OAuth provider),
+ * `aal2` is that *plus* a second factor completed in this session. It is a property of the
+ * **session**, not of the account: enrolling a factor does not raise an existing token, and
+ * a token minted before enrolment stays `aal1` until the session steps up.
+ *
+ * Returns null for a token that carries no claim — a legacy LabTrack-signed token, or an
+ * older Supabase project. `requireMfa` treats null as "not proven", which is the only safe
+ * reading: a missing claim must never satisfy a check about strength of authentication.
+ */
+const aalFromClaims = (claims) => claims?.aal || null;
+
+module.exports = { verifySupabaseToken, isConfigured, roleFromClaims, aalFromClaims, SUPABASE_URL };

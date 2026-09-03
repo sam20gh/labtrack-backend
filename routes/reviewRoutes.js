@@ -1,12 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const c = require('../controllers/reviewController');
-const { authenticateToken, requireRole } = require('../middleware/authMiddleware');
+const { authenticateToken, requireRole, requireMfa } = require('../middleware/authMiddleware');
 const { requireReviewScope } = require('../middleware/reviewScope');
 
 // Clinician-only throughout. A patient must never reach the review surface: approving your
 // own interpretation would make "checked by a specialist" meaningless.
-router.use(authenticateToken, requireRole('professional', 'admin'));
+router.use(authenticateToken, requireRole('professional', 'admin'), requireMfa);
+
+// `requireMfa` is inert until `STAFF_MFA_REQUIRED=true`; it is wired here now so turning it
+// on is one environment variable rather than an edit to every staff router. See the
+// middleware for the three-step rollout, and why the flag defaults to off on a live portal.
 
 router.get('/queue', c.getQueue);
 router.get('/mine', c.getMyReviews);

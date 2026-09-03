@@ -34,8 +34,15 @@ const { slaFor, slaOrder } = require('../utils/reviewSla');
 const { computeReviewMetrics } = require('../utils/reviewMetrics');
 const { resolveProfessional, actingProfessionalId } = require('../utils/resolveProfessional');
 
-/** Fields of an interpretation a clinician may amend. */
-const AMENDABLE = ['summary', 'risks', 'recommended_screenings', 'specialist_consultations', 'lifestyle_recommendations', 'follow_up', 'limitations'];
+/**
+ * Fields of an interpretation a clinician may amend.
+ *
+ * Defined beside the schema that produces them (`utils/interpretationSchema.js`) rather than
+ * here, so `labtrack-shared` can generate the same list for both clients. A portal offering
+ * an editor for a field this list omits would silently drop the edit — the server ignores
+ * anything it does not recognise rather than rejecting it.
+ */
+const { AMENDABLE_FIELDS: AMENDABLE } = require('../utils/interpretationSchema');
 
 /**
  * GET /api/reviews/queue

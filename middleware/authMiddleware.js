@@ -14,7 +14,7 @@
  */
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
-const { verifySupabaseToken, roleFromClaims } = require('../config/supabase');
+const { verifySupabaseToken, roleFromClaims, aalFromClaims } = require('../config/supabase');
 
 /**
  * Read at call time rather than module load.
@@ -69,6 +69,9 @@ const resolveAuth = async (req) => {
             supabaseId: claims.sub,
             email: claims.email,
             role: roleFromClaims(claims),
+            // How this session proved identity — 'aal2' means a second factor was completed.
+            // See `requireMfa` below.
+            aal: aalFromClaims(claims),
             source: 'supabase',
         };
     }
@@ -81,6 +84,8 @@ const resolveAuth = async (req) => {
                 supabaseId: null,
                 email: payload.email || null,
                 role: payload.role || 'user',
+                // A legacy token predates MFA entirely and can never carry a second factor.
+                aal: null,
                 source: 'legacy',
             };
         } catch (err) {
@@ -159,4 +164,52 @@ const requireRole = (...roles) => (req, res, next) => {
     next();
 };
 
-module.exports = { authenticateToken, optionalAuth, requireRole, requireSupabaseIdentity };
+/**
+ * Require a second factor on staff sessions.
+ *
+ * These accounts read other people's medical records, and a password alone is one
+ * credential-stuffed login away from all of them. Supabase reports the strength of the
+ * session on the token as `aal`; `aal2` means a TOTP challenge was completed in this
+ * session, not merely that a factor exists on the account.
+ *
+ * ## Why this is off by default
+ *
+ * `STAFF_MFA_REQUIRED` gates it, and it defaults to **off**. Turning enforcement on before
+ * every staff account has enrolled locks all of them out at once — including the
+ * administrator who would have to turn it back off, whose own console is behind the same
+ * check. That is not a hypothetical: the portal is live.
+ *
+ * The rollout is therefore three steps, in this order, and the middle one is what makes the
+ * last one safe:
+ *
+ *   1. Staff enrol at `/account` in the portal (available now, no flag needed).
+ *   2. `NEXT_PUBLIC_REQUIRE_MFA=true` on the portal — the UI stops letting anyone past
+ *      enrolment, so `GET /api/staff` shows who is still outstanding.
+ *   3. `STAFF_MFA_REQUIRED=true` here. Now it is enforced where it counts, because a portal
+ *      redirect protects nothing from anyone holding a token and curl.
+ *
+ * A patient is deliberately untouched: mobile has no enrolment flow, and requiring a factor
+ * there would lock people out of their own results.
+ */
+const STAFF_ROLES = ['professional', 'admin'];
+
+const requireMfa = (req, res, next) => {
+    if (process.env.STAFF_MFA_REQUIRED !== 'true') return next();
+    if (!req.auth) return res.status(401).json({ message: 'Authentication required' });
+    if (!STAFF_ROLES.includes(req.auth.role)) return next();
+
+    // Null — a legacy token, or a project that mints no `aal` — is read as "not proven".
+    // A missing claim must never satisfy a check about strength of authentication.
+    if (req.auth.aal !== 'aal2') {
+        return res.status(403).json({
+            message:
+                'This account needs two-factor authentication. Sign in to the portal and ' +
+                'complete setup under Account, then sign in again.',
+            code: 'mfa_required',
+        });
+    }
+
+    next();
+};
+
+module.exports = { authenticateToken, optionalAuth, requireRole, requireMfa, requireSupabaseIdentity };

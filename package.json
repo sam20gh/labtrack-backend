@@ -5,7 +5,9 @@
   "scripts": {
     "start": "node index.js",
     "test": "jest --runInBand",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "types:generate": "node ../labtrack-shared/generate.mjs",
+    "types:check": "node ../labtrack-shared/generate.mjs --check"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

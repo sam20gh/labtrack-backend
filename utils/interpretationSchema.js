@@ -250,4 +250,26 @@ Rules:
 - If the honest answer is that not enough is known yet, say that in plain words. It is a better answer than a confident vague one.
 - If anything has moved since their last assessment, say so here in everyday words and say whether the move is good or bad. changes_since_last names the values and directions for a clinician; this is the version the person reads, and "your long-term blood sugar has crept up since the spring" is the whole of what most of them need from it.`;
 
-module.exports = { INTERPRETATION_SCHEMA, SYSTEM_PROMPT, SPECIALITIES };
+/**
+ * The fields a clinician may amend at sign-off.
+ *
+ * Here rather than in `reviewController.js`, where it used to live, because it is a property
+ * of the output contract: an amendable field is one this schema defines. Keeping it beside
+ * the schema is also what lets `labtrack-shared` generate it for both clients, so a portal
+ * editor can never offer a field the server would silently ignore.
+ *
+ * `plain_summary`, `biomarkers_of_concern` and `changes_since_last` are deliberately absent:
+ * the first is a translation of the others and would have to be re-derived, and the last two
+ * are observations rather than recommendations.
+ */
+const AMENDABLE_FIELDS = [
+    'summary',
+    'risks',
+    'recommended_screenings',
+    'specialist_consultations',
+    'lifestyle_recommendations',
+    'follow_up',
+    'limitations',
+];
+
+module.exports = { INTERPRETATION_SCHEMA, SYSTEM_PROMPT, SPECIALITIES, AMENDABLE_FIELDS };
