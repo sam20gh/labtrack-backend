@@ -3,6 +3,9 @@ const router = express.Router();
 const professionalController = require('../controllers/professionalController');
 const { authenticateToken, requireRole } = require('../middleware/authMiddleware');
 
+// Before '/:id', or 'specialities' is read as an id and answers 404.
+router.get('/specialities', authenticateToken, professionalController.getSpecialities);
+
 // The directory is readable by any signed-in user; mutations are administrative.
 // Previously this entire router was unauthenticated CRUD on credentialed records.
 router.get('/', authenticateToken, professionalController.getAllProfessionals);

@@ -163,6 +163,123 @@ const SORTS = {
  * Returns `total` alongside the page because the filter sheet's button says
  * "Show results (23)" — a count the sheet needs *before* it navigates anywhere.
  */
+/**
+ * GET /api/resources/admin/all — the content library including drafts (admin only).
+ *
+ * `listResources` hardcodes `status: 'published'`, which is right for every patient-facing
+ * screen and useless for managing a library: a draft is invisible to the only person who
+ * can publish it. This is the editorial view, so it must show all three statuses.
+ *
+ * Deliberately projected — no `body`. An article's blocks are a large payload and a list
+ * screen renders none of it; shipping every body to draw a table of titles is how a content
+ * index becomes the slowest page in the console. The detail fetch already exists for that.
+ *
+ * Query: ?status=draft|published|archived|all &type= &search= &page= &limit=
+ */
+exports.listResourcesForAdmin = async (req, res, next) => {
+    try {
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+
+        const filter = {};
+
+        const status = (req.query.status || '').trim();
+        if (status && status !== 'all') {
+            const allowed = Resource.schema.path('status').enumValues;
+            if (!allowed.includes(status)) {
+                return res.status(400).json({
+                    message: `Unknown status "${status}". Expected one of: ${allowed.join(', ')}`,
+                });
+            }
+            filter.status = status;
+        }
+
+        const type = (req.query.type || '').trim();
+        if (type && type !== 'all') {
+            const allowed = Resource.schema.path('type').enumValues;
+            if (!allowed.includes(type)) {
+                return res.status(400).json({
+                    message: `Unknown type "${type}". Expected one of: ${allowed.join(', ')}`,
+                });
+            }
+            filter.type = type;
+        }
+
+        const search = (req.query.search || '').trim();
+        if (search) {
+            const safe = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const rx = new RegExp(safe, 'i');
+            filter.$or = [{ title: rx }, { slug: rx }, { excerpt: rx }];
+        }
+
+        const [items, total] = await Promise.all([
+            Resource.find(filter)
+                .select('type title slug status isPro featured publishedAt updatedAt stats source')
+                .sort({ updatedAt: -1 })
+                .skip((page - 1) * limit)
+                .limit(limit)
+                .populate(POPULATE)
+                .lean(),
+            Resource.countDocuments(filter),
+        ]);
+
+        res.json({
+            items: items.map((r) => ({
+                _id: r._id,
+                type: r.type,
+                title: r.title,
+                slug: r.slug,
+                status: r.status,
+                isPro: Boolean(r.isPro),
+                featured: Boolean(r.featured),
+                publishedAt: r.publishedAt || null,
+                updatedAt: r.updatedAt,
+                views: r.stats?.views ?? 0,
+                category: r.categoryId?.name || null,
+                author: r.authorId?.name || null,
+                // Set by the website import; tells an editor what they may safely edit here.
+                importedFrom: r.source?.name || null,
+            })),
+            page,
+            limit,
+            total,
+            pages: Math.max(1, Math.ceil(total / limit)),
+            hasMore: page * limit < total,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * GET /api/resources/admin/stats — counts by status and type (admin only).
+ * One aggregation, for the same reason the order board uses one.
+ */
+exports.getResourceStats = async (req, res, next) => {
+    try {
+        const [byStatus, byType] = await Promise.all([
+            Resource.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+            Resource.aggregate([{ $group: { _id: '$type', count: { $sum: 1 } } }]),
+        ]);
+
+        const statuses = {};
+        for (const value of Resource.schema.path('status').enumValues) statuses[value] = 0;
+        for (const row of byStatus) if (row._id in statuses) statuses[row._id] = row.count;
+
+        const types = {};
+        for (const value of Resource.schema.path('type').enumValues) types[value] = 0;
+        for (const row of byType) if (row._id in types) types[row._id] = row.count;
+
+        res.json({
+            statuses,
+            types,
+            total: Object.values(statuses).reduce((a, b) => a + b, 0),
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 exports.listResources = async (req, res) => {
     try {
         const userId = req.user?.id || null;

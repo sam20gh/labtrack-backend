@@ -31,6 +31,10 @@ router.post('/authors/:slug/follow', c.toggleFollow);
 
 // ── authoring ───────────────────────────────────────────────────────────────
 // Declared above `/:idOrSlug` so `POST /import` is never read as an id.
+// The editorial list, which unlike `GET /` shows drafts and archived items — a draft is
+// otherwise invisible to the only person who can publish it.
+router.get('/admin/all', requireRole('admin'), c.listResourcesForAdmin);
+router.get('/admin/stats', requireRole('admin'), c.getResourceStats);
 router.post('/import', requireRole('admin'), c.importResources);
 router.post('/admin/categories', requireRole('admin'), c.upsertCategory);
 router.post('/admin/authors', requireRole('admin'), c.upsertAuthor);

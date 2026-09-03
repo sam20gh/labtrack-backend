@@ -42,6 +42,28 @@ exports.createProfessional = async (req, res) => {
 };
 
 // Get all professionals
+/**
+ * GET /api/professionals/specialities — the speciality enum, read off the schema.
+ *
+ * Served rather than retyped in each client, because this list is load-bearing in a way a
+ * dropdown usually is not: `planGeneratorV2` matches a recommended consultation to a
+ * professional by speciality substring, so a value the enum does not contain produces a
+ * referral nothing can ever resolve. The classic version of that mistake is the
+ * practitioner noun — "Cardiologist" instead of "Cardiology" — which looks right in a form
+ * and matches nothing.
+ *
+ * Reading `enumValues` off the schema means the portal cannot drift from the model: add a
+ * speciality in one place and every client offers it.
+ */
+exports.getSpecialities = async (req, res) => {
+    try {
+        const values = Professional.schema.path('speciality').caster.enumValues;
+        res.json({ specialities: [...values].sort((a, b) => a.localeCompare(b)) });
+    } catch (error) {
+        res.status(500).json({ message: 'Error reading specialities', error: error.message });
+    }
+};
+
 exports.getAllProfessionals = async (req, res) => {
     try {
         const professionals = await Professional.find().select('-password');

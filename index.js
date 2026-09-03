@@ -29,6 +29,7 @@ const medicationRoutes = require('./routes/medicationRoutes');
 const scoreRoutes = require('./routes/scoreRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
 const resourceRoutes = require('./routes/resourceRoutes');
+const staffRoutes = require('./routes/staffRoutes');
 
 const app = express();
 
@@ -47,24 +48,39 @@ const app = express();
  * An unset WEB_ORIGINS falls back to localhost so a fresh checkout runs the portal without
  * configuration; production sets it explicitly.
  */
-const DEFAULT_WEB_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
-const webOrigins = (process.env.WEB_ORIGINS || '')
-    .split(',')
-    .map((origin) => origin.trim().replace(/\/$/, ''))
-    .filter(Boolean);
-const allowedOrigins = webOrigins.length ? webOrigins : DEFAULT_WEB_ORIGINS;
+const { buildPolicy, describe: describePolicy } = require('./config/cors');
+const corsPolicy = buildPolicy(process.env);
+
+/**
+ * Rejections are logged once per origin.
+ *
+ * A CORS refusal is invisible from the server's side and reaches the browser as "no
+ * Access-Control-Allow-Origin header" — which names no cause and points at no fix. Without
+ * this line, the only way to learn that a deployment's origin was never added to the allow
+ * list is to read this file. Once per origin, because a blocked single-page app retries
+ * constantly and would otherwise fill the log with one repeated fact.
+ */
+const rejectedOrigins = new Set();
 
 app.use(cors({
     origin(origin, callback) {
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.includes(origin.replace(/\/$/, ''))) return callback(null, true);
+        if (corsPolicy.isAllowed(origin)) return callback(null, true);
+
+        if (!rejectedOrigins.has(origin)) {
+            rejectedOrigins.add(origin);
+            console.warn(
+                `🚫 CORS refused "${origin}". Add it to WEB_ORIGINS (comma-separated) and ` +
+                `redeploy. Currently allowed: ${describePolicy(corsPolicy)}`
+            );
+        }
+
         // Not an Error: an error here becomes a 500. A plain refusal omits the CORS headers,
         // which is what the browser is meant to see.
         return callback(null, false);
     },
     credentials: true,
 }));
-console.log(`🌐 CORS allow list: ${allowedOrigins.join(', ')}`);
+console.log(`🌐 CORS allow list: ${describePolicy(corsPolicy)}`);
 
 /**
  * Stripe webhook — mounted before express.json() on purpose.
@@ -122,6 +138,8 @@ app.use('/api/medications', medicationRoutes);
 app.use('/api/score', scoreRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/resources', resourceRoutes);
+// Who may sign in to the staff portal, and as what. Admin-only throughout.
+app.use('/api/staff', staffRoutes);
 
 
 /**
