@@ -84,14 +84,53 @@ describe('inviteStaff', () => {
         expect(res.status).toHaveBeenCalledWith(400);
     });
 
-    it('will not re-invite an existing account', async () => {
-        admin.findByEmail.mockResolvedValue(supabaseUser({ email: 'already@x.co' }));
+    it('will not re-invite somebody who already has a working account', async () => {
+        admin.findByEmail.mockResolvedValue(
+            supabaseUser({ email: 'already@x.co', confirmed_at: '2026-02-01T00:00:00Z' })
+        );
 
         const res = mockRes();
         await inviteStaff({ body: { email: 'already@x.co', role: 'admin' }, auth: {} }, res, next);
 
+        // Sending a fresh invite link to someone who can already sign in is a confusing way
+        // to say "grant this person a role" — the role screen is what they want.
         expect(res.status).toHaveBeenCalledWith(409);
         expect(admin.invite).not.toHaveBeenCalled();
+    });
+
+    it('resends to an account that was invited and never signed in', async () => {
+        /**
+         * The state this rescues: the account exists, so an invite used to be refused; the
+         * person cannot sign in, so they could not fix it themselves. There was no way out
+         * from inside the product, and an invite link dies easily — single-use and spent by
+         * a mail scanner, superseded by a later invite, or simply expired.
+         */
+        admin.findByEmail.mockResolvedValue(
+            supabaseUser({ email: 'pending@x.co', invited_at: '2026-02-01T00:00:00Z' })
+        );
+        admin.invite.mockResolvedValue(supabaseUser({ email: 'pending@x.co' }));
+
+        const res = mockRes();
+        await inviteStaff({ body: { email: 'pending@x.co', role: 'admin' }, auth: {} }, res, next);
+
+        expect(admin.invite).toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(201);
+
+        const body = res.json.mock.calls[0][0];
+        expect(body.resent).toBe(true);
+        // Reissuing cancels the earlier link, and an admin who does not know that will tell
+        // the invitee to try the first email again.
+        expect(body.note).toMatch(/no longer works/i);
+    });
+
+    it('treats a past sign-in as a working account even without a confirmation date', async () => {
+        admin.findByEmail.mockResolvedValue(
+            supabaseUser({ email: 'oauth@x.co', last_sign_in_at: '2026-02-02T00:00:00Z' })
+        );
+
+        const res = mockRes();
+        await inviteStaff({ body: { email: 'oauth@x.co', role: 'admin' }, auth: {} }, res, next);
+        expect(res.status).toHaveBeenCalledWith(409);
     });
 
     it('invites with the role attached, so the first sign-in already works', async () => {

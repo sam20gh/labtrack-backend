@@ -48,10 +48,25 @@ exports.inviteStaff = async (req, res, next) => {
             });
         }
 
+        /**
+         * An account that already exists — but "exists" covers two different situations.
+         *
+         * **Never signed in.** They were invited and the link died: single-use and consumed
+         * by a mail scanner, superseded by a later invite, or simply expired. Refusing here
+         * left them permanently stuck — the account exists so an invite is refused, and they
+         * cannot sign in to fix it. There was no way out of that state from inside the
+         * product. Supabase reissues on a second invite, so this resends.
+         *
+         * **Has signed in.** A fresh invite link to somebody with a working account is a
+         * confusing way to say "grant this person a role", and it is the role screen they
+         * want. Still a 409.
+         */
         const existing = await admin.findByEmail(email);
-        if (existing) {
-            // Inviting an existing account would send a fresh invite link to someone who
-            // already has one, which is a confusing way to say "grant this person a role".
+        const hasSignedIn = Boolean(
+            existing && (existing.confirmed_at || existing.email_confirmed_at || existing.last_sign_in_at)
+        );
+
+        if (existing && hasSignedIn) {
             return res.status(409).json({
                 message:
                     `${email} already has an account. Change their role instead of inviting them.`,
@@ -87,8 +102,24 @@ exports.inviteStaff = async (req, res, next) => {
 
         const user = await admin.invite(email, { role, redirectTo });
 
-        console.log(`👤 Staff invited: ${email} as ${role} by ${req.auth?.email || req.auth?.userId}`);
-        res.status(201).json({ staff: admin.publicUser(user) });
+        const resent = Boolean(existing);
+        console.log(
+            `👤 Staff ${resent ? 're-invited' : 'invited'}: ${email} as ${role} ` +
+            `by ${req.auth?.email || req.auth?.userId}`
+        );
+
+        res.status(201).json({
+            staff: admin.publicUser(user),
+            resent,
+            /**
+             * Said plainly, because it is the thing that makes a resend fail if ignored:
+             * issuing a new link cancels the previous one, so an earlier email in the
+             * inbox is now dead.
+             */
+            note: resent
+                ? 'A new invitation was sent. Any earlier link for this address no longer works.'
+                : undefined,
+        });
     } catch (error) {
         next(error);
     }
