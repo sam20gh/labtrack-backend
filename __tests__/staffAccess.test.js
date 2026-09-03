@@ -123,6 +123,72 @@ describe('inviteStaff', () => {
         expect(body.note).toMatch(/no longer works/i);
     });
 
+    it('prefers the configured portal URL over whatever the browser reports', async () => {
+        /**
+         * The failure this prevents, which happened: an administrator opened the portal on a
+         * Vercel deployment URL rather than the production alias, the browser sent that origin
+         * as `redirectTo`, and it is not on Supabase's redirect allow list. Supabase does not
+         * reject an unlisted redirect — it **silently substitutes the project's Site URL** —
+         * so the invitation pointed somewhere nobody chose. Nothing in that chain errors.
+         */
+        const previous = process.env.PORTAL_URL;
+        process.env.PORTAL_URL = 'https://labtrack-web.vercel.app';
+
+        admin.findByEmail.mockResolvedValue(null);
+        admin.invite.mockResolvedValue(supabaseUser({ email: 'new@x.co' }));
+
+        const res = mockRes();
+        await inviteStaff(
+            {
+                body: {
+                    email: 'new@x.co',
+                    role: 'admin',
+                    redirectTo: 'https://labtrack-web-grub24.vercel.app',
+                },
+                auth: {},
+            },
+            res,
+            next
+        );
+
+        expect(admin.invite).toHaveBeenCalledWith(
+            'new@x.co',
+            expect.objectContaining({
+                redirectTo: 'https://labtrack-web.vercel.app/auth/callback',
+            })
+        );
+        // Echoed back, because a silent substitution is only catchable if somebody is shown
+        // where the link actually points.
+        expect(res.json.mock.calls[0][0].redirectTo).toBe(
+            'https://labtrack-web.vercel.app/auth/callback'
+        );
+
+        if (previous === undefined) delete process.env.PORTAL_URL;
+        else process.env.PORTAL_URL = previous;
+    });
+
+    it('falls back to the caller origin when no portal URL is configured', async () => {
+        // Local development, where there is no PORTAL_URL to prefer.
+        const previous = process.env.PORTAL_URL;
+        delete process.env.PORTAL_URL;
+
+        admin.findByEmail.mockResolvedValue(null);
+        admin.invite.mockResolvedValue(supabaseUser({ email: 'new@x.co' }));
+
+        await inviteStaff(
+            { body: { email: 'new@x.co', role: 'admin', redirectTo: 'http://localhost:3000' }, auth: {} },
+            mockRes(),
+            next
+        );
+
+        expect(admin.invite).toHaveBeenCalledWith(
+            'new@x.co',
+            expect.objectContaining({ redirectTo: 'http://localhost:3000/auth/callback' })
+        );
+
+        if (previous !== undefined) process.env.PORTAL_URL = previous;
+    });
+
     it('reports a Supabase email failure as an upstream problem, with its reason', async () => {
         /**
          * The failure this rescues from silence. Supabase answers `500 Error sending invite

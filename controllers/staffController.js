@@ -78,25 +78,34 @@ exports.inviteStaff = async (req, res, next) => {
         /**
          * Where the invitee lands.
          *
-         * The portal sends its own origin, which is what makes this work on localhost, on a
-         * Vercel preview and in production without anybody setting a variable per
-         * environment. `PORTAL_URL` is the fallback for a caller that sends nothing.
+         * **`PORTAL_URL` wins over whatever the browser says**, and that order is the whole
+         * point. The reverse was tried and produced a real failure: the portal sends
+         * `window.location.origin`, an administrator opened it on a Vercel *deployment* URL
+         * rather than the production alias, and that origin is not on Supabase's redirect
+         * allow list. An unlisted redirect is not rejected — Supabase silently substitutes
+         * the project's **Site URL** — so the invitation arrived pointing somewhere nobody
+         * intended. In this project that Site URL is itself a deployment URL, which Vercel
+         * protects, so the invitee was asked to log in to *Vercel*.
          *
-         * Whatever it resolves to **must be on the Supabase project's URL allow list**. An
-         * unlisted redirect is not rejected: Supabase substitutes the project's Site URL,
-         * which belongs to the patient app, so the invitee lands in the wrong product holding
-         * a valid session and nothing reports a problem.
-         *
-         * Only an admin reaches this route, and the allow list bounds the value regardless,
-         * so a caller-supplied origin grants nothing they do not already have.
+         * Nothing in that chain reports an error. The canonical URL therefore has to come
+         * from configuration, with the caller's origin as the fallback for local development
+         * where no `PORTAL_URL` is set.
          */
-        const base = req.body.redirectTo || process.env.PORTAL_URL;
+        const configured = process.env.PORTAL_URL;
+        const base = configured || req.body.redirectTo;
         const redirectTo = base ? `${String(base).replace(/\/$/, '')}/auth/callback` : undefined;
 
         if (!redirectTo) {
             console.warn(
                 `⚠️  Inviting ${email} with no redirect: Supabase will substitute the project's ` +
-                'Site URL, which is the patient app. Set PORTAL_URL.'
+                'Site URL. Set PORTAL_URL.'
+            );
+        } else if (configured && req.body.redirectTo && !configured.startsWith(req.body.redirectTo)) {
+            // Worth a line in the log: somebody is administering the portal from an origin
+            // that is not the canonical one, which is exactly how the above happened.
+            console.warn(
+                `⚠️  Invite sent from ${req.body.redirectTo} but PORTAL_URL is ${configured}. ` +
+                'Using PORTAL_URL.'
             );
         }
 
@@ -154,6 +163,14 @@ exports.inviteStaff = async (req, res, next) => {
         res.status(201).json({
             staff: admin.publicUser(user),
             resent,
+            /**
+             * Echoed so the sender can see where the link actually points.
+             *
+             * The substitution above is silent by design on Supabase's side, so the only way
+             * to catch a wrong or unlisted redirect is to put it in front of the person who
+             * just sent the invitation.
+             */
+            redirectTo,
             /**
              * Said plainly, because it is the thing that makes a resend fail if ignored:
              * issuing a new link cancels the previous one, so an earlier email in the
