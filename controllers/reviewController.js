@@ -29,6 +29,7 @@ const Biomarker = require('../models/Biomarker');
 const { firstDueDate } = require('../utils/planGeneratorV2');
 const { notifyUser } = require('../jobs/reminderJob');
 const { recordAccess } = require('../utils/accessLog');
+const { resolveProfessional, actingProfessionalId } = require('../utils/resolveProfessional');
 
 /** Fields of an interpretation a clinician may amend. */
 const AMENDABLE = ['summary', 'risks', 'recommended_screenings', 'specialist_consultations', 'lifestyle_recommendations', 'follow_up', 'limitations'];
@@ -203,7 +204,17 @@ exports.getPatientContext = async (req, res) => {
 
 exports.getMyReviews = async (req, res) => {
     try {
-        const interpretations = await Interpretation.find({ 'review.professionalId': req.auth.userId })
+        /**
+         * Match on whichever id this clinician's reviews were recorded under.
+         *
+         * Sign-off stores the linked `Professional` id where there is one and the
+         * authenticated id otherwise, and a clinician may have reviewed cases either side of
+         * being linked. Querying only one of the two silently hides half their history.
+         */
+        const actingId = await actingProfessionalId(req.auth);
+        const ids = [...new Set([String(actingId), String(req.auth.userId)])];
+
+        const interpretations = await Interpretation.find({ 'review.professionalId': { $in: ids } })
             .sort({ 'review.reviewedAt': -1 })
             .populate('userId', 'firstName lastName')
             .limit(100)
@@ -239,8 +250,15 @@ exports.submitReview = async (req, res) => {
         const interpretation = await Interpretation.findById(req.params.reportId);
         if (!interpretation) return res.status(404).json({ message: 'Interpretation not found' });
 
-        // req.auth.userId is the Professional's id for a professional-issued token
-        const professionalId = req.auth.userId;
+        /**
+         * Who is signing this off.
+         *
+         * The linked `Professional` where one exists, otherwise the authenticated id — so
+         * an administrator, or a clinician nobody has linked to a directory entry yet, can
+         * still review. Attribution stays unambiguous either way; it simply points at a
+         * `User` instead of a `Professional`.
+         */
+        const professionalId = await actingProfessionalId(req.auth);
 
         // Start from whatever is current: re-reviewing an amended interpretation must build
         // on the previous clinician's work, not silently revert it.
@@ -327,6 +345,28 @@ exports.addPlanItem = async (req, res) => {
             return res.status(400).json({ message: 'type and title are required' });
         }
 
+        /**
+         * The speciality has to be the schema's enum spelling, or the referral can never
+         * resolve.
+         *
+         * `PlanItem.speciality` is free-text at the model level — nothing there would stop
+         * "Cardiologist" being saved — but the app's professional directory matches on
+         * `Professional.speciality`, whose values come from a fixed 48-entry enum. A value
+         * outside it produces a follow-up nobody can ever be recommended for, and nothing
+         * would say so until a patient looked for a specialist and found none. Checked here
+         * rather than added to the model, because this is the one write path a human types
+         * the value into; `planGeneratorV2` only ever copies it from the AI's own
+         * schema-enforced output, which is already constrained.
+         */
+        if (speciality) {
+            const allowed = Professional.schema.path('speciality').caster.enumValues;
+            if (!allowed.includes(speciality)) {
+                return res.status(400).json({
+                    message: `Unknown speciality "${speciality}". Use the exact directory spelling, e.g. "Cardiology" not "Cardiologist".`,
+                });
+            }
+        }
+
         // The route param is now an interpretation id, and the patient comes from it.
         const interpretation = await Interpretation.findById(req.params.reportId).lean();
         if (!interpretation) return res.status(404).json({ message: 'Interpretation not found' });
@@ -358,7 +398,7 @@ exports.addPlanItem = async (req, res) => {
             urgency: urgency || 'moderate',
             // Marks this as clinician-ordered, which also protects it from AI regeneration
             source: 'specialist',
-            orderedByProfessionalId: req.auth.userId,
+            orderedByProfessionalId: await actingProfessionalId(req.auth),
             sourceDnaReportId: dnaCover?.id,
             sourceInterpretationId: interpretation._id,
             speciality,
@@ -378,11 +418,23 @@ exports.addPlanItem = async (req, res) => {
  * GET /api/reviews/profile — who the signed-in professional is.
  * Lets the app confirm a professional session and show their name.
  */
+/**
+ * GET /api/reviews/profile — the signed-in clinician's directory record.
+ *
+ * Answers 200 with `professional: null` rather than 404 when no directory entry is linked.
+ * That is a normal state, not an error: an administrator reviewing a case has no directory
+ * entry and never will, and a newly invited clinician has one only once somebody attaches
+ * it. A 404 here made every such caller look like a failure, and the portal's own
+ * connection check read it as the API being broken.
+ */
 exports.getProfile = async (req, res) => {
     try {
-        const professional = await Professional.findById(req.auth.userId).select('-password').lean();
-        if (!professional) return res.status(404).json({ message: 'Professional not found' });
-        res.json({ professional });
+        const professional = await resolveProfessional(req.auth);
+        res.json({
+            professional: professional || null,
+            linked: Boolean(professional),
+            role: req.auth.role,
+        });
     } catch (error) {
         res.status(500).json({ message: 'Could not load your profile', error: error.message });
     }

@@ -1,6 +1,28 @@
 const mongoose = require('mongoose');
 
 const ProfessionalSchema = new mongoose.Schema({
+    /**
+     * The login account behind this directory entry.
+     *
+     * `Professional` is a *directory record* — who a patient can browse and book. It is not
+     * a login: portal clinicians authenticate through Supabase, which resolves to a `User`.
+     * Nothing joined the two, so code that needed "the Professional for the person signed
+     * in" fell back to `Professional.findById(req.auth.userId)` — passing a User id where a
+     * Professional id was expected. That works only for legacy professional tokens, which
+     * carried a Professional id directly; under Supabase it silently finds nothing, and the
+     * clinician appears to have no profile at all.
+     *
+     * Optional and sparse: most directory entries have no login yet, and a directory entry
+     * is useful without one — it is what referrals resolve to.
+     */
+    userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        unique: true,
+        sparse: true,
+        default: undefined,
+    },
+
     firstname: { type: String, required: true },
     lastname: { type: String, required: true },
     username: { type: String, required: true, unique: true },

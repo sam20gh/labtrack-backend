@@ -31,7 +31,7 @@ const AccessLogSchema = new mongoose.Schema({
     resource: {
         type: String,
         required: true,
-        enum: ['queue', 'interpretation', 'patient_context', 'biomarkers', 'plan', 'review_history'],
+        enum: ['queue', 'interpretation', 'patient_context', 'biomarkers', 'plan', 'review_history', 'appointments'],
         index: true,
     },
     /** The specific document, where the read addressed one. */
