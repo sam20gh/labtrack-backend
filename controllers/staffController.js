@@ -60,11 +60,30 @@ exports.inviteStaff = async (req, res, next) => {
             });
         }
 
-        // Must be on the Supabase URL allow list, or Supabase silently substitutes the
-        // project's Site URL — which belongs to the patient app.
-        const redirectTo = req.body.redirectTo || process.env.PORTAL_URL
-            ? `${(req.body.redirectTo || process.env.PORTAL_URL).replace(/\/$/, '')}/auth/callback`
-            : undefined;
+        /**
+         * Where the invitee lands.
+         *
+         * The portal sends its own origin, which is what makes this work on localhost, on a
+         * Vercel preview and in production without anybody setting a variable per
+         * environment. `PORTAL_URL` is the fallback for a caller that sends nothing.
+         *
+         * Whatever it resolves to **must be on the Supabase project's URL allow list**. An
+         * unlisted redirect is not rejected: Supabase substitutes the project's Site URL,
+         * which belongs to the patient app, so the invitee lands in the wrong product holding
+         * a valid session and nothing reports a problem.
+         *
+         * Only an admin reaches this route, and the allow list bounds the value regardless,
+         * so a caller-supplied origin grants nothing they do not already have.
+         */
+        const base = req.body.redirectTo || process.env.PORTAL_URL;
+        const redirectTo = base ? `${String(base).replace(/\/$/, '')}/auth/callback` : undefined;
+
+        if (!redirectTo) {
+            console.warn(
+                `⚠️  Inviting ${email} with no redirect: Supabase will substitute the project's ` +
+                'Site URL, which is the patient app. Set PORTAL_URL.'
+            );
+        }
 
         const user = await admin.invite(email, { role, redirectTo });
 

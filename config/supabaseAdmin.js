@@ -125,18 +125,29 @@ const setRole = async (supabaseId, role) => {
 /**
  * Invite someone by email, with their role attached from the start.
  *
- * `redirectTo` must be a URL on the Supabase project's allow list. An unlisted one is not
- * rejected — Supabase quietly falls back to the project's Site URL, which here belongs to
- * the patient app, so the invitee would land in the wrong product holding a valid session.
+ * Two things about this call are easy to get wrong, and both were wrong here:
+ *
+ * 1. **The path is `/invite`, not `/admin/invite`.** Almost every other privileged GoTrue
+ *    route lives under `/admin` — `/admin/users`, `/admin/users/{id}` — so the wrong path is
+ *    the one that looks consistent. It answers **404**, which reads as "no such user" rather
+ *    than "no such endpoint" and sends you looking at the email address.
+ *
+ * 2. **`redirect_to` is a query parameter, not a body field.** GoTrue reads it off the query
+ *    string and ignores a body key of the same name — silently, because an invite with no
+ *    redirect is a valid invite. It then falls back to the project's Site URL, which here
+ *    belongs to the *patient app*: the invitee follows the link, lands in the wrong product
+ *    holding a valid session, and nothing anywhere reports a problem. This is the failure the
+ *    comment below already warned about, caused by the code the comment was attached to.
+ *
+ * `redirectTo` must also be on the Supabase project's URL allow list, or Supabase performs
+ * the same substitution for its own reasons — see `.env.example`.
  */
 const invite = async (email, { role, redirectTo }) =>
-    request('/admin/invite', {
+    request(`/invite${redirectTo ? `?redirect_to=${encodeURIComponent(redirectTo)}` : ''}`, {
         method: 'POST',
-        body: JSON.stringify({
-            email,
-            data: {},
-            ...(redirectTo ? { redirect_to: redirectTo } : {}),
-        }),
+        // `data` is user_metadata, which the account holder can edit — never a role. The role
+        // is applied below via app_metadata, which only this key can write.
+        body: JSON.stringify({ email, data: {} }),
     }).then(async (user) => {
         // The invite endpoint does not accept app_metadata, so the role is applied straight
         // after. Done here rather than left to the caller: an invited account with no role
