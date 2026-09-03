@@ -69,11 +69,72 @@ exports.login = async (req, res) => {
 };
 
 // Get all users (Protected)
+/**
+ * GET /api/users — the admin account list.
+ *
+ * Projected, not `select('-password')`. The old version returned whole user documents,
+ * which meant an administrator opening a list of names received every patient's embedded
+ * `healthAssessment` — medications, conditions, allergies, family history — into their
+ * browser. Nothing rendered it, which is precisely the problem: PHI that no screen asks
+ * for is PHI nobody notices leaving. This is an account-administration screen; medical
+ * records are the clinician workspace's job, behind its own scope and audit trail.
+ *
+ * Paginated for the same reason: an unbounded find() is a single request that grows with
+ * the userbase until it times out.
+ *
+ * Query: ?search= (name or email, case-insensitive) &page= &limit= &proMember=true|false
+ */
 exports.getAllUsers = async (req, res) => {
     try {
-        const users = await User.find().select('-password'); // Exclude passwords
-        res.json(users);
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+
+        const filter = {};
+
+        const search = (req.query.search || '').trim();
+        if (search) {
+            // Escape before building the regex: an admin pasting an email with a '+' in it
+            // would otherwise search for a quantifier and get a confusing empty result.
+            const safe = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const rx = new RegExp(safe, 'i');
+            filter.$or = [{ email: rx }, { firstName: rx }, { lastName: rx }];
+        }
+
+        if (req.query.proMember === 'true') filter.proMember = true;
+        if (req.query.proMember === 'false') filter.proMember = { $ne: true };
+
+        const projection = 'firstName lastName email proMember profileImage createdAt supabaseId';
+
+        const [items, total] = await Promise.all([
+            User.find(filter)
+                .select(projection)
+                .sort({ createdAt: -1 })
+                .skip((page - 1) * limit)
+                .limit(limit)
+                .lean(),
+            User.countDocuments(filter),
+        ]);
+
+        res.json({
+            items: items.map((u) => ({
+                _id: u._id,
+                firstName: u.firstName || '',
+                lastName: u.lastName || '',
+                email: u.email,
+                proMember: Boolean(u.proMember),
+                profileImage: u.profileImage || null,
+                createdAt: u.createdAt,
+                // Whether the account has migrated to Supabase, not the identifier itself.
+                linkedToSupabase: Boolean(u.supabaseId),
+            })),
+            page,
+            limit,
+            total,
+            pages: Math.max(1, Math.ceil(total / limit)),
+            hasMore: page * limit < total,
+        });
     } catch (error) {
+        console.error('❌ getAllUsers failed:', error);
         res.status(500).json({ message: 'Error fetching users', error: error.message });
     }
 };
