@@ -48,7 +48,17 @@ const ProfessionalSchema = new mongoose.Schema({
         ]
     }], // Multiple specialities allowed
     hourly_rate: { type: Number, required: true },
-    profile_image: { type: String, required: true }, // URL or file path
+    /**
+     * The directory photograph, as a URL — **never a file path**.
+     *
+     * Drawn as a circular avatar on five mobile surfaces, so a `file:///…` from an image
+     * picker or a bare `uploads/…` path renders on the machine that chose it and as a blank
+     * circle everywhere else, with the write reporting success. `professionalController`
+     * refuses anything that is not an http(s) URL; `POST /api/images/upload` is how one is
+     * obtained. There is deliberately no gallery here — every surface draws exactly one
+     * headshot, and a second picture would be stored with nothing to render it.
+     */
+    profile_image: { type: String, required: true },
     description: { type: String, required: true }
 }, { timestamps: true });
 
