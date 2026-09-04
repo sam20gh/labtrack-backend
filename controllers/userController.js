@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/userModel');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -93,11 +94,24 @@ exports.getAllUsers = async (req, res) => {
 
         const search = (req.query.search || '').trim();
         if (search) {
-            // Escape before building the regex: an admin pasting an email with a '+' in it
-            // would otherwise search for a quantifier and get a confusing empty result.
-            const safe = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const rx = new RegExp(safe, 'i');
-            filter.$or = [{ email: rx }, { firstName: rx }, { lastName: rx }];
+            /**
+             * An account id is a search term too.
+             *
+             * Other admin screens link here to say "this row belongs to that person", and
+             * the portal's own rule is that no patient identifier goes in a URL — an email
+             * in a query string ends up in server logs and browser history. An opaque id
+             * does not, so the link carries one and this is what resolves it.
+             */
+            if (mongoose.isValidObjectId(search)) {
+                filter._id = search;
+            } else {
+                // Escape before building the regex: an admin pasting an email with a '+' in
+                // it would otherwise search for a quantifier and get a confusing empty
+                // result.
+                const safe = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const rx = new RegExp(safe, 'i');
+                filter.$or = [{ email: rx }, { firstName: rx }, { lastName: rx }];
+            }
         }
 
         if (req.query.proMember === 'true') filter.proMember = true;
