@@ -154,9 +154,21 @@ const setRole = async (supabaseId, role) => {
 const invite = async (email, { role, redirectTo }) =>
     request(`/invite${redirectTo ? `?redirect_to=${encodeURIComponent(redirectTo)}` : ''}`, {
         method: 'POST',
-        // `data` is user_metadata, which the account holder can edit — never a role. The role
-        // is applied below via app_metadata, which only this key can write.
-        body: JSON.stringify({ email, data: {} }),
+        /**
+         * `data` is user_metadata — user-writable, so never a role. The role is applied below
+         * via app_metadata, which only this key can write.
+         *
+         * `password_set: false` marks an account that has arrived by invitation and therefore
+         * **has no password at all**. Accepting an invite establishes a session directly, so
+         * an invitee who signs out has no way back in and no way to ask for one: a password
+         * reset for an account with no password is still an email, and the portal cannot
+         * offer them anything else. The portal reads this flag and makes setting a password
+         * part of accepting the invitation.
+         *
+         * A UX gate, not a security control — the account holder can edit their own
+         * user_metadata. Nothing is protected by it; it decides which screen they see.
+         */
+        body: JSON.stringify({ email, data: { password_set: false } }),
     }).then(async (user) => {
         // The invite endpoint does not accept app_metadata, so the role is applied straight
         // after. Done here rather than left to the caller: an invited account with no role

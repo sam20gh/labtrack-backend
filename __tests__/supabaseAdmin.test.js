@@ -87,9 +87,19 @@ describe('invite', () => {
     it('never puts the role in user_metadata', async () => {
         await admin.invite('new@example.com', { role: 'admin' });
 
-        // `data` is user_metadata, which the account holder can edit. A role there would be
-        // self-assignable; `roleFromClaims` reads app_metadata for exactly that reason.
-        expect(JSON.parse(inviteCall().options.body).data).toEqual({});
+        /**
+         * `data` is user_metadata, which the account holder can edit. A role there would be
+         * self-assignable; `roleFromClaims` reads app_metadata for exactly that reason.
+         *
+         * Asserted as "no role", not as "empty": user_metadata legitimately carries
+         * `password_set`, and an equality check against `{}` made adding that field look like
+         * a regression in role handling, which it is not.
+         */
+        const data = JSON.parse(inviteCall().options.body).data;
+        expect(data.role).toBeUndefined();
+        expect(Object.keys(data)).not.toContain('role');
+        // An invited account has no password at all until it chooses one.
+        expect(data.password_set).toBe(false);
 
         const roleCall = calls.find((c) => c.options.method === 'PUT');
         expect(JSON.parse(roleCall.options.body).app_metadata.role).toBe('admin');
