@@ -35,6 +35,9 @@ router.post('/authors/:slug/follow', c.toggleFollow);
 // otherwise invisible to the only person who can publish it.
 router.get('/admin/all', requireRole('admin'), c.listResourcesForAdmin);
 router.get('/admin/stats', requireRole('admin'), c.getResourceStats);
+// The editor's read. Declared after the two static /admin paths above so neither is
+// swallowed as an id, and before `/:idOrSlug`, which only ever resolves published rows.
+router.get('/admin/:id', requireRole('admin'), c.getResourceForEdit);
 router.post('/import', requireRole('admin'), c.importResources);
 router.post('/admin/categories', requireRole('admin'), c.upsertCategory);
 router.post('/admin/authors', requireRole('admin'), c.upsertAuthor);

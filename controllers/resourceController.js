@@ -20,7 +20,7 @@ const ResourceEngagement = require('../models/ResourceEngagement');
 const ResourceAuthorFollow = require('../models/ResourceAuthorFollow');
 const User = require('../models/userModel');
 const rating = require('../utils/resourceRating');
-const { cardView, detailView, authorDetailView, categoryView } = require('../utils/resourceView');
+const { cardView, detailView, editView, authorDetailView, categoryView } = require('../utils/resourceView');
 
 const POPULATE = [
     { path: 'categoryId', select: 'slug name group icon' },
@@ -814,6 +814,24 @@ const resolveRefs = async (payload) => {
     return patch;
 };
 
+/**
+ * GET /api/resources/admin/:id — one resource as an editor may write it (admin only).
+ *
+ * `getResource` cannot serve this twice over: it filters to `status: 'published'`, so a
+ * draft — the state a piece spends its whole authoring life in — answers 404 to the only
+ * person who can finish it; and it returns `detailView`, which is a reading shape that
+ * cannot be saved back without losing fields. See `editView`.
+ */
+exports.getResourceForEdit = async (req, res, next) => {
+    try {
+        const resource = await Resource.findById(req.params.id).populate(POPULATE);
+        if (!resource) return res.status(404).json({ message: 'Resource not found' });
+        res.json({ resource: editView(resource) });
+    } catch (error) {
+        next(error);
+    }
+};
+
 exports.createResource = async (req, res, next) => {
     try {
         const payload = await resolveRefs({ ...req.body });
@@ -824,7 +842,7 @@ exports.createResource = async (req, res, next) => {
         const resource = await Resource.create(doc);
         await resource.populate(POPULATE);
         console.log(`📚 Resource created: ${resource.type} / ${resource.slug}`);
-        res.status(201).json({ resource: detailView(resource, { hasPro: true }) });
+        res.status(201).json({ resource: editView(resource) });
     } catch (error) {
         next(error);
     }
@@ -837,14 +855,22 @@ exports.updateResource = async (req, res, next) => {
         if (!resource) return res.status(404).json({ message: 'Resource not found' });
 
         Object.assign(resource, pickWritable(payload));
-        if (req.body.slug) resource.slug = slugify(req.body.slug);
+
+        if (req.body.slug !== undefined) {
+            // A slug of punctuation slugifies to the empty string, which `required` then
+            // rejects with a message about a missing path — naming neither the cause nor
+            // the fix. Refuse it here, in the editor's own words.
+            const slug = slugify(req.body.slug);
+            if (!slug) return res.status(400).json({ message: 'That slug has no letters or digits in it' });
+            resource.slug = slug;
+        }
 
         // `save()` rather than `findByIdAndUpdate` on purpose: the pre-validate hook is what
         // keeps `lengthMinutes` and `sessionCount` in step with what was just written, and
         // `findByIdAndUpdate` skips it. That is gotcha 10 in CLAUDE.md, not repeated here.
         await resource.save();
         await resource.populate(POPULATE);
-        res.json({ resource: detailView(resource, { hasPro: true }) });
+        res.json({ resource: editView(resource) });
     } catch (error) {
         next(error);
     }

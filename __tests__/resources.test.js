@@ -17,7 +17,7 @@ const Resource = require('../models/Resource');
 const ResourceCategory = require('../models/ResourceCategory');
 const ResourceAuthor = require('../models/ResourceAuthor');
 const ResourceEngagement = require('../models/ResourceEngagement');
-const { gateBody, cardView, detailView } = require('../utils/resourceView');
+const { gateBody, cardView, detailView, editView } = require('../utils/resourceView');
 const rating = require('../utils/resourceRating');
 
 let categoryId;
@@ -212,5 +212,80 @@ describe('import idempotency', () => {
         // The partial index exists precisely so these do not all collide on { null, null }.
         await expect(makeResource({ slug: 'hand-1' })).resolves.toBeTruthy();
         await expect(makeResource({ slug: 'hand-2' })).resolves.toBeTruthy();
+    });
+});
+
+/**
+ * The editor round-trip.
+ *
+ * The failure this guards against is silent and destructive in one direction: an editor that
+ * loads a *reading* shape and saves it back writes the truncated body, the blanked category
+ * and the reset paywall depth over the real record, and nothing errors.
+ */
+describe('the editorial view', () => {
+    it('carries the whole body of a Pro piece, because a paywall is about readers', async () => {
+        const resource = await makeResource({ isPro: true, freeBlockCount: 2 });
+        const view = editView(resource);
+
+        expect(view.body).toHaveLength(5);
+        expect(view.freeBlockCount).toBe(2);
+        // The reading shape of the same document withholds three blocks and says so.
+        expect(detailView(resource, { hasPro: false }).body).toHaveLength(2);
+    });
+
+    it('names the category and author by id, which is what a save writes back', async () => {
+        const resource = await makeResource();
+        await resource.populate([{ path: 'categoryId' }, { path: 'authorId' }]);
+        const view = editView(resource);
+
+        expect(view.categoryId).toBe(String(categoryId));
+        expect(view.authorId).toBe(String(authorId));
+        // …and by name too, so the form can label its pickers without a second fetch.
+        expect(view.category.name).toBe('Sleep');
+        expect(view.author.name).toBe('Dr. Lorna Gray');
+    });
+
+    it('exposes the fields no reader is given and every editor needs', async () => {
+        const resource = await makeResource({
+            status: 'draft',
+            source: { name: 'website', externalId: 'post-9' },
+        });
+        const view = editView(resource);
+
+        expect(view.status).toBe('draft');
+        expect(view.source.externalId).toBe('post-9');
+        expect(view).toHaveProperty('featured');
+        expect(view).toHaveProperty('freeBlockCount');
+    });
+
+    it('keeps course session ids, so editing a lesson title does not mint a new lesson', async () => {
+        const resource = await makeResource({
+            type: 'course',
+            course: { sessions: [{ title: 'Lesson one', durationSeconds: 600 }] },
+        });
+        const view = editView(resource);
+
+        expect(view.course.sessions[0]._id).toBe(String(resource.course.sessions[0]._id));
+    });
+
+    it('survives a save-what-you-loaded round trip without losing a field', async () => {
+        const resource = await makeResource({ isPro: true, freeBlockCount: 2, featured: true });
+        const before = editView(resource);
+
+        // Exactly what the editor does: assign the loaded shape back and save.
+        Object.assign(resource, {
+            title: before.title,
+            body: before.body,
+            isPro: before.isPro,
+            freeBlockCount: before.freeBlockCount,
+            featured: before.featured,
+            status: before.status,
+        });
+        await resource.save();
+
+        const after = editView(await Resource.findById(resource._id));
+        expect(after.body).toHaveLength(5);
+        expect(after.freeBlockCount).toBe(2);
+        expect(after.featured).toBe(true);
     });
 });

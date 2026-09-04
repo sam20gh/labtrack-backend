@@ -1,7 +1,7 @@
 /**
  * Turning a `Resource` document into what a screen actually needs.
  *
- * Two shapes, and the split is the point:
+ * Three shapes, and the split is the point:
  *
  *   `cardView`   — everything a list, rail or search result draws, and **nothing else**. No
  *                  body, no transcript, no session list. The hub asks for about forty of
@@ -9,6 +9,10 @@
  *                  200KB response becomes 4MB on a phone connection.
  *
  *   `detailView` — one resource in full, with the Pro paywall already applied.
+ *
+ *   `editView`   — one resource as it is *stored*, for the portal's editor. Ungated, and
+ *                  admin-only in the router. See its own note for why the reading shape
+ *                  cannot be saved back.
  *
  * ## The paywall is applied here
  *
@@ -164,6 +168,118 @@ const detailView = (resource, { engagement, hasPro = false } = {}) => {
     };
 };
 
+/**
+ * The editorial shape: one resource exactly as it is stored, for the portal's editor.
+ *
+ * `detailView` is deliberately unusable for this. It is a *reading* shape — the body is
+ * already gated, `categoryId`/`authorId` have become populated display objects, and
+ * `status`, `freeBlockCount` and `source.externalId` are absent because no reader needs
+ * them. An editor loading that and saving it back would publish a truncated article, blank
+ * the piece's category, and reset its paywall depth, all silently.
+ *
+ * So this one round-trips: every writable field, under the name the API writes it by, with
+ * nothing withheld. The paywall does not apply because the paywall is about readers, and
+ * the person holding this response is the one who set it. It is admin-only in the router
+ * for exactly that reason.
+ *
+ * `category` and `author` ride along as display objects so the form can label its pickers
+ * without a second fetch — and so a piece filed under a category that has since been
+ * deactivated still shows the name it actually has rather than an empty select.
+ */
+const editView = (resource) => ({
+    _id: String(resource._id),
+    slug: resource.slug,
+    type: resource.type,
+    title: resource.title,
+    subtitle: resource.subtitle || null,
+    excerpt: resource.excerpt || '',
+
+    categoryId: idOf(resource.categoryId),
+    authorId: idOf(resource.authorId),
+    category: categoryView(resource.categoryId),
+    author: authorView(resource.authorId),
+    tags: resource.tags || [],
+
+    heroImage: resource.heroImage || null,
+    thumbnail: resource.thumbnail || null,
+
+    body: (resource.body || []).map((block) => ({
+        type: block.type,
+        text: block.text ?? null,
+        items: block.items || [],
+        url: block.url ?? null,
+        caption: block.caption ?? null,
+    })),
+
+    media: {
+        videoUrl: resource.media?.videoUrl || null,
+        audioUrl: resource.media?.audioUrl || null,
+        captionsUrl: resource.media?.captionsUrl || null,
+        transcript: (resource.media?.transcript || []).map((cue) => ({
+            startSeconds: cue.startSeconds,
+            endSeconds: cue.endSeconds ?? null,
+            text: cue.text,
+        })),
+    },
+
+    course: {
+        sessionCount: resource.course?.sessionCount || 0,
+        // `_id`, not `id`: sessions are sub-documents and the editor sends the list back
+        // whole. Dropping the ids would make every save mint new ones, which is how a
+        // typo-fix on a lesson title turns into five brand-new lessons.
+        sessions: (resource.course?.sessions || []).map((session) => ({
+            _id: String(session._id),
+            title: session.title,
+            durationSeconds: session.durationSeconds || 0,
+            videoUrl: session.videoUrl || null,
+            audioUrl: session.audioUrl || null,
+            thumbnail: session.thumbnail || null,
+            preview: Boolean(session.preview),
+        })),
+    },
+
+    workshop: {
+        startsAt: resource.workshop?.startsAt || null,
+        endsAt: resource.workshop?.endsAt || null,
+        mode: resource.workshop?.mode || null,
+        locationName: resource.workshop?.locationName || null,
+        address: resource.workshop?.address || null,
+        timezone: resource.workshop?.timezone || null,
+        whoShouldAttend: resource.workshop?.whoShouldAttend || [],
+        topics: (resource.workshop?.topics || []).map((topic) => ({
+            title: topic.title,
+            detail: topic.detail || '',
+        })),
+        priceCents: resource.workshop?.priceCents ?? null,
+        compareAtCents: resource.workshop?.compareAtCents ?? null,
+        currency: resource.workshop?.currency || 'GBP',
+        capacity: resource.workshop?.capacity ?? null,
+        attendeeCount: resource.workshop?.attendeeCount || 0,
+    },
+
+    readMinutes: resource.readMinutes ?? null,
+    durationSeconds: resource.durationSeconds ?? null,
+    lengthMinutes: resource.lengthMinutes || 0,
+
+    status: resource.status,
+    publishedAt: resource.publishedAt || null,
+    featured: Boolean(resource.featured),
+    isPro: Boolean(resource.isPro),
+    freeBlockCount: resource.freeBlockCount ?? 3,
+
+    source: {
+        name: resource.source?.name || null,
+        externalId: resource.source?.externalId || null,
+        url: resource.source?.url || null,
+        importedAt: resource.source?.importedAt || null,
+    },
+
+    /** Read-only context. Counters are moved by engagement, never by this form. */
+    stats: statsView(resource),
+    createdAt: resource.createdAt || null,
+    updatedAt: resource.updatedAt || null,
+});
+
 const authorDetailView = (author, { ratingCounts, following, courses = [], videos = [] } = {}) => ({
     ...authorView(author),
     coverImage: author.coverImage || null,
@@ -186,4 +302,4 @@ const authorDetailView = (author, { ratingCounts, following, courses = [], video
     videos,
 });
 
-module.exports = { cardView, detailView, authorView, authorDetailView, categoryView, gateBody, statsView };
+module.exports = { cardView, detailView, editView, authorView, authorDetailView, categoryView, gateBody, statsView };
