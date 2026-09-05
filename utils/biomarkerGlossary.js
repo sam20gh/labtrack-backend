@@ -46,7 +46,7 @@ const GLOSSARY = {
         high: 'High ferritin can mean too much stored iron, but it also rises with any inflammation, infection, liver strain, or heavy alcohol use — so it is usually interpreted alongside your other results rather than on its own.',
     },
     iron: {
-        plainName: 'Iron in your blood',
+        plainName: 'Iron circulating right now',
         whatItIs: 'This is the iron circulating in your blood at the moment the sample was taken, as opposed to the reserves measured by ferritin.',
         whyItMatters: 'Iron is what lets your red blood cells carry oxygen around your body, so too little leaves you tired and short of breath.',
         low: 'Low iron can point to not absorbing or eating enough, or to losing blood somewhere. It is read together with ferritin, because stores can be empty while a single blood reading still looks acceptable.',
@@ -62,7 +62,7 @@ const GLOSSARY = {
         high: 'High haemoglobin can simply mean you were dehydrated when the blood was taken. Persistently high readings are followed up because they can relate to smoking, living at altitude, low blood oxygen, or the bone marrow producing too many cells.',
     },
     rbc: {
-        plainName: 'Red blood cell count',
+        plainName: 'Number of oxygen-carrying cells',
         whatItIs: 'The number of red blood cells in a set volume of blood — the cells themselves, rather than the haemoglobin they carry.',
         whyItMatters: 'Together with haemoglobin and cell size it separates the different causes of anaemia from one another.',
         low: 'A low count means fewer cells available to carry oxygen, which can come from blood loss, a nutrient shortage, or reduced production in the bone marrow.',
