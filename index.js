@@ -30,6 +30,7 @@ const scoreRoutes = require('./routes/scoreRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
 const resourceRoutes = require('./routes/resourceRoutes');
 const staffRoutes = require('./routes/staffRoutes');
+const predictionRoutes = require('./routes/predictionRoutes');
 
 const app = express();
 
@@ -137,6 +138,9 @@ app.use('/api/activity', activityRoutes);
 app.use('/api/medications', medicationRoutes);
 app.use('/api/score', scoreRoutes);
 app.use('/api/metrics', metricsRoutes);
+// Forecasts of a person's own metrics. The numbers are a regression, not a model — see
+// utils/predictionForecast.js.
+app.use('/api/predictions', predictionRoutes);
 app.use('/api/resources', resourceRoutes);
 // Who may sign in to the staff portal, and as what. Admin-only throughout.
 app.use('/api/staff', staffRoutes);
