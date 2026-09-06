@@ -34,6 +34,28 @@ const shareBase = () =>
 
 const shareUrlFor = (token) => (shareBase() ? `${shareBase()}/${token}` : null);
 
+/**
+ * The address printed on the card itself.
+ *
+ * A shared **image** carries no link — that is the point of it, and it is why the card has to
+ * say where it came from in its own pixels. Somebody seeing a badge in a group chat has
+ * nothing to tap; a host in the corner is the only route back.
+ *
+ * Derived from the share base rather than written down, so it is always an address that
+ * actually resolves. A deployment with neither `ACHIEVEMENT_SHARE_URL` nor `PORTAL_URL` gets
+ * **null and no watermark**, rather than a plausible-looking domain nobody owns — the same
+ * call every other absent-value in this API makes.
+ */
+const shareHost = () => {
+    const base = shareBase();
+    if (!base) return null;
+    try {
+        return new URL(base).host;
+    } catch {
+        return null;
+    }
+};
+
 /* ------------------------------------------------------------------ *
  * Evaluation
  * ------------------------------------------------------------------ */
@@ -258,6 +280,8 @@ exports.getAchievement = async (req, res) => {
             ...describe(achievement),
             ...live,
             ...publicPerson(profile),
+            /** Printed in the card's corner. Null on a deployment with no share URL. */
+            shareHost: shareHost(),
             level,
             unlocked: level > 0,
             unlockedAt: held?.unlockedAt || null,
@@ -321,6 +345,7 @@ exports.shareAchievement = async (req, res) => {
         res.json({
             token: row.shareToken,
             url,
+            shareHost: shareHost(),
             /** The words the app puts in the share sheet, so both clients say the same thing. */
             message: `I just unlocked ${achievement.name} on LabTrack — ${instruction(achievement, row.threshold).toLowerCase()}.`,
             level: row.level,
@@ -419,6 +444,7 @@ exports.cardForToken = async (req, res) => {
             // Month, not day: the exact date of a health-app action is more than a public
             // page needs, and "November 2025" is what the design prints anyway.
             earned: new Date(row.unlockedAt).toISOString().slice(0, 7),
+            shareHost: shareHost(),
         });
     } catch (err) {
         console.error('❌ cardForToken failed:', err);
@@ -632,3 +658,4 @@ exports.recompute = async (req, res) => {
 exports.evaluate = evaluate;
 exports.touch = touch;
 exports._shareUrlFor = shareUrlFor;
+exports._shareHost = shareHost;
