@@ -68,6 +68,17 @@ const SleepPlanSchema = new mongoose.Schema({
 
     /** Set when the person picked the goal themselves rather than accepting the suggestion. */
     goalSetByUser: { type: Boolean, default: false },
+
+    /**
+     * True once the person has been through the setup flow (frames 0-5).
+     *
+     * Held on the plan rather than in AsyncStorage because it decides whether the dashboard
+     * or the setup flow opens, and a first-run gate that lives only on one device sends
+     * somebody through onboarding again every time they sign in on a new phone. The
+     * intro-screen gates that *are* device-local — `PREDICT_INTRO_KEY` and its siblings —
+     * gate a value proposition, not a set of answers already on the record.
+     */
+    onboarded: { type: Boolean, default: false },
 }, { timestamps: true });
 
 module.exports = mongoose.model('SleepPlan', SleepPlanSchema);

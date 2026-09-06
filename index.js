@@ -25,6 +25,7 @@ const assistantRoutes = require('./routes/assistantRoutes');
 const nutritionRoutes = require('./routes/nutritionRoutes');
 const wearableRoutes = require('./routes/wearableRoutes');
 const activityRoutes = require('./routes/activityRoutes');
+const sleepRoutes = require('./routes/sleepRoutes');
 const medicationRoutes = require('./routes/medicationRoutes');
 const scoreRoutes = require('./routes/scoreRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
@@ -111,6 +112,8 @@ require('./jobs/retentionSweep').scheduleRetentionSweep();
 // Dose reminders run every few minutes, not daily: "take your 8pm tablet" is worthless the
 // following morning. Refill nudges ride along on a separate daily timer.
 require('./jobs/medicationReminderJob').scheduleMedicationReminders();
+// Bedtime reminders. Not an alarm — see the note on models/SleepSchedule.js.
+require('./jobs/sleepReminderJob').scheduleSleepReminders();
 
 app.use('/api/users', userRoutes);
 app.use('/api/test-results', testResultRoutes);
@@ -136,6 +139,7 @@ app.use('/api/nutrition', nutritionRoutes);
 // Device health data. Deliberately not '/api/health' — see the note in wearableRoutes.js.
 app.use('/api/wearables', wearableRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/sleep', sleepRoutes);
 app.use('/api/medications', medicationRoutes);
 app.use('/api/score', scoreRoutes);
 app.use('/api/metrics', metricsRoutes);
