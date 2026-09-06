@@ -20,6 +20,7 @@ const {
 } = require('../utils/interpretationSchema');
 
 const generator = path.join(__dirname, '..', '..', 'labtrack-shared', 'generate.mjs');
+const badgeGenerator = path.join(__dirname, '..', '..', 'labtrack-shared', 'generate-badges.mjs');
 
 describe('AMENDABLE_FIELDS', () => {
     it('names only fields the schema actually defines', () => {
@@ -62,6 +63,25 @@ describe('generated client types', () => {
     (runnable ? it : it.skip)('are up to date with the schema', () => {
         expect(() =>
             execFileSync('node', [generator, '--check'], { encoding: 'utf8', stdio: 'pipe' })
+        ).not.toThrow();
+    });
+});
+
+describe('generated badge artwork', () => {
+    const runnable = existsSync(badgeGenerator);
+
+    /**
+     * The same guarantee, for the achievement badges.
+     *
+     * They are drawn twice — by the mobile app, and by the Open Graph card the portal renders
+     * for a shared link — and the two have to be the same picture. A friend opening a link
+     * preview and the person who shared it are looking at one badge; a coordinate that
+     * drifted in one copy makes them subtly different pictures of the same claim, and nothing
+     * would fail to build.
+     */
+    (runnable ? it : it.skip)('is up to date with the design export', () => {
+        expect(() =>
+            execFileSync('node', [badgeGenerator, '--check'], { encoding: 'utf8', stdio: 'pipe' })
         ).not.toThrow();
     });
 });

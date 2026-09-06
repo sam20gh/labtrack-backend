@@ -26,6 +26,7 @@ const schedule = require('../utils/medicationSchedule');
 const engine = require('../utils/medicationEngine');
 const { uploadImageOrNull } = require('../utils/imageStore');
 const scoreController = require('./scoreController');
+const achievementController = require('./achievementController');
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -509,6 +510,9 @@ exports.updateDose = async (req, res) => {
         // screen asks, rather than fifteen minutes later. Never awaited: a scoring failure
         // must not be able to fail the write the person actually made.
         scoreController.touch(req.auth.userId, 'log');
+        // Badges are counted from the same rows, so they are re-evaluated alongside the
+        // score. Also not awaited, and it swallows its own failures for the same reason.
+        achievementController.touch(req.auth.userId);
 
         res.json({
             dose: { ...dose.toObject(), punctuality: schedule.punctuality(dose) },

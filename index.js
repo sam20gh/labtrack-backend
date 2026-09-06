@@ -31,6 +31,7 @@ const metricsRoutes = require('./routes/metricsRoutes');
 const resourceRoutes = require('./routes/resourceRoutes');
 const staffRoutes = require('./routes/staffRoutes');
 const predictionRoutes = require('./routes/predictionRoutes');
+const achievementRoutes = require('./routes/achievementRoutes');
 
 const app = express();
 
@@ -141,6 +142,9 @@ app.use('/api/metrics', metricsRoutes);
 // Forecasts of a person's own metrics. The numbers are a regression, not a model — see
 // utils/predictionForecast.js.
 app.use('/api/predictions', predictionRoutes);
+// Badges for what somebody has done in the app — never for what their results say.
+// See the note at the top of utils/achievementCatalogue.js.
+app.use('/api/achievements', achievementRoutes);
 app.use('/api/resources', resourceRoutes);
 // Who may sign in to the staff portal, and as what. Admin-only throughout.
 app.use('/api/staff', staffRoutes);

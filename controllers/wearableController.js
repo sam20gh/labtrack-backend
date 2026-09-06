@@ -6,6 +6,7 @@ const DailyMetrics = require('../models/DailyMetrics');
 const SleepPlan = require('../models/SleepPlan');
 const { ingestBatch, ACCEPTED_HR_CONTEXTS } = require('../utils/healthSync');
 const scoreController = require('./scoreController');
+const achievementController = require('./achievementController');
 
 /** A batch larger than this is a client bug or a first-ever backfill run without paging. */
 const MAX_ROWS_PER_BATCH = 2000;
@@ -124,6 +125,9 @@ exports.sync = async (req, res) => {
         // activity, sleep and heart data lands. Fired after the response is shaped so the
         // client is never waiting on a recalculation it did not ask for.
         scoreController.touch(userId, 'sync', { tzOffset: Number(req.body.tzOffset) || 0 });
+        // Badges are counted from the same rows, so they are re-evaluated alongside the
+        // score. Also not awaited, and it swallows its own failures for the same reason.
+        achievementController.touch(userId);
 
         res.json({
             received: result.counts,

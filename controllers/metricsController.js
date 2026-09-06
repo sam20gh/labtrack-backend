@@ -21,6 +21,7 @@ const bp = require('../utils/bloodPressure');
 const hydration = require('../utils/hydrationTargets');
 const { recomputeMetricDay } = require('../utils/metricRollup');
 const scoreController = require('./scoreController');
+const achievementController = require('./achievementController');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -92,6 +93,9 @@ exports.logWeight = async (req, res) => {
 
         // The body pillar reads the newest measured weight, so this moves the score.
         scoreController.touch(userId, 'log', { tzOffset: Number(req.body?.tzOffset) || 0 });
+        // Badges are counted from the same rows, so they are re-evaluated alongside the
+        // score. Also not awaited, and it swallows its own failures for the same reason.
+        achievementController.touch(userId);
 
         res.status(201).json({ log, ...(await weightContext(userId, log)) });
     } catch (err) {
@@ -153,6 +157,7 @@ exports.logWater = async (req, res) => {
 
         const rollup = await recomputeMetricDay(userId, day);
         scoreController.touch(userId, 'log', { tzOffset: Number(req.body?.tzOffset) || 0 });
+        achievementController.touch(userId);
 
         res.status(201).json({
             log,
@@ -206,6 +211,7 @@ exports.logBloodPressure = async (req, res) => {
 
         await recomputeMetricDay(userId, day);
         scoreController.touch(userId, 'log', { tzOffset: Number(req.body?.tzOffset) || 0 });
+        achievementController.touch(userId);
 
         console.log(`🩺 BP ${log.systolic}/${log.diastolic} (${category.key}) u=${userId}`);
 
@@ -241,6 +247,7 @@ exports.deleteLog = async (req, res) => {
 
         await recomputeMetricDay(userId, log.day);
         scoreController.touch(userId, 'log');
+        achievementController.touch(userId);
 
         res.json({ message: 'Entry removed', day: log.day });
     } catch (err) {

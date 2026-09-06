@@ -7,6 +7,7 @@ const { recomputeDay, localDay, resolveDay, normaliseType } = require('../utils/
 const { computeTargets, deriveGuidance, explain } = require('../utils/activityTargets');
 const { scoreSession, scoreWindow, bandFor } = require('../utils/activityScore');
 const scoreController = require('./scoreController');
+const achievementController = require('./achievementController');
 
 /**
  * The dashboard's range tabs. `all` is capped rather than unbounded — a chart of every day
@@ -558,6 +559,9 @@ exports.createSession = async (req, res) => {
         // screen asks, rather than fifteen minutes later. Never awaited: a scoring failure
         // must not be able to fail the write the person actually made.
         scoreController.touch(userId, 'log');
+        // Badges are counted from the same rows, so they are re-evaluated alongside the
+        // score. Also not awaited, and it swallows its own failures for the same reason.
+        achievementController.touch(userId);
 
         res.status(201).json({ session });
     } catch (err) {
