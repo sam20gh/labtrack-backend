@@ -355,6 +355,7 @@ const ingestDaySummaries = async (userId, rows = []) => {
         put('heart.maxBpm', row.maxBpm);
         put('heart.avgBpm', row.avgBpm);
         put('heart.hrvMs', row.hrvMs);
+        put('heart.vo2Max', row.vo2Max);
         if (Array.isArray(row.zoneMinutes)) set['heart.zoneMinutes'] = row.zoneMinutes;
 
         await DailyMetrics.updateOne(

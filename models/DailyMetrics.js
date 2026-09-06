@@ -40,6 +40,14 @@ const HeartTotalsSchema = new mongoose.Schema({
     avgBpm: { type: Number, default: null },
     /** Milliseconds, SDNN or the platform's equivalent. */
     hrvMs: { type: Number, default: null },
+    /**
+     * Cardiorespiratory fitness, ml/kg/min, as the watch estimated it.
+     *
+     * Filed under `heart` because that is what measures it and what it describes. Sparse by
+     * nature — an estimate lands every few runs, not every day — so a trend over this reads
+     * the days that carry one, never the calendar.
+     */
+    vo2Max: { type: Number, default: null },
     /** Minutes spent in each zone index 1..5, computed from the person's zone boundaries. */
     zoneMinutes: { type: [Number], default: undefined },
     samples: { type: Number, default: 0 },

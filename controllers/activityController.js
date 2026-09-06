@@ -6,6 +6,7 @@ const User = require('../models/userModel');
 const { recomputeDay, localDay, resolveDay, normaliseType } = require('../utils/healthSync');
 const { computeTargets, deriveGuidance, explain } = require('../utils/activityTargets');
 const { scoreSession, scoreWindow, bandFor } = require('../utils/activityScore');
+const { breakdownByType, activeHours, comparePeriods } = require('../utils/activityInsight');
 const scoreController = require('./scoreController');
 const achievementController = require('./achievementController');
 
@@ -210,11 +211,39 @@ exports.getSummary = async (req, res) => {
         const tzOffset = Number(req.query.tzOffset) || 0;
         const days = dayRange(RANGES[range], tzOffset);
 
-        const [rows, existingPlan, user] = await Promise.all([
+        /**
+         * The window immediately before this one, and the same length, for the comparison.
+         *
+         * Read as its own range rather than by widening the main query: the series, the
+         * averages and the streak are all about `days`, and a row from before it leaking
+         * into any of them would silently move every figure on the dashboard. `days[0]` is
+         * asked for and then dropped, which is what makes the two windows adjacent and
+         * non-overlapping.
+         */
+        const previousDays = dayRange(RANGES[range] + 1, tzOffset, days[0]).slice(0, -1);
+
+        const [rows, previousRows, sessions, existingPlan, user] = await Promise.all([
             DailyMetrics.find({
                 userId,
                 day: { $gte: days[0], $lte: days[days.length - 1] },
             }).lean(),
+            previousDays.length
+                ? DailyMetrics.find({
+                    userId,
+                    day: { $gte: previousDays[0], $lte: previousDays[previousDays.length - 1] },
+                }).select('day activity').lean()
+                : [],
+            /**
+             * The sessions themselves, for the breakdown and the hour histogram.
+             *
+             * Neither can come off `DailyMetrics`: the rollup holds a session *count* and
+             * has no idea what kind of workout it was or what time it started. Projected
+             * down to five fields so a year's history is a small read.
+             */
+            ActivitySession.find({
+                userId,
+                day: { $gte: days[0], $lte: days[days.length - 1] },
+            }).select('type startedAt durationSec activeKcal distanceM').lean(),
             ActivityPlan.findOne({ userId }),
             User.findById(userId).select('healthAssessment').lean(),
         ]);
@@ -331,6 +360,28 @@ exports.getSummary = async (req, res) => {
             band: band ? { key: band.key, label: band.label } : null,
             goal: scored.progress,
             targets: plan?.targets || null,
+            /**
+             * Frame 18's three derived cards. Computed by `utils/activityInsight.js`, which
+             * is deterministic and tested — nothing here is a model's opinion about somebody's
+             * training, and every figure can be reproduced from their own rows.
+             */
+            insight: {
+                breakdown: breakdownByType(sessions),
+                activeHours: activeHours(sessions, tzOffset),
+                // Calories because it is the figure the design compares, and because it is
+                // the one metric every source reports. Null-safe throughout: a first week
+                // has no previous window and the card is dropped rather than drawn at +100%.
+                comparison: comparePeriods(
+                    series,
+                    previousRows.map((r) => ({
+                        activeKcal: r?.activity?.activeKcal ?? null,
+                        exerciseMin: r?.activity?.exerciseMin ?? null,
+                        steps: r?.activity?.steps ?? null,
+                    })),
+                    'activeKcal',
+                ),
+                previousDays: previousDays.length,
+            },
             guidance: (plan?.guidance || []).map((g) => ({
                 key: g.key,
                 kind: g.kind,
