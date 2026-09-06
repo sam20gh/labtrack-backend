@@ -203,11 +203,22 @@ const buildSeries = (metric, components) => {
     return { history: history.slice(-90), projected };
 };
 
+/**
+ * The label to render for a stored prediction.
+ *
+ * The registry wins, with the stored value as the fallback. `metricLabel` is denormalised so a
+ * metric later removed from the registry still renders, but a *rename* must not strand every
+ * row written before it — and unlike `MetricLog.category`, which deliberately preserves the
+ * clinical verdict made at the time, this is only a name. "Turing Score" was the design kit's
+ * word for it and never the product's.
+ */
+const labelFor = (row) => registry.get(row.metric)?.label || row.metricLabel;
+
 /** Strip the working before a prediction leaves the process. */
 const present = (row) => ({
     id: String(row._id),
     metric: row.metric,
-    metricLabel: row.metricLabel,
+    metricLabel: labelFor(row),
     unit: row.unit,
     horizonDays: row.horizonDays,
     horizonId: row.horizonId,
@@ -619,7 +630,7 @@ const median = (values) => {
 const summarise = (row) => ({
     id: String(row._id),
     metric: row.metric,
-    metricLabel: row.metricLabel,
+    metricLabel: labelFor(row),
     unit: row.unit,
     generatedAt: row.generatedAt,
     targetDate: row.targetDate,

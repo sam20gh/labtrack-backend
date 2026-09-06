@@ -60,15 +60,16 @@ const fromDaily = (path) => async (userId) => {
 
 const METRICS = {
     /**
-     * The LabTrack score itself — the design calls it the Turing Score and gives it its own
-     * screen with a min/average/max band rather than a single line.
+     * The LabTrack score itself. The kit calls it the "Turing Score" throughout, which is the
+     * design system's name and not the product's — everything user-facing says LabTrack. It
+     * gets its own screen with a min/average/max band rather than a single line.
      *
      * Reads `HealthScore` snapshots, which are written at most once every six hours, so a
      * heavy app user does not get a denser series than someone who opens it twice a week.
      */
     turing_score: {
         key: 'turing_score',
-        label: 'Turing Score',
+        label: 'LabTrack Score',
         shortLabel: 'Score',
         unit: 'pts',
         icon: 'medkit',

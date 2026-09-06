@@ -305,6 +305,43 @@ describe('the hub', () => {
     });
 });
 
+describe('renaming a metric', () => {
+    it('renders the registry\'s current label, not the one stored on an old row', async () => {
+        await seedBloodPressure(40);
+        const created = await call(controller.createPrediction, { body: { metric: 'blood_pressure', horizon: '1w' } });
+
+        // A row written before a rename. `metricLabel` is denormalised so a metric later
+        // removed from the registry still renders — but a rename must not strand every row
+        // written before it. Unlike `MetricLog.category`, which deliberately preserves the
+        // clinical verdict made at the time, this is only a name.
+        await Prediction.findByIdAndUpdate(created.body.prediction.id, { metricLabel: 'Turing Blood Pressure' });
+
+        const res = await call(controller.getPrediction, { params: { id: created.body.prediction.id } });
+        expect(res.body.prediction.metricLabel).toBe('Blood Pressure');
+
+        // And on the compact shape the past list draws.
+        const hub = await call(controller.getOverview);
+        expect(hub.body.past[0].metricLabel).toBe('Blood Pressure');
+    });
+
+    it('falls back to the stored label for a metric the registry no longer knows', async () => {
+        await seedBloodPressure(40);
+        const created = await call(controller.createPrediction, { body: { metric: 'blood_pressure', horizon: '1w' } });
+        await Prediction.findByIdAndUpdate(created.body.prediction.id, {
+            metric: 'retired_metric', metricLabel: 'Something We Removed',
+        });
+
+        const res = await call(controller.getPrediction, { params: { id: created.body.prediction.id } });
+        expect(res.body.prediction.metricLabel).toBe('Something We Removed');
+    });
+
+    it('calls the score by the product\'s name, not the design kit\'s', async () => {
+        // The kit says "Turing Score" throughout. That is the design system's name and has
+        // never been the product's.
+        expect(require('../utils/predictionMetrics').get('turing_score').label).toBe('LabTrack Score');
+    });
+});
+
 describe('ownership', () => {
     it('answers 404, not 403, for somebody else\'s prediction', async () => {
         await seedBloodPressure(40);
