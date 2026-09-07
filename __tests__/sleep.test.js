@@ -19,7 +19,8 @@ const SleepPlan = require('../models/SleepPlan');
 const SleepSchedule = require('../models/SleepSchedule');
 const DailyMetrics = require('../models/DailyMetrics');
 const PlanItem = require('../models/PlanItem');
-const { ingestBatch } = require('../utils/healthSync');
+const healthSync = require('../utils/healthSync');
+const { ingestBatch } = healthSync;
 const { scoreNight, bandFor, BANDS } = require('../utils/sleepScore');
 const targets = require('../utils/sleepTargets');
 const insight = require('../utils/sleepInsight');
@@ -381,6 +382,171 @@ describe('the API', () => {
         });
 
         expect(body.willResync).toBe(true);
+    });
+});
+
+/* ------------------------------------------ two apps, one night */
+
+describe('two apps writing the same night', () => {
+    /**
+     * The real case this came from: Health Sync mirrors a wearable into Health Connect and
+     * Google Fit republishes it, so one night arrives as two records with different UUIDs.
+     * `externalId` cannot see they are the same night; overlapping clock time can.
+     */
+    const pair = (over = {}) => ([
+        {
+            externalId: '7ec344a5-4dc9-4533-a67c-c5b299f9fbc9',
+            startedAt: '2026-09-04T21:52:00.000Z',
+            endedAt: '2026-09-05T05:22:00.000Z',
+            sourceDevice: { name: 'nl.appyhapps.healthsync' },
+            ...over.a,
+        },
+        {
+            externalId: 'b67515b4-9ab2-3bc3-85e2-b57b556dcf1b',
+            startedAt: '2026-09-04T21:52:00.000Z',
+            endedAt: '2026-09-05T05:22:00.000Z',
+            sourceDevice: { name: 'com.google.android.apps.fitness' },
+            ...over.b,
+        },
+    ]);
+
+    it('stores one night, not two', async () => {
+        const id = userId();
+        await ingestBatch({
+            userId: id, platform: 'health_connect', tzOffset: 0, sleep: pair(), goalMinutes: 480,
+        });
+
+        const rows = await SleepSession.find({ userId: id }).lean();
+        expect(rows).toHaveLength(1);
+    });
+
+    it('keeps the record that carries a hypnogram', async () => {
+        const id = userId();
+        // Only Health Sync reports stages; Google Fit's copy is a bare duration.
+        await ingestBatch({
+            userId: id,
+            platform: 'health_connect',
+            tzOffset: 0,
+            goalMinutes: 480,
+            sleep: pair({
+                a: {
+                    segments: [
+                        { stage: 'deep', startedAt: '2026-09-04T21:52:00.000Z', endedAt: '2026-09-04T23:30:00.000Z' },
+                        { stage: 'rem', startedAt: '2026-09-04T23:30:00.000Z', endedAt: '2026-09-05T05:22:00.000Z' },
+                    ],
+                },
+            }),
+        });
+
+        const rows = await SleepSession.find({ userId: id }).lean();
+        expect(rows).toHaveLength(1);
+        expect(rows[0].externalId).toBe('7ec344a5-4dc9-4533-a67c-c5b299f9fbc9');
+        expect(rows[0].stages.deepMin).toBe(98);
+    });
+
+    it('picks the same winner however the two are ordered', async () => {
+        // Arrival order must not decide it: both apps write on every sync, and a rule that
+        // depended on order would flip the stored row — and the day's score with it.
+        const [a, b] = pair();
+        const forward = userId();
+        const reverse = userId();
+
+        await ingestBatch({ userId: forward, platform: 'health_connect', tzOffset: 0, sleep: [a, b] });
+        await ingestBatch({ userId: reverse, platform: 'health_connect', tzOffset: 0, sleep: [b, a] });
+
+        const one = await SleepSession.findOne({ userId: forward }).lean();
+        const two = await SleepSession.findOne({ userId: reverse }).lean();
+        expect(one.externalId).toBe(two.externalId);
+    });
+
+    it('removes a duplicate that was already stored before the rule existed', async () => {
+        const id = userId();
+        const [a, b] = pair();
+
+        // Simulate the pre-fix state: both rows in the database.
+        await ingestBatch({ userId: id, platform: 'health_connect', tzOffset: 0, sleep: [a] });
+        await SleepSession.create({
+            userId: id,
+            startedAt: new Date(b.startedAt),
+            endedAt: new Date(b.endedAt),
+            day: '2026-09-05',
+            asleepMin: 450,
+            source: 'health_connect',
+            externalId: b.externalId,
+        });
+        expect(await SleepSession.countDocuments({ userId: id })).toBe(2);
+
+        // The next ordinary sync sees both and collapses them.
+        await ingestBatch({ userId: id, platform: 'health_connect', tzOffset: 0, sleep: [a, b] });
+        expect(await SleepSession.countDocuments({ userId: id })).toBe(1);
+    });
+
+    it('leaves a genuine nap alone', async () => {
+        const id = userId();
+        await ingestBatch({
+            userId: id,
+            platform: 'health_connect',
+            tzOffset: 0,
+            goalMinutes: 480,
+            sleep: [
+                ...pair(),
+                {
+                    externalId: 'nap-1',
+                    startedAt: '2026-09-05T10:07:00.000Z',
+                    endedAt: '2026-09-05T10:42:00.000Z',
+                },
+            ],
+        });
+
+        // The night collapses to one; the nap does not overlap it and survives.
+        const rows = await SleepSession.find({ userId: id }).sort({ startedAt: 1 }).lean();
+        expect(rows).toHaveLength(2);
+        expect(rows[1].asleepMin).toBe(35);
+    });
+
+    it('leaves two adjacent stretches of a split night alone', async () => {
+        const id = userId();
+        await ingestBatch({
+            userId: id,
+            platform: 'health_connect',
+            tzOffset: 0,
+            sleep: [
+                { externalId: 'part-1', startedAt: '2026-09-04T22:00:00.000Z', endedAt: '2026-09-05T01:00:00.000Z' },
+                { externalId: 'part-2', startedAt: '2026-09-05T01:30:00.000Z', endedAt: '2026-09-05T06:00:00.000Z' },
+            ],
+        });
+        // They touch but do not overlap: a watch splitting a disturbed night, not a duplicate.
+        expect(await SleepSession.countDocuments({ userId: id })).toBe(2);
+    });
+});
+
+describe('the overlap rule', () => {
+    it('treats the same window as the same night', () => {
+        expect(healthSync.sameNight(
+            { startedAt: '2026-09-04T22:00:00Z', endedAt: '2026-09-05T06:00:00Z' },
+            { startedAt: '2026-09-04T22:00:00Z', endedAt: '2026-09-05T06:00:00Z' },
+        )).toBe(true);
+    });
+
+    it('treats a short nap inside a long night as part of it', () => {
+        expect(healthSync.sameNight(
+            { startedAt: '2026-09-04T22:00:00Z', endedAt: '2026-09-05T06:00:00Z' },
+            { startedAt: '2026-09-05T02:00:00Z', endedAt: '2026-09-05T02:40:00Z' },
+        )).toBe(true);
+    });
+
+    it('does not merge sessions that merely touch', () => {
+        expect(healthSync.sameNight(
+            { startedAt: '2026-09-04T22:00:00Z', endedAt: '2026-09-05T01:00:00Z' },
+            { startedAt: '2026-09-05T01:00:00Z', endedAt: '2026-09-05T06:00:00Z' },
+        )).toBe(false);
+    });
+
+    it('does not merge an afternoon nap into the night before', () => {
+        expect(healthSync.sameNight(
+            { startedAt: '2026-09-04T22:00:00Z', endedAt: '2026-09-05T06:00:00Z' },
+            { startedAt: '2026-09-05T14:00:00Z', endedAt: '2026-09-05T14:30:00Z' },
+        )).toBe(false);
     });
 });
 

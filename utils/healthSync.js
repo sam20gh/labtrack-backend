@@ -194,6 +194,62 @@ const ingestActivities = async (userId, rows = [], { source, tzOffset }) => {
 };
 
 /**
+ * How much two intervals overlap, in minutes. Zero when they do not.
+ */
+const overlapMinutes = (aStart, aEnd, bStart, bEnd) => {
+    const start = Math.max(new Date(aStart).getTime(), new Date(bStart).getTime());
+    const end = Math.min(new Date(aEnd).getTime(), new Date(bEnd).getTime());
+    return end > start ? Math.round((end - start) / 60_000) : 0;
+};
+
+/**
+ * Fraction of the *shorter* interval that the two share. See `sameNight`.
+ */
+const SLEEP_OVERLAP_RATIO = 0.5;
+
+/**
+ * Are these two records the same night?
+ *
+ * **A person cannot be asleep twice at the same time**, so two sleep records that cover the
+ * same clock time are two accounts of one night, not two nights. That is the whole rule, and
+ * it is the only rule that catches the case `externalId` cannot: two apps both writing into
+ * Health Connect, each with its own UUID for the same sleep.
+ *
+ * Measured against the *shorter* of the two so that a 35-minute nap sitting inside a
+ * seven-hour record is recognised as part of it rather than as a separate sleep. Genuinely
+ * separate sessions — a nap in the afternoon, a watch splitting a disturbed night into two
+ * adjacent stretches — do not overlap at all and both survive.
+ */
+const sameNight = (a, b) => {
+    const shared = overlapMinutes(a.startedAt, a.endedAt, b.startedAt, b.endedAt);
+    if (!shared) return false;
+    const shorter = Math.min(
+        minutesBetween(a.startedAt, a.endedAt),
+        minutesBetween(b.startedAt, b.endedAt)
+    );
+    return shorter > 0 && shared / shorter >= SLEEP_OVERLAP_RATIO;
+};
+
+/**
+ * Which of two accounts of the same night to keep.
+ *
+ * **Deterministic, and deliberately not "whichever arrived last".** Both apps write on every
+ * sync, so a rule that depended on arrival order would flip the stored row — and with it the
+ * day's rollup and score — back and forth on every foreground.
+ *
+ * Staged detail first: a record carrying a hypnogram says strictly more than one carrying a
+ * duration, and it is the one the night-detail screen can actually draw. Then the longer
+ * sleep, because a mirroring app usually truncates rather than invents. Then the smaller
+ * `externalId`, which decides nothing on the merits but decides it the same way every time.
+ */
+const preferSleep = (a, b) => {
+    const detail = (r) => (r.segments?.length ? 2 : (Number.isFinite(r.stages?.deepMin) ? 1 : 0));
+    if (detail(a) !== detail(b)) return detail(a) > detail(b) ? a : b;
+    if ((a.asleepMin || 0) !== (b.asleepMin || 0)) return (a.asleepMin || 0) > (b.asleepMin || 0) ? a : b;
+    return String(a.externalId || '') <= String(b.externalId || '') ? a : b;
+};
+
+/**
  * Normalise and upsert nights.
  *
  * The wake day is the filing day — see the note on `SleepSession`. Stage totals are derived
@@ -201,8 +257,11 @@ const ingestActivities = async (userId, rows = [], { source, tzOffset }) => {
  * never disagree; when a source gives only totals, those are taken as sent.
  */
 const ingestSleep = async (userId, rows = [], { source, tzOffset, goalMinutes }) => {
-    const ops = [];
     const days = new Set();
+
+    /* ------------------------------------------------ 1. normalise every row */
+
+    const candidates = [];
 
     for (const row of rows) {
         if (!row?.startedAt || !row?.endedAt) continue;
@@ -214,7 +273,6 @@ const ingestSleep = async (userId, rows = [], { source, tzOffset, goalMinutes })
 
         // The wake day, not the day they went to bed.
         const day = resolveDay(row.day, endedAt, tzOffset);
-        days.add(day);
 
         const segments = Array.isArray(row.segments) ? row.segments.filter(
             (s) => s?.stage && s?.startedAt && s?.endedAt
@@ -254,33 +312,83 @@ const ingestSleep = async (userId, rows = [], { source, tzOffset, goalMinutes })
             ? Math.min(100, Math.round((asleepMin / inBedMin) * 100))
             : null;
 
-        const score = scoreNight({ asleepMin, efficiency, stages, goalMinutes });
-
-        days.add(day);
-        ops.push(upsertOp({
-            filter: row.externalId
-                ? { userId, source, externalId: row.externalId }
-                : { userId, source, endedAt },
-            set: {
-                userId,
-                startedAt,
-                endedAt,
-                day,
-                asleepMin,
-                inBedMin,
-                stages,
-                segments,
-                efficiency,
-                score,
-                source,
-                externalId: row.externalId || null,
-                sourceDevice: row.sourceDevice || undefined,
-            },
-            setOnInsert: { scoreDelta: 0 },
-        }));
+        candidates.push({
+            userId,
+            startedAt,
+            endedAt,
+            day,
+            asleepMin,
+            inBedMin,
+            stages,
+            segments,
+            efficiency,
+            score: scoreNight({ asleepMin, efficiency, stages, goalMinutes }),
+            source,
+            externalId: row.externalId || null,
+            sourceDevice: row.sourceDevice || undefined,
+        });
     }
 
-    if (ops.length) await SleepSession.bulkWrite(ops, { ordered: false });
+    /* ------------------------------- 2. collapse accounts of the same night */
+
+    /**
+     * Two apps writing the same sleep into one health store is the normal case, not the
+     * error case — Health Sync mirrors a wearable in, Google Fit republishes it, and each
+     * writes its own record with its own UUID. `externalId` cannot see that they are the
+     * same night; overlapping clock time can.
+     *
+     * Collapsed here, before anything is written, so the winner is chosen from the whole
+     * batch rather than from whichever record happened to be upserted last.
+     */
+    const kept = [];
+    const superseded = [];
+
+    for (const candidate of candidates) {
+        const rivalIndex = kept.findIndex((k) => sameNight(k, candidate));
+        if (rivalIndex === -1) { kept.push(candidate); continue; }
+
+        const rival = kept[rivalIndex];
+        const winner = preferSleep(rival, candidate);
+        kept[rivalIndex] = winner;
+        superseded.push(winner === rival ? candidate : rival);
+    }
+
+    for (const row of kept) days.add(row.day);
+
+    /* ----------------------------------------------------------- 3. persist */
+
+    if (kept.length) {
+        await SleepSession.bulkWrite(kept.map((row) => upsertOp({
+            filter: row.externalId
+                ? { userId, source, externalId: row.externalId }
+                : { userId, source, endedAt: row.endedAt },
+            set: row,
+            setOnInsert: { scoreDelta: 0 },
+        })), { ordered: false });
+    }
+
+    /**
+     * Rows this batch has just proved are duplicates.
+     *
+     * Self-healing on purpose: the loser is written by its app on every sync, so leaving it
+     * in place would show the person the same night twice in their history forever, and a
+     * one-off cleanup script would only hold until the next app was connected. Removal is
+     * safe because the health store still holds both records — nothing here is the only
+     * copy — and it is scoped to rows this batch actually saw overlap.
+     */
+    const losers = superseded.map((row) => row.externalId).filter(Boolean);
+    if (losers.length) {
+        const removed = await SleepSession.deleteMany({
+            userId, source, externalId: { $in: losers },
+        });
+        if (removed.deletedCount) {
+            console.log(
+                `🌙 Dropped ${removed.deletedCount} duplicate sleep row(s) for u=${userId} ` +
+                `— another app had already recorded the same night`
+            );
+        }
+    }
+
     return days;
 };
 
@@ -500,6 +608,10 @@ const ingestBatch = async ({
 module.exports = {
     ingestBatch,
     recomputeDay,
+    sameNight,
+    preferSleep,
+    overlapMinutes,
+    SLEEP_OVERLAP_RATIO,
     localDay,
     resolveDay,
     normaliseType,
