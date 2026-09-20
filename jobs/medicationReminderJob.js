@@ -26,6 +26,7 @@ const Medication = require('../models/Medication');
 const MedicationDose = require('../models/MedicationDose');
 const User = require('../models/userModel');
 const { send, messagesFor, inQuietHours } = require('../utils/pushSender');
+const { publish } = require('../utils/notificationCentre');
 const scheduleUtil = require('../utils/medicationSchedule');
 
 /** How often the sweep runs. */
@@ -76,6 +77,7 @@ const runMedicationReminders = async (now = new Date()) => {
 
     const messages = [];
     const announced = [];
+    const carded = [];
     let suppressed = 0;
     let undeliverable = 0;
 
@@ -117,7 +119,10 @@ const runMedicationReminders = async (now = new Date()) => {
             continue;
         }
 
-        messages.push(...messagesFor(user, composeMessage(dose, medication)));
+        const composed = composeMessage(dose, medication);
+        messages.push(...messagesFor(user, composed));
+        // Published after the send, so the card can record whether the push actually left.
+        carded.push({ dose, medication, composed, user });
     }
 
     // Written before sending, so a crash mid-send cannot produce a duplicate.
@@ -144,6 +149,40 @@ const runMedicationReminders = async (now = new Date()) => {
      */
     if (announced.length && messages.length && !result.sent) {
         await MedicationDose.updateMany({ _id: { $in: announced } }, { remindedAt: null });
+    }
+
+    /**
+     * The inbox cards.
+     *
+     * Written after the send rather than instead of it, and with `push: false`, because
+     * this sweep owns its own delivery: it batches every dose into one `send()` and hands
+     * the whole batch back when nothing got through, which it can only do while it holds
+     * the result. `publish` would send a second push per card. `deliveredAt` is what keeps
+     * the card honest about which of the two happened.
+     *
+     * A dose that was **suppressed** — quiet hours, reminders switched off for that
+     * medication — is deliberately not carded either. Unlike a plan reminder, a dose card
+     * arriving in a silent inbox six hours later is not a useful record: the dose screen is
+     * the record, it is already there, and it says whether the dose was taken. What this
+     * card is for is the moment.
+     */
+    const deliveredAt = result.sent > 0 ? new Date() : null;
+    for (const c of carded) {
+        await publish(String(c.dose.userId), {
+            category: 'medication',
+            title: c.composed.title,
+            body: c.composed.body,
+            route: `/medications/${c.medication._id}`,
+            source: 'medicationReminderJob',
+            // One card per dose, so a sweep that runs twice inside the grace window and a
+            // restarted server both land on the same row.
+            dedupeKey: `dose:${c.dose._id}`,
+            push: false,
+            deliveredAt,
+            pushedTo: (c.user.pushTokens || []).length,
+            actions: [{ label: "Today's doses", route: '/medications', tone: 'primary' }],
+            data: { type: 'medication_dose', doseId: String(c.dose._id), medicationId: String(c.medication._id) },
+        }, { user: c.user });
     }
 
     if (messages.length || undeliverable) {
@@ -178,20 +217,35 @@ const runRefillReminders = async () => {
         .lean();
     const userById = new Map(users.map((u) => [String(u._id), u]));
 
-    const messages = [];
+    /**
+     * Unlike the dose sweep, this one publishes properly.
+     *
+     * It has no batch guarantee to protect — a refill nudge is a daily, per-medication
+     * message with no `remindedAt` row behind it — so quiet hours can go back to being
+     * `publish`'s question. That matters here: the old quiet-hours `continue` dropped the
+     * nudge entirely, and a person whose window covers the hour this job runs would never
+     * have learned they were running out.
+     */
+    let sent = 0;
     for (const med of needing) {
         const user = userById.get(String(med.userId));
-        if (!user || inQuietHours(user.notificationPreferences, new Date(), med.tzOffset)) continue;
-        messages.push(...messagesFor(user, {
+        if (!user) continue;
+        const { pushed } = await publish(String(med.userId), {
+            category: 'medication',
             title: 'Running low',
             body: `You have ${med.remainingDoses} ${med.remainingDoses === 1 ? 'dose' : 'doses'} of ${med.name} left.`,
+            route: `/medications/${med._id}`,
+            source: 'medicationRefill',
+            chip: { label: `${med.remainingDoses} left`, icon: 'medkit-outline' },
+            // One nudge per medication per day, so the daily job cannot stack them.
+            dedupeKey: `refill:${med._id}:${new Date().toISOString().slice(0, 10)}`,
             data: { type: 'medication_refill', medicationId: String(med._id) },
-        }));
+        }, { user, tzOffsetMinutes: med.tzOffset });
+        sent += pushed;
     }
 
-    const result = messages.length ? await send(messages) : { sent: 0 };
-    if (messages.length) console.log(`💊 Refill reminders: ${result.sent} sent`);
-    return result;
+    if (needing.length) console.log(`💊 Refill reminders: ${needing.length} cards, ${sent} pushes`);
+    return { sent };
 };
 
 const scheduleMedicationReminders = () => {

@@ -15,6 +15,7 @@
 const PlanItem = require('../models/PlanItem');
 const User = require('../models/userModel');
 const { send, messagesFor, inQuietHours } = require('../utils/pushSender');
+const { publish } = require('../utils/notificationCentre');
 
 const DAY_MS = 86400000;
 
@@ -98,57 +99,90 @@ const runReminderJob = async ({ dryRun = false } = {}) => {
         .lean();
     const byUser = new Map(users.map((u) => [String(u._id), u]));
 
-    const messages = [];
-    const toMark = [];
-    let skipped = 0;
+    /**
+     * The due items, paired with what to say about them.
+     *
+     * **Nothing is skipped here for a reason that is about delivery.** This loop used to
+     * drop an item when the person had no registered device, had notifications off, or was
+     * inside their quiet window — which meant the reminder did not merely stay silent, it
+     * ceased to exist, and the offset was never marked so it fired again the next day and
+     * vanished again. Those three questions are `notificationCentre.publish`'s, and it
+     * answers them by writing the card and suppressing only the interruption. What is still
+     * decided here is the only thing that is genuinely this job's: whether anything is due.
+     */
+    const due = [];
 
     for (const item of items) {
         const user = byUser.get(String(item.userId));
         if (!user) continue;
 
-        const preferences = user.notificationPreferences ?? {};
-        if (preferences.enabled === false) { skipped++; continue; }
-        if (!user.pushTokens?.length) { skipped++; continue; }
-        if (inQuietHours(preferences)) { skipped++; continue; }
-
-        const offset = dueOffset(item, preferences);
+        const offset = dueOffset(item, user.notificationPreferences ?? {});
         if (offset === null) continue;
 
         const daysAway = daysUntil(item.dueDate);
         const { title, body } = composeMessage(item, daysAway);
-
-        messages.push(...messagesFor(user, {
-            title,
-            body,
-            data: { type: 'plan_item', planItemId: String(item._id), route: '/myplans' },
-        }));
-        toMark.push({ id: item._id, offset });
+        due.push({ item, user, offset, title, body, daysAway });
     }
 
     if (dryRun) {
-        return { candidates: items.length, wouldSend: messages.length, skipped, preview: messages.slice(0, 5) };
+        return {
+            candidates: items.length,
+            wouldSend: due.length,
+            skipped: 0,
+            preview: due.slice(0, 5).map((d) => ({ title: d.title, body: d.body })),
+        };
     }
 
-    if (!messages.length) return { candidates: items.length, sent: 0, skipped };
+    if (!due.length) return { candidates: items.length, sent: 0, skipped: 0 };
 
-    const result = await send(messages);
+    let sent = 0;
+    for (const d of due) {
+        const { pushed } = await publish(String(d.item.userId), {
+            category: 'plan',
+            title: d.title,
+            body: d.body,
+            route: '/myplans',
+            source: 'reminderJob',
+            /**
+             * One card per item per offset. A restarted server re-runs today's sweep, and
+             * without this the person wakes to the same screening twice.
+             */
+            dedupeKey: `plan:${d.item._id}:${d.offset}`,
+            /**
+             * The wording tracks urgency — "due in 7 days" becomes "overdue by 2" — so a
+             * card whose text has genuinely moved is a new thing to say and goes back to
+             * unread. One that has not changed stays where the person left it.
+             */
+            reviveOnUpdate: true,
+            actions: [{ label: 'View plan', route: '/myplans', tone: 'primary' }],
+            data: { type: 'plan_item', planItemId: String(d.item._id) },
+        }, { user: d.user });
+        sent += pushed;
 
-    // Record only after a successful send attempt, so a failed batch retries tomorrow
-    for (const mark of toMark) {
+        // The offset is recorded whether or not a push went out, because the card did:
+        // marking only on a successful send re-notifies every day somebody is asleep.
         await PlanItem.updateOne(
-            { _id: mark.id },
+            { _id: d.item._id },
             {
-                $addToSet: { 'reminder.sentOffsets': mark.offset },
+                $addToSet: { 'reminder.sentOffsets': d.offset },
                 $set: { 'reminder.lastSentAt': new Date() },
             }
         );
     }
 
-    console.log(`🔔 Reminders: ${result.sent} sent, ${result.failed} failed, ${result.pruned} tokens pruned, ${skipped} skipped`);
-    return { candidates: items.length, ...result, skipped, items: toMark.length };
+    console.log(`🔔 Reminders: ${due.length} cards written, ${sent} pushes delivered`);
+    return { candidates: items.length, sent, skipped: 0, items: due.length };
 };
 
-/** One-off notification, used for order and result events. */
+/**
+ * One-off notification, used for order and result events.
+ *
+ * **Push only — it writes no inbox card.** Callers that want a card call
+ * `notificationCentre.publish` directly, which is the path every new producer should take.
+ * This is kept because `POST /notifications/test` uses it to answer one narrow question —
+ * does a push actually reach this handset — and a test that also wrote a card could pass
+ * on the card while the push was broken, which is the failure it exists to find.
+ */
 const notifyUser = async (userId, { title, body, data, preferenceKey }) => {
     const user = await User.findById(userId).select('pushTokens notificationPreferences').lean();
     if (!user?.pushTokens?.length) return { sent: 0 };

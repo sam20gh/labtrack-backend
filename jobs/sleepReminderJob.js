@@ -28,6 +28,7 @@
 const SleepSchedule = require('../models/SleepSchedule');
 const User = require('../models/userModel');
 const { send, messagesFor } = require('../utils/pushSender');
+const { publish } = require('../utils/notificationCentre');
 const { formatMinutes } = require('../utils/sleepTargets');
 
 /** How often the sweep runs. */
@@ -100,20 +101,23 @@ const runSleepReminders = async (now = new Date()) => {
             if (last.day === day) continue;
         }
 
-        due.push(schedule);
+        // The local day travels with the schedule: the card's dedupe key needs it, and
+        // recomputing it later would use the server's clock rather than this person's.
+        due.push({ schedule, day });
     }
 
     if (!due.length) return { considered: 0, sent: 0, suppressed: 0 };
 
-    const userIds = [...new Set(due.map((s) => String(s.userId)))];
+    const userIds = [...new Set(due.map((d) => String(d.schedule.userId)))];
     const users = await User.find({ _id: { $in: userIds } }).select('pushTokens').lean();
     const userById = new Map(users.map((u) => [String(u._id), u]));
 
     const messages = [];
     const announced = [];
+    const carded = [];
     let suppressed = 0;
 
-    for (const schedule of due) {
+    for (const { schedule, day } of due) {
         const user = userById.get(String(schedule.userId));
 
         // No device on the account. Not stamped, for the reason the dose sweep gives: this
@@ -122,7 +126,9 @@ const runSleepReminders = async (now = new Date()) => {
         if (!user || !(user.pushTokens || []).length) { suppressed += 1; continue; }
 
         announced.push(schedule._id);
-        messages.push(...messagesFor(user, composeMessage(schedule, schedule.bedtimeMin)));
+        const composed = composeMessage(schedule, schedule.bedtimeMin);
+        messages.push(...messagesFor(user, composed));
+        carded.push({ schedule, composed, user, day });
     }
 
     if (announced.length) {
@@ -134,10 +140,38 @@ const runSleepReminders = async (now = new Date()) => {
 
     if (!messages.length) return { considered: due.length, sent: 0, suppressed };
 
-    await send(messages);
-    console.log(`🌙 Bedtime reminders: ${messages.length} sent, ${suppressed} suppressed`);
+    const result = await send(messages);
 
-    return { considered: due.length, sent: messages.length, suppressed };
+    /**
+     * The inbox cards, after the send and with `push: false` — the same arrangement the
+     * dose sweep uses and for the same reason: this job owns its batch.
+     *
+     * Quiet hours are still not consulted, here or in `publish`. A bedtime reminder falls
+     * inside anybody's quiet window by definition, which is why `sleep` is not a `critical`
+     * category and this path does not route through the quiet-hours check at all.
+     */
+    const deliveredAt = result.sent > 0 ? new Date() : null;
+    for (const c of carded) {
+        await publish(String(c.schedule.userId), {
+            category: 'sleep',
+            title: c.composed.title,
+            body: c.composed.body,
+            route: '/sleep',
+            source: 'sleepReminderJob',
+            // One card per schedule per local day — the same guard `lastRemindedAt` gives
+            // the push, expressed where the card can see it.
+            dedupeKey: `bedtime:${c.schedule._id}:${c.day}`,
+            push: false,
+            deliveredAt,
+            pushedTo: (c.user.pushTokens || []).length,
+            actions: [{ label: 'Sleep tracker', route: '/sleep', tone: 'primary' }],
+            data: { type: 'bedtime', scheduleId: String(c.schedule._id) },
+        }, { user: c.user });
+    }
+
+    console.log(`🌙 Bedtime reminders: ${result.sent} sent, ${carded.length} cards, ${suppressed} suppressed`);
+
+    return { considered: due.length, sent: result.sent, suppressed };
 };
 
 const scheduleSleepReminders = () => {
