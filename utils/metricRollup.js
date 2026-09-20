@@ -48,6 +48,8 @@ const recomputeMetricDay = async (userId, day) => {
     const weights = logs.filter((l) => l.kind === 'weight' && Number.isFinite(l.weightKg));
     const waters = logs.filter((l) => l.kind === 'water' && Number.isFinite(l.ml));
     const pressures = logs.filter((l) => l.kind === 'blood_pressure');
+    const oxygen = logs.filter((l) => l.kind === 'spo2' && Number.isFinite(l.spo2));
+    const temps = logs.filter((l) => l.kind === 'temperature' && Number.isFinite(l.celsius));
 
     // ── body ────────────────────────────────────────────────────────────────
     // The *latest* weigh-in of the day wins rather than the mean. A clothed and an unclothed
@@ -92,9 +94,54 @@ const recomputeMetricDay = async (userId, day) => {
         }
         : { systolic: null, diastolic: null, pulse: null, readings: 0, category: null, worstCategory: null };
 
+    // ── blood oxygen ────────────────────────────────────────────────────────
+    //
+    // `min` is kept beside the mean because desaturation is an event rather than an
+    // average: a single 88% in a night of 97s is precisely what a mean hides, and it is the
+    // only value on this row worth anything clinically. Null with no readings, never zero —
+    // an unworn band and a healthy night are not the same fact.
+    const mean = (values) => Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
+
+    const spo2Values = oxygen.map((l) => l.spo2);
+    const spo2Totals = spo2Values.length
+        ? {
+            avg: mean(spo2Values),
+            min: Math.min(...spo2Values),
+            max: Math.max(...spo2Values),
+            readings: spo2Values.length,
+        }
+        : { avg: null, min: null, max: null, readings: 0 };
+
+    // ── temperature ─────────────────────────────────────────────────────────
+    //
+    // Split by site and never combined. A wrist reading sits degrees below core and is a
+    // trend line; an axillary reading is a clinical site. One mean over both describes
+    // neither, and a day with only wrist readings leaves the axillary fields null rather
+    // than implying nobody had a temperature.
+    const atSite = (site) => temps.filter((l) => l.site === site).map((l) => l.celsius);
+    const wrist = atSite('wrist');
+    const axillary = atSite('axillary');
+
+    const temperatureTotals = {
+        wristAvg: wrist.length ? mean(wrist) : null,
+        wristMax: wrist.length ? Math.max(...wrist) : null,
+        axillaryAvg: axillary.length ? mean(axillary) : null,
+        axillaryMax: axillary.length ? Math.max(...axillary) : null,
+        readings: temps.length,
+    };
+
     return DailyMetrics.findOneAndUpdate(
         { userId, day },
-        { $set: { body, hydration: hydrationTotals, bloodPressure, recomputedAt: new Date() } },
+        {
+            $set: {
+                body,
+                hydration: hydrationTotals,
+                bloodPressure,
+                spo2: spo2Totals,
+                temperature: temperatureTotals,
+                recomputedAt: new Date(),
+            },
+        },
         { upsert: true, new: true, setDefaultsOnInsert: true },
     );
 };

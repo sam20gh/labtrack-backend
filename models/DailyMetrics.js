@@ -125,6 +125,37 @@ const BloodPressureTotalsSchema = new mongoose.Schema({
     worstCategory: { type: String, default: null },
 }, { _id: false });
 
+/**
+ * A day's blood-oxygen readings.
+ *
+ * `min` matters more than `mean` here and is the reason both are kept: desaturation is an
+ * event, not an average, and a single 88% in a night of 97s is exactly what an average
+ * hides. `worst` is stored rather than derived on read for the same reason
+ * `BloodPressureTotals` stores its own.
+ */
+const Spo2TotalsSchema = new mongoose.Schema({
+    avg: { type: Number, default: null },
+    min: { type: Number, default: null },
+    max: { type: Number, default: null },
+    readings: { type: Number, default: 0 },
+}, { _id: false });
+
+/**
+ * A day's temperature readings, kept apart by site.
+ *
+ * Two sets of figures rather than one, because a wrist reading and an axillary reading are
+ * different measurements of different things — averaging them produces a number that
+ * describes neither. A day with only wrist readings leaves the axillary fields null, which
+ * is the distinction `alignment: 'unassessed'` makes: not measured, rather than normal.
+ */
+const TemperatureTotalsSchema = new mongoose.Schema({
+    wristAvg: { type: Number, default: null },
+    wristMax: { type: Number, default: null },
+    axillaryAvg: { type: Number, default: null },
+    axillaryMax: { type: Number, default: null },
+    readings: { type: Number, default: 0 },
+}, { _id: false });
+
 const DailyMetricsSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
@@ -137,6 +168,8 @@ const DailyMetricsSchema = new mongoose.Schema({
     body: { type: BodyTotalsSchema, default: () => ({}) },
     hydration: { type: HydrationTotalsSchema, default: () => ({}) },
     bloodPressure: { type: BloodPressureTotalsSchema, default: () => ({}) },
+    spo2: { type: Spo2TotalsSchema, default: () => ({}) },
+    temperature: { type: TemperatureTotalsSchema, default: () => ({}) },
 
     /**
      * Whole-day figures the health store reports directly (steps, resting energy) rather

@@ -26,7 +26,7 @@ const MetricLogSchema = new mongoose.Schema({
     kind: {
         type: String,
         required: true,
-        enum: ['weight', 'water', 'blood_pressure'],
+        enum: ['weight', 'water', 'blood_pressure', 'spo2', 'temperature'],
     },
 
     /** Local calendar day, `YYYY-MM-DD`, written from the client's `tzOffset`. */
@@ -62,11 +62,42 @@ const MetricLogSchema = new mongoose.Schema({
     // ── provenance ──────────────────────────────────────────────────────────
     source: {
         type: String,
-        enum: ['manual', 'healthkit', 'health_connect', 'device'],
+        enum: ['manual', 'healthkit', 'health_connect', 'device', 'bracelet'],
         default: 'manual',
     },
     /** The health store's own UUID, where one exists. Null for anything typed by a person. */
     externalId: { type: String, default: null },
+
+    // ── spo2 ────────────────────────────────────────────────────────────────
+    /** Percent. */
+    spo2: { type: Number, default: null },
+
+    // ── temperature ─────────────────────────────────────────────────────────
+    /** Celsius, always. `lib/units.ts` converts for display; the record does not. */
+    celsius: { type: Number, default: null },
+    /**
+     * Where it was taken, and it is not decoration.
+     *
+     * A wrist reading runs several degrees below core and is a trend line, not a
+     * temperature; an axillary reading is a real clinical site. Stored together without
+     * this field, a perfectly normal wrist reading of 33 °C looks like hypothermia to
+     * anything that reads the number alone.
+     */
+    site: { type: String, enum: ['wrist', 'axillary', null], default: null },
+
+    /**
+     * How a reading was obtained, where that changes what it means.
+     *
+     * Currently only blood pressure sets it. `optical_estimate` marks a cuffless figure
+     * derived from the bracelet's pulse-wave analysis: not validated against a cuff, and
+     * drifting per person, which is why the vendor ships a calibration command for it.
+     *
+     * Such readings **are** classified like any other, by product decision, so `category`
+     * is filled and a crisis reading raises a crisis. This field is what keeps that
+     * decision reversible — without it, nothing in the record distinguishes a cuff reading
+     * from an optical one, and no later screen or clinician could tell them apart.
+     */
+    method: { type: String, enum: ['cuff', 'optical_estimate', null], default: null },
 
     note: { type: String, default: null },
 }, { timestamps: true });

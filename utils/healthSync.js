@@ -19,6 +19,9 @@ const ActivitySession = require('../models/ActivitySession');
 const SleepSession = require('../models/SleepSession');
 const HeartRateSample = require('../models/HeartRateSample');
 const DailyMetrics = require('../models/DailyMetrics');
+const MetricLog = require('../models/MetricLog');
+const EcgRecording = require('../models/EcgRecording');
+const { classify } = require('./bloodPressure');
 const { scoreNight } = require('./sleepScore');
 const { scoreSession } = require('./activityScore');
 
@@ -129,7 +132,13 @@ const ACCEPTED_HR_CONTEXTS = ['resting', 'active', 'recovery', 'sleeping', 'manu
 const upsertOp = ({ filter, set, setOnInsert }) => ({
     updateOne: {
         filter,
-        update: { $set: set, $setOnInsert: setOnInsert },
+        update: {
+            $set: set,
+            // Omitted when there is nothing to guard. MongoDB rejects an empty
+            // `$setOnInsert` outright — "you must specify a field" — so a row type with no
+            // user-editable fields would fail the whole bulk write rather than insert.
+            ...(setOnInsert && Object.keys(setOnInsert).length ? { $setOnInsert: setOnInsert } : {}),
+        },
         upsert: true,
     },
 });
@@ -424,7 +433,6 @@ const ingestHeart = async (userId, rows = [], { source, tzOffset }) => {
                 externalId: row.externalId || null,
                 sourceDevice: row.sourceDevice || undefined,
             },
-            setOnInsert: {},
         }));
     }
 
@@ -573,10 +581,190 @@ const recomputeDay = async (userId, day) => {
  * @param {number}  [args.goalMinutes] the person's sleep goal, for scoring the nights
  * @returns {Promise<{counts: object, days: string[], rejectedHeartSamples: number}>}
  */
+
+/**
+ * Blood-oxygen readings.
+ *
+ * Filed as `MetricLog` rather than a collection of their own: one person, one kind, one
+ * moment, one value, one source is exactly the shape that model exists for, and a
+ * near-identical sixth model plus its controller is the cost of not reusing it.
+ *
+ * Implausible readings are dropped rather than rejected. A wrist sensor cannot measure
+ * below about 70% and the vendor reports 0 for a failed sample, so a value outside the band
+ * is a sensor fault, not a finding — and answering 400 for one bad optical read would cost
+ * the whole batch every other row in it.
+ */
+const ingestSpo2 = async (userId, rows = [], { source, tzOffset }) => {
+    const ops = [];
+    const days = new Set();
+
+    for (const row of rows) {
+        const measuredAt = new Date(row.measuredAt);
+        if (Number.isNaN(measuredAt.getTime())) continue;
+
+        const spo2 = Number(row.spo2);
+        if (!Number.isFinite(spo2) || spo2 < 70 || spo2 > 100) continue;
+
+        const day = resolveDay(row.day, measuredAt, tzOffset);
+        days.add(day);
+
+        ops.push(upsertOp({
+            filter: { userId, kind: 'spo2', externalId: row.externalId },
+            set: {
+                day,
+                measuredAt,
+                spo2,
+                source,
+                note: row.context === 'manual' ? null : 'Automatic measurement',
+            },
+        }));
+    }
+
+    if (ops.length) await MetricLog.bulkWrite(ops, { ordered: false });
+    return days;
+};
+
+/**
+ * Body-temperature readings.
+ *
+ * `site` is carried through and never defaulted. A wrist reading runs degrees below core
+ * and means nothing as an absolute figure; an axillary one is a clinical site. A row that
+ * lost its site would be a number nobody can interpret, and 33 °C from a wrist looks like
+ * hypothermia to anything reading the value alone.
+ */
+const ingestTemperature = async (userId, rows = [], { source, tzOffset }) => {
+    const ops = [];
+    const days = new Set();
+
+    for (const row of rows) {
+        const measuredAt = new Date(row.measuredAt);
+        if (Number.isNaN(measuredAt.getTime())) continue;
+
+        const celsius = Number(row.celsius);
+        // Outside what a living person can be is a sensor fault, not a finding.
+        if (!Number.isFinite(celsius) || celsius < 20 || celsius > 45) continue;
+        if (!['wrist', 'axillary'].includes(row.site)) continue;
+
+        const day = resolveDay(row.day, measuredAt, tzOffset);
+        days.add(day);
+
+        ops.push(upsertOp({
+            filter: { userId, kind: 'temperature', externalId: row.externalId },
+            set: { day, measuredAt, celsius, site: row.site, source },
+        }));
+    }
+
+    if (ops.length) await MetricLog.bulkWrite(ops, { ordered: false });
+    return days;
+};
+
+/**
+ * Cuffless blood-pressure estimates from the bracelet's optical sensor.
+ *
+ * **Classified exactly like a cuff reading**, by product decision: `bloodPressure.classify`
+ * stages it, `category` is stored as classified at the time, and a crisis reading raises a
+ * crisis. What keeps that decision reversible is `method`, which records on every row that
+ * the figure came from pulse-wave analysis rather than a cuff — the provenance is in the
+ * record, so a later screen, a clinician, or a change of mind can still tell them apart.
+ *
+ * A transposed or impossible pair is dropped rather than rejected, for the same reason the
+ * other two ingests drop: one bad optical read must not cost a batch.
+ */
+const ingestBloodPressure = async (userId, rows = [], { source, tzOffset }) => {
+    const ops = [];
+    const days = new Set();
+
+    for (const row of rows) {
+        const measuredAt = new Date(row.measuredAt);
+        if (Number.isNaN(measuredAt.getTime())) continue;
+
+        const systolic = Number(row.systolic);
+        const diastolic = Number(row.diastolic);
+        if (!Number.isFinite(systolic) || !Number.isFinite(diastolic)) continue;
+        if (systolic <= diastolic || systolic > 300 || diastolic < 20) continue;
+
+        const day = resolveDay(row.day, measuredAt, tzOffset);
+        days.add(day);
+
+        ops.push(upsertOp({
+            filter: { userId, kind: 'blood_pressure', externalId: row.externalId },
+            set: {
+                day,
+                measuredAt,
+                systolic,
+                diastolic,
+                pulse: Number.isFinite(Number(row.pulse)) ? Number(row.pulse) : null,
+                // Stored as classified now, never re-derived on read. Guidelines are
+                // revised; a reading somebody was shown as "Normal" keeps saying so.
+                // `classify` returns the band object; `MetricLog.category` stores its key,
+                // matching what `metricsController` writes for a hand-logged reading.
+                category: classify(systolic, diastolic)?.key ?? null,
+                method: row.method === 'optical_estimate' ? 'optical_estimate' : 'cuff',
+                source,
+            },
+        }));
+    }
+
+    if (ops.length) await MetricLog.bulkWrite(ops, { ordered: false });
+    return days;
+};
+
+/**
+ * ECG and PPG recordings.
+ *
+ * Every derived figure is stored **as the device reported it**. Nothing here recomputes a
+ * heart rate from the waveform or reads an interval off the peaks: LabTrack has no ECG
+ * engine, and adding one is a clinical decision rather than an ingest detail.
+ *
+ * A recording with neither a trace nor a single derived figure is skipped. The bracelet
+ * reports failed attempts, and storing them would fill a history with records of trying.
+ */
+const ingestEcg = async (userId, rows = [], { tzOffset }) => {
+    const ops = [];
+    const days = new Set();
+
+    for (const row of rows) {
+        const measuredAt = new Date(row.measuredAt);
+        if (Number.isNaN(measuredAt.getTime())) continue;
+        if (!['ecg', 'ppg'].includes(row.kind)) continue;
+
+        const samples = Array.isArray(row.samples)
+            ? row.samples.filter((n) => Number.isFinite(n))
+            : [];
+        const result = row.result && typeof row.result === 'object' ? row.result : {};
+        if (!samples.length && !Object.keys(result).length) continue;
+
+        const day = resolveDay(row.day, measuredAt, tzOffset);
+        days.add(day);
+
+        ops.push(upsertOp({
+            filter: { userId, externalId: row.externalId },
+            set: {
+                kind: row.kind,
+                day,
+                measuredAt,
+                samples,
+                sampleRateHz: Number(row.sampleRateHz) || null,
+                durationSec: Number(row.durationSec) || null,
+                result,
+                source: 'bracelet',
+                sourceDevice: row.sourceDevice || undefined,
+            },
+        }));
+    }
+
+    if (ops.length) await EcgRecording.bulkWrite(ops, { ordered: false });
+    return days;
+};
+
 const ingestBatch = async ({
     userId, platform, tzOffset, activities = [], sleep = [], heart = [], days = [], goalMinutes,
+    spo2 = [], temperature = [], bloodPressure = [], ecg = [],
 }) => {
     const source = platform === 'aggregator' ? 'aggregator' : platform;
+    // `MetricLog.source` has its own, shorter vocabulary — it predates these platforms and
+    // is read by the manual log screens. A bracelet row is a device reading either way.
+    const metricSource = platform === 'jstyle_bracelet' ? 'bracelet' : 'device';
     const id = new mongoose.Types.ObjectId(String(userId));
     const touched = new Set();
 
@@ -585,7 +773,17 @@ const ingestBatch = async ({
     const { days: heartDays, rejected } = await ingestHeart(id, heart, { source, tzOffset });
     const summaryDays = await ingestDaySummaries(id, days);
 
-    for (const set of [activityDays, sleepDays, heartDays, summaryDays]) {
+    // Bracelet-only families. Absent from every HealthKit and Health Connect batch, which
+    // is why they default to empty rather than being required.
+    const spo2Days = await ingestSpo2(id, spo2, { source: metricSource, tzOffset });
+    const tempDays = await ingestTemperature(id, temperature, { source: metricSource, tzOffset });
+    const bpDays = await ingestBloodPressure(id, bloodPressure, { source: metricSource, tzOffset });
+    const ecgDays = await ingestEcg(id, ecg, { tzOffset });
+
+    for (const set of [
+        activityDays, sleepDays, heartDays, summaryDays,
+        spo2Days, tempDays, bpDays, ecgDays,
+    ]) {
         for (const d of set) touched.add(d);
     }
 
@@ -593,12 +791,39 @@ const ingestBatch = async ({
     // is recomputed once with all of it visible.
     for (const day of touched) await recomputeDay(id, day);
 
+    /**
+     * `MetricLog` has its own rollup, and it has to be run too.
+     *
+     * `recomputeDay` above reads `ActivitySession`, `SleepSession` and `HeartRateSample`
+     * and knows nothing about `MetricLog` — which is correct, and is why
+     * `recomputeMetricDay` exists. But a bracelet writes SpO2, temperature and blood
+     * pressure into `MetricLog`, so without this the rows land and the day's
+     * `spo2`/`temperature`/`bloodPressure` totals never move. Nothing errors: the readings
+     * are in the record and invisible to every screen that reads the rollup.
+     *
+     * Only the days those three ingests touched, so a HealthKit batch — which never carries
+     * any of them — does no extra work at all.
+     *
+     * Required lazily. Both modules are loaded by controllers at startup and a top-level
+     * require here would make the cycle real the moment `metricRollup` ever needs anything
+     * back from this file.
+     */
+    const metricDays = new Set([...spo2Days, ...tempDays, ...bpDays]);
+    if (metricDays.size) {
+        const { recomputeMetricDay } = require('./metricRollup');
+        for (const day of metricDays) await recomputeMetricDay(id, day);
+    }
+
     return {
         counts: {
             activities: activities.length,
             sleep: sleep.length,
             heart: heart.length,
             days: days.length,
+            spo2: spo2.length,
+            temperature: temperature.length,
+            bloodPressure: bloodPressure.length,
+            ecg: ecg.length,
         },
         days: [...touched].sort(),
         rejectedHeartSamples: rejected,
@@ -607,6 +832,10 @@ const ingestBatch = async ({
 
 module.exports = {
     ingestBatch,
+    ingestSpo2,
+    ingestTemperature,
+    ingestBloodPressure,
+    ingestEcg,
     recomputeDay,
     sameNight,
     preferSleep,

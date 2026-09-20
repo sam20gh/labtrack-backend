@@ -35,7 +35,7 @@ const ConnectedSourceSchema = new mongoose.Schema({
 
     platform: {
         type: String,
-        enum: ['apple_health', 'health_connect', 'aggregator'],
+        enum: ['apple_health', 'health_connect', 'aggregator', 'jstyle_bracelet'],
         required: true,
     },
 
@@ -68,6 +68,14 @@ const ConnectedSourceSchema = new mongoose.Schema({
     lastError: { type: String, default: null },
 }, { timestamps: true });
 
+/**
+ * A bracelet is a source alongside the phone's store, never instead of it.
+ *
+ * `jstyle_bracelet` therefore gets its own row and its own cursor, and someone syncing both
+ * Health Connect and a bracelet has two. The unique index below is what keeps that honest:
+ * one row per platform, so re-pairing a bracelet resumes its cursor rather than starting a
+ * second history beside the first.
+ */
 // One row per platform per person: connecting Apple Health twice is the same connection.
 ConnectedSourceSchema.index({ userId: 1, platform: 1 }, { unique: true });
 

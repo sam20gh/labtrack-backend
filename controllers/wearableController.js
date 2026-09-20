@@ -12,6 +12,22 @@ const achievementController = require('./achievementController');
 const MAX_ROWS_PER_BATCH = 2000;
 
 /**
+ * A ceiling on waveform samples in one batch, and it is a different limit from the row
+ * count on purpose.
+ *
+ * Every other row here is tens of bytes, so counting rows bounds the body. An ECG row is
+ * not: thirty seconds at 125 Hz is 3,750 numbers, roughly 25 KB of JSON, so a batch well
+ * inside the 2,000-row limit can be tens of megabytes. `express.json({ limit: '2mb' })`
+ * would then reject it — before this controller runs, with a body-parser error that names
+ * neither ECG nor a limit the client can page against.
+ *
+ * 60,000 samples is about eight minutes of recording and comfortably under the body limit.
+ * Exceeding it is answered here, in the same shape as the row-count refusal, so a client
+ * gets a number it can page on instead of an opaque 413.
+ */
+const MAX_ECG_SAMPLES_PER_BATCH = 60_000;
+
+/**
  * GET /api/wearables/status
  *
  * What the client needs before it draws a connect screen: which sources this person has
@@ -69,17 +85,34 @@ exports.sync = async (req, res) => {
         const {
             platform, tzOffset, cursor, permissions, devices,
             activities = [], sleep = [], heart = [], days = [],
+            // Bracelet-only families. Defaulted rather than required, because every
+            // HealthKit and Health Connect batch is posted without them and must keep
+            // working unchanged.
+            spo2 = [], temperature = [], bloodPressure = [], ecg = [],
         } = req.body || {};
 
-        if (!['apple_health', 'health_connect', 'aggregator'].includes(platform)) {
+        if (!['apple_health', 'health_connect', 'aggregator', 'jstyle_bracelet'].includes(platform)) {
             return res.status(400).json({ message: 'Unknown platform' });
         }
 
-        const total = activities.length + sleep.length + heart.length + days.length;
+        const total = activities.length + sleep.length + heart.length + days.length
+            + spo2.length + temperature.length + bloodPressure.length + ecg.length;
         if (total > MAX_ROWS_PER_BATCH) {
             return res.status(413).json({
                 message: `Batch too large: ${total} rows. Page at ${MAX_ROWS_PER_BATCH}.`,
                 maxRowsPerBatch: MAX_ROWS_PER_BATCH,
+            });
+        }
+
+        const ecgSamples = ecg.reduce(
+            (sum, row) => sum + (Array.isArray(row?.samples) ? row.samples.length : 0),
+            0,
+        );
+        if (ecgSamples > MAX_ECG_SAMPLES_PER_BATCH) {
+            return res.status(413).json({
+                message: `Too much waveform data: ${ecgSamples} samples. `
+                    + `Send recordings in batches of at most ${MAX_ECG_SAMPLES_PER_BATCH}.`,
+                maxEcgSamplesPerBatch: MAX_ECG_SAMPLES_PER_BATCH,
             });
         }
 
@@ -95,6 +128,10 @@ exports.sync = async (req, res) => {
             sleep,
             heart,
             days,
+            spo2,
+            temperature,
+            bloodPressure,
+            ecg,
             goalMinutes: plan?.goalMinutes,
         });
 
@@ -118,7 +155,10 @@ exports.sync = async (req, res) => {
         console.log(
             `🔄 Sync ${platform} u=${userId} ` +
             `a=${result.counts.activities} s=${result.counts.sleep} ` +
-            `h=${result.counts.heart} d=${result.counts.days} → ${result.days.length} days`
+            `h=${result.counts.heart} d=${result.counts.days} ` +
+            `o=${result.counts.spo2} t=${result.counts.temperature} ` +
+            `bp=${result.counts.bloodPressure} e=${result.counts.ecg} ` +
+            `→ ${result.days.length} days`
         );
 
         // A sync is the single biggest mover of the score — it is the moment a month of
