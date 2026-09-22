@@ -15,6 +15,8 @@ const mongoose = require('mongoose');
 const DailyMetrics = require('../models/DailyMetrics');
 const HealthScore = require('../models/HealthScore');
 const Prediction = require('../models/Prediction');
+const MealLog = require('../models/MealLog');
+const BiologicalAge = require('../models/BiologicalAge');
 const User = require('../models/userModel');
 const controller = require('../controllers/predictionController');
 
@@ -63,6 +65,82 @@ beforeEach(async () => {
         weight: 82,
     });
     delete process.env.ANTHROPIC_API_KEY;
+});
+
+/**
+ * Every gatherer, against rows that really exist.
+ *
+ * `sleep` selected and filtered on `sleep.durationMin` for as long as the metric existed.
+ * `DailyMetrics.sleep` has never carried that field — it holds `asleepMin` beside `inBedMin`,
+ * because time asleep and time in bed are different facts. `Number.isFinite(undefined)` is
+ * false for every row, so the gatherer returned nothing however many nights were synced and
+ * the forecast refused with `too_few` forever.
+ *
+ * Nothing threw. A refusal is a normal outcome for this feature, so a metric that could never
+ * gather anything was indistinguishable from a person who had not logged enough yet — which
+ * is why no existing test caught it and why this one is written against the registry rather
+ * than against `sleep` alone. A new metric whose path is a typo now fails here.
+ */
+describe('gatherers read fields that exist', () => {
+    const metrics = require('../utils/predictionMetrics');
+
+    /**
+     * One day of every collection a gatherer might read, all plausibly populated.
+     *
+     * Not every metric reads `DailyMetrics` — `calories` aggregates `MealLog` and
+     * `turing_score` reads `HealthScore` — so the fixture has to cover the collections
+     * rather than the rollup, or a metric passes this test by never being exercised.
+     */
+    const seedEverything = async (n = 6) => {
+        const rows = [];
+        for (let i = 0; i < n; i += 1) {
+            const d = new Date();
+            d.setDate(d.getDate() - (i + 1));
+            rows.push({
+                userId,
+                day: d.toISOString().slice(0, 10),
+                activity: { steps: 8200, activeKcal: 520, exerciseMin: 35 },
+                sleep: { asleepMin: 437, inBedMin: 470, efficiency: 93, score: 78 },
+                heart: { restingBpm: 61, vo2Max: 43, hrvMs: 48 },
+                body: { weightKg: 79.4 },
+                hydration: { consumedMl: 2100, targetMl: 2600, logs: 6 },
+                bloodPressure: { systolic: 121, diastolic: 78, readings: 1 },
+                spo2: { avg: 97, min: 95, readings: 4 },
+            });
+        }
+        await DailyMetrics.insertMany(rows);
+        await HealthScore.insertMany(rows.map((r, i) => ({
+            userId, value: 70 + i, band: 'suboptimal',
+            computedAt: new Date(Date.now() - (i + 1) * 86400000),
+        })));
+        await MealLog.insertMany(rows.map((r, i) => ({
+            userId, day: r.day, name: 'Dinner', calories: 640,
+            eatenAt: new Date(Date.now() - (i + 1) * 86400000),
+        })));
+        await BiologicalAge.insertMany(rows.map((r, i) => ({
+            userId, value: 47 + i * 0.1, chronologicalAge: 45, delta: 2 + i * 0.1,
+            source: 'blended', computedAt: new Date(Date.now() - (i + 1) * 86400000),
+        })));
+    };
+
+    it.each(metrics.METRIC_KEYS)('%s gathers something from a populated day', async (key) => {
+        await seedEverything();
+        const metric = metrics.get(key);
+        const series = await metric.gather(userId);
+
+        expect(Array.isArray(series)).toBe(true);
+        expect(series.length).toBeGreaterThan(0);
+        expect(series.every((p) => Number.isFinite(p.value))).toBe(true);
+    });
+
+    it('reads sleep in hours from the field the rollup actually writes', async () => {
+        await seedEverything(4);
+        const series = await metrics.get('sleep').gather(userId);
+
+        // 437 minutes is 7.28 hours. A gatherer reading the wrong field returns nothing at
+        // all rather than a wrong number, which is what made this invisible.
+        expect(series[0].value).toBeCloseTo(437 / 60, 2);
+    });
 });
 
 describe('what can be predicted', () => {

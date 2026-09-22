@@ -29,9 +29,14 @@
 const mongoose = require('mongoose');
 const DailyMetrics = require('../models/DailyMetrics');
 const HealthScore = require('../models/HealthScore');
+const BiologicalAge = require('../models/BiologicalAge');
 const MealLog = require('../models/MealLog');
 const bloodPressure = require('./bloodPressure');
 const { BANDS, bandFor } = require('./labtrackScore');
+// Aliased because `bandFor` is already the score's. Delegated rather than restated, for the
+// reason `blood_pressure.band` delegates to `bloodPressure.classify`: a forecast staged by
+// its own copy of a ladder eventually disagrees with the screen the measurement came from.
+const { bandFor: ageBandFor } = require('./biologicalAge');
 
 /** How far back a gatherer looks. A year is plenty: the fit weights recency anyway. */
 const LOOKBACK_DAYS = 365;
@@ -90,6 +95,47 @@ const METRICS = {
             const b = bandFor(value);
             return b ? { key: b.key, label: b.label, detail: b.description } : null;
         },
+    },
+
+    /**
+     * The Miovix Age **gap**, not the age itself.
+     *
+     * Forecasting the absolute biological age would be forecasting mostly chronological age,
+     * which rises a year per year whatever anybody does — so every prediction would come
+     * back "you will be older", dressed as an insight. The gap between biological and
+     * chronological age is the part that is actually about the person, and it is the part
+     * that can move in either direction.
+     *
+     * `betterWhen: 'falling'` needs the same one line of justification `weight` needs for
+     * carrying null: this is not a view about somebody's body, it is the premise of the
+     * feature the number comes from. A smaller gap is the thing the whole of `app/age` is
+     * for, and colouring it would be incoherent only if the feature itself were.
+     */
+    age_delta: {
+        key: 'age_delta',
+        label: 'Miovix Age gap',
+        shortLabel: 'Age gap',
+        unit: 'yrs',
+        icon: 'hourglass',
+        decimals: 1,
+        bounds: [-20, 20],
+        betterWhen: 'falling',
+        /** No one-day chip: this moves over months, and a daily forecast of it is noise. */
+        horizons: [30, 90, 365],
+        gather: async (userId) => {
+            const rows = await BiologicalAge.find({
+                userId,
+                computedAt: { $gte: new Date(Date.now() - LOOKBACK_DAYS * 86400000) },
+            }).select('delta computedAt').sort({ computedAt: 1 }).lean();
+            return rows
+                .filter((r) => Number.isFinite(r.delta))
+                .map((r) => ({ at: r.computedAt, value: r.delta }));
+        },
+        band: (value) => {
+            const b = ageBandFor(value);
+            return b ? { key: b.key, label: b.label } : null;
+        },
+        format: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} yrs`,
     },
 
     /**
@@ -156,12 +202,24 @@ const METRICS = {
         bounds: [0, 16],
         betterWhen: 'rising',
         horizons: [1, 7, 30],
+        /**
+         * `asleepMin`, not `durationMin`.
+         *
+         * This read `sleep.durationMin` for as long as the metric existed, and
+         * `DailyMetrics.sleep` has never had that field — it carries `asleepMin` beside
+         * `inBedMin`, because time asleep and time in bed are different facts and the rollup
+         * declines to conflate them. `Number.isFinite(undefined)` is false for every row, so
+         * the gatherer returned an empty series however many nights somebody had synced, and
+         * the sleep forecast refused with `too_few` forever. Nothing threw and nothing logged:
+         * a refusal is a normal outcome here, so the failure was indistinguishable from a
+         * person who had simply not slept enough nights yet.
+         */
         gather: async (userId) => {
             const rows = await DailyMetrics.find({ userId, day: { $gte: since(LOOKBACK_DAYS) } })
-                .select('day sleep.durationMin').sort({ day: 1 }).lean();
+                .select('day sleep.asleepMin').sort({ day: 1 }).lean();
             return rows
-                .filter((r) => Number.isFinite(r.sleep?.durationMin))
-                .map((r) => ({ day: r.day, value: r.sleep.durationMin / 60 }));
+                .filter((r) => Number.isFinite(r.sleep?.asleepMin))
+                .map((r) => ({ day: r.day, value: r.sleep.asleepMin / 60 }));
         },
     },
 

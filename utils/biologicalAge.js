@@ -232,14 +232,43 @@ const DELTA_BANDS = [
 const bandFor = (delta) => DELTA_BANDS.find((b) => delta <= b.max) || null;
 
 /**
- * Travels with every result. Not a footnote — the equation estimates a statistical age from
- * one blood test, and a person is entitled to know that before they read the number.
+ * Travels with every result, and **says which of the two halves the person is looking at**.
+ *
+ * Not a footnote. The two halves are not equally well founded — one is a published equation
+ * validated against mortality follow-up, the other is an aggregation of individual hazard
+ * ratios whose composite has never been validated — and a single sentence covering both
+ * would have to be either wrong about one or vague about both.
+ *
+ * It also has to be *true*: the first version of this said "from one set of blood results",
+ * which is a false statement to put under a number computed entirely from somebody's watch.
+ *
+ * Every variant refuses the same two claims explicitly, because they are the two people read
+ * into a number like this one whatever it is labelled: that it is a diagnosis, and that it
+ * says how long they have.
  */
-const AGE_DISCLAIMER =
-    'This is an estimate from one set of blood results, using a published research method. '
-    + 'It is not a diagnosis, it does not predict how long you will live, and it cannot see '
-    + 'anything your blood test did not measure. Discuss anything that concerns you with a '
-    + 'clinician.';
+const DISCLAIMERS = {
+    lab:
+        'This is an estimate from one set of blood results, using a published research method. '
+        + 'It is not a diagnosis, it does not predict how long you will live, and it cannot see '
+        + 'anything your blood test did not measure. Discuss anything that concerns you with a '
+        + 'clinician.',
+    lifestyle:
+        'This is an estimate from your activity, sleep and vitals over the last six months. It '
+        + 'combines published research on each of those separately — the combination itself has '
+        + 'not been tested against real outcomes. It is not a diagnosis and it does not predict '
+        + 'how long you will live. Discuss anything that concerns you with a clinician.',
+    blended:
+        'This combines an estimate from your blood results, using a published research method, '
+        + 'with one from your activity, sleep and vitals over the last six months. The second '
+        + 'part combines published research on each of those separately, and that combination '
+        + 'has not been tested against real outcomes. It is not a diagnosis and it does not '
+        + 'predict how long you will live. Discuss anything that concerns you with a clinician.',
+};
+
+/** The lab half's wording, which is what the lab half alone carries. */
+const AGE_DISCLAIMER = DISCLAIMERS.lab;
+
+const disclaimerFor = (source) => DISCLAIMERS[source] || DISCLAIMERS.blended;
 
 const refusal = (reason, message, extra = {}) => ({ ok: false, reason, message, ...extra });
 
@@ -511,10 +540,408 @@ const labAge = ({ chronologicalAge, measurements = [], sex = null }) => {
     return first;
 };
 
+/**
+ * How much each half is worth before freshness and coverage are applied.
+ *
+ * The lab half leads because it is the one with a paper behind it: PhenoAge is published,
+ * peer-reviewed and validated against mortality follow-up, and the behavioural half is an
+ * aggregation of individual hazard ratios whose *composite* has never been validated against
+ * anything. Weighting them equally would imply a parity that does not exist.
+ *
+ * It is not a landslide, though, and it should not be. A six-month behavioural picture is
+ * current, continuous and about things somebody can change this week; a blood panel is one
+ * morning, months ago, and says nothing about what has happened since.
+ */
+const LAB_BASE = 1.0;
+const LIFESTYLE_BASE = 0.7;
+
+/** Every domain the behavioural half can cover. Its weight scales with how many it saw. */
+const LIFESTYLE_DOMAINS = 4;
+
+/**
+ * Combine the two halves.
+ *
+ * **`source` is the whole point, and it is rendered.** A person with fresh bloods and a
+ * person with only a watch must not be shown the same kind of number with no way to tell
+ * them apart — the argument pillar provenance already makes on the score breakdown, where
+ * `observed` and `reported` are drawn as a chip rather than quietly averaged.
+ *
+ * One half present is the answer, and the screen names it. Neither is **null**, never a
+ * number: a biological age assembled out of nothing is the one output this feature must not
+ * produce, because unlike a missing score it reads as a reassurance.
+ *
+ * @param {Object} lab the result of `labAge`, or a refusal
+ * @param {Object} lifestyle the result of `lifestyleAge`, or a refusal
+ */
+const blend = ({ lab, lifestyle, chronologicalAge }) => {
+    const halves = [];
+
+    if (lab?.ok) {
+        const weight = LAB_BASE * (lab.freshness?.weight ?? 0);
+        if (weight > 0) halves.push({ half: lab, weight });
+    }
+
+    if (lifestyle?.ok) {
+        const covered = lifestyle.coverage?.domains?.length ?? 0;
+        halves.push({ half: lifestyle, weight: LIFESTYLE_BASE * (covered / LIFESTYLE_DOMAINS) });
+    }
+
+    if (!halves.length) {
+        return {
+            ok: false,
+            reason: 'no_inputs',
+            // Whichever refusal is more actionable leads: a missing blood test is a thing
+            // somebody can go and do, and an insufficient window is a thing that fills in.
+            message: lab?.message || lifestyle?.message
+                || 'Upload a blood test or connect a watch, and we can work this out.',
+            lab: lab ?? null,
+            lifestyle: lifestyle ?? null,
+            disclaimer: DISCLAIMERS.blended,
+        };
+    }
+
+    const totalWeight = halves.reduce((sum, h) => sum + h.weight, 0);
+    const value = halves.reduce((sum, h) => sum + h.half.value * h.weight, 0) / totalWeight;
+    const delta = value - chronologicalAge;
+    const band = bandFor(delta);
+
+    const source = halves.length === 2 ? 'blended' : halves[0].half.source;
+
+    return {
+        ok: true,
+        source,
+        value: Number(value.toFixed(1)),
+        chronologicalAge: Number(chronologicalAge.toFixed(1)),
+        delta: Number(delta.toFixed(1)),
+        band: band?.key ?? null,
+        bandLabel: band?.label ?? null,
+        /**
+         * Both halves in full, always, including the one that refused.
+         *
+         * A screen has to be able to say "this is your bloods only, connect a watch" or
+         * "your bloods are eighteen months old", and neither sentence is derivable from a
+         * blended number alone.
+         */
+        lab: lab ?? null,
+        lifestyle: lifestyle ?? null,
+        weights: Object.fromEntries(
+            halves.map((h) => [h.half.source, Number((h.weight / totalWeight).toFixed(3))]),
+        ),
+        disclaimer: disclaimerFor(source),
+    };
+};
+
+/* ------------------------------------------------------------------ *
+ * Pace of aging
+ * ------------------------------------------------------------------ */
+
+/**
+ * How many snapshots, over how long, before the pace is measured rather than estimated.
+ *
+ * Eight weeks and five snapshots. Below that the slope of four points a fortnight apart is
+ * noise with a direction, and a pace is the one number here that people will read as a
+ * verdict on the last month of their life.
+ */
+const PACE_MIN_SNAPSHOTS = 5;
+const PACE_MIN_SPAN_DAYS = 56;
+
+/**
+ * The reported range, matching the scale the design draws.
+ *
+ * Below zero means the gap is closing faster than the calendar opens it — somebody is
+ * getting biologically younger in absolute terms, which is uncommon and real. Three is the
+ * top of the scale rather than a claim that nobody ages faster.
+ */
+const PACE_BOUNDS = [-1, 3];
+
+const DAYS_PER_YEAR = 365.2425;
+
+/**
+ * Pace of aging, from the snapshot series.
+ *
+ * **Fitted to `delta`, not to `value`, and that is the whole correctness of it.**
+ *
+ * The obvious implementation regresses the biological age itself against calendar time. It
+ * is wrong in a way that is invisible: the biological age of somebody whose life has not
+ * changed at all still rises, because chronological age is an input to both halves — so a
+ * static person's slope is not zero, it is *about* one, and "about" is doing a lot of work.
+ * The lifestyle half moves at exactly 1.0 years per year when the behaviour is unchanged, but
+ * PhenoAge does not: its age coefficient over its slope constant is roughly 0.89, so a person
+ * with steady bloods drifts at 0.89 and a person with steady habits at 1.00. A pace built on
+ * `value` would therefore read a little under 1.0x for everybody with labs and a clean 1.0x
+ * for everybody without, and the difference would look like a finding about their health.
+ *
+ * `delta` has no such term. It is the gap between biological and chronological age, both of
+ * which advance together, so a person whose life is unchanged holds a flat delta whatever
+ * their evidence is made of. Hence:
+ *
+ *     pace = 1 + d(delta)/d(calendar year)
+ *
+ * which is exactly 1.0x for a static person, 0.5x for somebody closing the gap by half a
+ * year per year, and 2.0x for somebody opening it by one.
+ *
+ * ## Which delta, and why it is usually the behavioural one
+ *
+ * `basis.half` says which series was fitted, and the choice matters more than it looks.
+ *
+ * The blended delta moves in **steps**, because the lab half only changes on the day a new
+ * blood panel arrives and is a flat line in between. Fit a slope through a step and the
+ * answer is mostly the step: somebody whose January bloods said +2 and whose June bloods say
+ * +6 produces a fitted rate of about ten years per year, which the bounds then clamp to the
+ * top of the scale. That is not a person aging three times over — it is two measurements of
+ * a noisy quantity, four months apart, being read as a trajectory.
+ *
+ * The behavioural delta has no steps. It is recomputed daily from a rolling six-month window,
+ * so it genuinely is a continuous quantity and its slope genuinely is a rate. Where enough
+ * snapshots carry one, it is what gets fitted. The blended series is the fallback, for
+ * somebody whose evidence is bloods alone, and it carries the same caveat — which is why
+ * `basis.half` is returned rather than assumed.
+ *
+ * @param {Array} snapshots `BiologicalAge` rows: { delta, halves[], computedAt }
+ * @param {Function} forecast `predictionForecast.forecast`
+ */
+const paceFrom = (snapshots = [], { forecast } = {}) => {
+    const usable = snapshots.filter((s) => s?.computedAt);
+
+    const lifestyleSeries = usable
+        .map((s) => {
+            const half = (s.halves || []).find((h) => h.source === 'lifestyle' && h.ok);
+            return Number.isFinite(half?.delta) ? { at: s.computedAt, value: half.delta } : null;
+        })
+        .filter(Boolean);
+
+    const blendedSeries = usable
+        .filter((s) => Number.isFinite(s.delta))
+        .map((s) => ({ at: s.computedAt, value: s.delta }));
+
+    const useLifestyle = lifestyleSeries.length >= PACE_MIN_SNAPSHOTS;
+    const half = useLifestyle ? 'lifestyle' : 'blended';
+    const points = (useLifestyle ? lifestyleSeries : blendedSeries)
+        .sort((a, b) => new Date(a.at) - new Date(b.at));
+
+    if (points.length < PACE_MIN_SNAPSHOTS) {
+        return {
+            ok: false,
+            state: 'unknown',
+            reason: 'too_few',
+            have: points.length,
+            need: PACE_MIN_SNAPSHOTS,
+            message: 'We need a few more weeks of readings before we can say which way this '
+                + 'is moving.',
+        };
+    }
+
+    const spanDays = (new Date(points[points.length - 1].at) - new Date(points[0].at)) / DAY_MS;
+    if (spanDays < PACE_MIN_SPAN_DAYS) {
+        return {
+            ok: false,
+            state: 'unknown',
+            reason: 'too_short',
+            have: Math.round(spanDays),
+            need: PACE_MIN_SPAN_DAYS,
+            message: `We have ${Math.round(spanDays)} days of readings. A couple more months `
+                + 'and we can tell you how fast this is moving.',
+        };
+    }
+
+    const fitted = forecast(points, { horizonDays: 1, decimals: 2 });
+    if (!fitted) {
+        return {
+            ok: false, state: 'unknown', reason: 'not_computable',
+            message: 'We could not work out a direction from your readings yet.',
+        };
+    }
+
+    const raw = 1 + fitted.slopePerDay * DAYS_PER_YEAR;
+    const value = Math.max(PACE_BOUNDS[0], Math.min(PACE_BOUNDS[1], raw));
+
+    return {
+        ok: true,
+        state: 'measured',
+        value: Number(value.toFixed(2)),
+        clamped: raw !== value,
+        bounds: PACE_BOUNDS,
+        confidence: fitted.confidence,
+        basis: {
+            snapshots: points.length,
+            spanDays: Math.round(spanDays),
+            /** Which series was fitted. A blended fit can carry a panel's step change. */
+            half,
+        },
+    };
+};
+
+/**
+ * The fallback, for somebody who has not been using Miovix long enough to have a slope.
+ *
+ * Whoop's own pace compares the last thirty days against the current age, and this is the
+ * same idea: recompute the behavioural half over a thirty-day window and ask how it differs
+ * from the six-month picture.
+ *
+ * **It answers a different question from the measured pace, and it is labelled differently
+ * for that reason.** A measured pace says "your biological age is actually moving at this
+ * rate". This says "if the last month became your new normal, the gap would move by this much
+ * over a year" — a projection from one month of behaviour, not an observation of change.
+ *
+ * Scaling it to one year rather than to the 75 days that actually separate the two windows'
+ * centres is deliberate. The shorter separation is arithmetically defensible and multiplies
+ * the difference by almost five, which turns one good fortnight into a headline claim about
+ * somebody's rate of aging. A one-year scale is the conservative reading of the same gap.
+ */
+const provisionalPace = ({ recent, window }) => {
+    if (!recent?.ok || !window?.ok) {
+        return {
+            ok: false, state: 'unknown', reason: 'no_windows',
+            message: 'We need a few more weeks of readings before we can say which way this '
+                + 'is moving.',
+        };
+    }
+
+    const raw = 1 + (recent.delta - window.delta);
+    const value = Math.max(PACE_BOUNDS[0], Math.min(PACE_BOUNDS[1], raw));
+
+    return {
+        ok: true,
+        state: 'provisional',
+        value: Number(value.toFixed(2)),
+        clamped: raw !== value,
+        bounds: PACE_BOUNDS,
+        /** Never inherited from a fit, because there is no fit. */
+        confidence: null,
+        basis: {
+            recentDelta: recent.delta,
+            windowDelta: window.delta,
+            recentDays: recent.windowDays,
+            windowDays: window.windowDays,
+        },
+        message: 'Based on your last month compared with your last six, rather than on how '
+            + 'your age has actually moved. It will firm up as you keep logging.',
+    };
+};
+
+/* ------------------------------------------------------------------ *
+ * Levers
+ * ------------------------------------------------------------------ */
+
+/** The most levers a screen is given. See `LEVER_LIMIT` for why it is three. */
+const LEVER_LIMIT = 3;
+
+/**
+ * What would actually move the number, ranked by how much.
+ *
+ * Computable exactly because both halves are deterministic: set one input to its target,
+ * re-run, take the difference. The same operation `attribute` performs against a reference,
+ * pointed at a goal instead.
+ *
+ * Four rules, and each removes a way this becomes useless:
+ *
+ * 1. **Only movable contributors.** Every contributor declares
+ *    `modifiable: 'behaviour' | 'clinical' | 'fixed'`, and a `fixed` one never becomes a
+ *    lever. "Lower your red cell distribution width" is advice nobody can act on, which is
+ *    the dead end `PILLAR_ROUTE` exists to prevent on the score screen. A `clinical` one is
+ *    kept, but it is a conversation to have rather than a task to do, and it routes
+ *    accordingly.
+ * 2. **Weighted by the half's share of the blend.** A marker worth two years of lab age is
+ *    worth two years times the lab half's weight on the blended number. Reporting the
+ *    unweighted figure would promise somebody a change the screen above it cannot deliver.
+ * 3. **Only what helps.** A contributor already better than its target produces a negative
+ *    saving and is dropped, rather than being shown as a thing to give up.
+ * 4. **Three at most.** A list of nine things somebody could do about their mortality is a
+ *    backlog, and a backlog is a thing people learn to scroll past. The cap "Needs you"
+ *    already takes on the home screen, for the same reason.
+ */
+const levers = ({
+    chronologicalAge, sex = null, markers = null, inputs = null,
+    lab = null, lifestyle = null, weights = {}, limit = LEVER_LIMIT,
+    lifestyleFn = null,
+}) => {
+    const out = [];
+
+    if (lab?.ok && markers) {
+        const share = weights.lab ?? 1;
+        const base = phenoAge(chronologicalAge, markers);
+
+        for (const input of PHENOAGE_INPUTS) {
+            if (input.modifiable === 'fixed') continue;
+            const target = referenceFor(input, sex);
+            const improved = phenoAge(chronologicalAge, { ...markers, [input.key]: target });
+            const years = (base - improved) * share;
+            if (years <= 0.05) continue;
+
+            out.push({
+                key: input.key,
+                label: input.label,
+                half: 'lab',
+                value: markers[input.key],
+                unit: input.unit,
+                target,
+                modifiable: input.modifiable,
+                /**
+                 * Every lab lever is a conversation, not a control on a tracker screen —
+                 * there is no button in this app that lowers somebody's glucose. The path
+                 * is the group-qualified one: `/results` is not a route, and a bad
+                 * `router.push` throws nothing and goes nowhere.
+                 */
+                route: '/(tabs)/results',
+                years: Number(years.toFixed(2)),
+            });
+        }
+    }
+
+    if (lifestyle?.ok && inputs && lifestyleFn) {
+        const share = weights.lifestyle ?? 1;
+        const base = lifestyle.value;
+
+        for (const c of lifestyle.contributions) {
+            if (c.modifiable === 'fixed') continue;
+            const contributor = lifestyleFn.CONTRIBUTOR_BY_KEY[c.key];
+            if (!contributor) continue;
+
+            const target = contributor.target({ age: chronologicalAge, sex });
+            const improved = lifestyleFn.lifestyleAge({
+                chronologicalAge,
+                sex,
+                inputs: { ...inputs, [c.key]: { ...inputs[c.key], value: target } },
+            });
+            if (!improved.ok) continue;
+
+            const years = (base - improved.value) * share;
+            if (years <= 0.05) continue;
+
+            out.push({
+                key: c.key,
+                label: c.label,
+                half: 'lifestyle',
+                value: c.value,
+                display: c.display,
+                unit: c.unit,
+                target: c.target,
+                modifiable: c.modifiable,
+                route: c.route,
+                years: Number(years.toFixed(2)),
+            });
+        }
+    }
+
+    return out.sort((a, b) => b.years - a.years).slice(0, limit);
+};
+
 module.exports = {
+    paceFrom,
+    provisionalPace,
+    levers,
+    PACE_MIN_SNAPSHOTS,
+    PACE_MIN_SPAN_DAYS,
+    PACE_BOUNDS,
+    LEVER_LIMIT,
+    blend,
+    LAB_BASE,
+    LIFESTYLE_BASE,
     PHENOAGE_INPUTS,
     DELTA_BANDS,
     AGE_DISCLAIMER,
+    DISCLAIMERS,
+    disclaimerFor,
     phenoAge,
     attribute,
     referenceFor,

@@ -376,10 +376,29 @@ describe('freshness', () => {
 
 describe('what travels with every result', () => {
     it('carries a disclaimer that refuses the two claims people will read into it', () => {
-        const d = bio.AGE_DISCLAIMER.toLowerCase();
-        expect(d).toContain('not a diagnosis');
-        expect(d).toMatch(/does not predict how long you will live/);
+        // Whatever the number is labelled, these are the two things people read into it.
+        for (const variant of Object.values(bio.DISCLAIMERS)) {
+            expect(variant.toLowerCase()).toContain('not a diagnosis');
+            expect(variant.toLowerCase()).toMatch(/does not predict how long you will live/);
+        }
         expect(panel().disclaimer).toBe(bio.AGE_DISCLAIMER);
+    });
+
+    it('never claims a blood test under a number computed from a watch', () => {
+        // The first version of this copy said "from one set of blood results" and was
+        // attached to every result, including one built entirely from somebody's trackers.
+        expect(bio.disclaimerFor('lifestyle')).not.toMatch(/blood/i);
+        expect(bio.disclaimerFor('lab')).toMatch(/blood results/i);
+        expect(bio.disclaimerFor('blended')).toMatch(/blood results/i);
+    });
+
+    it('admits which half has never been validated as a whole', () => {
+        // The honest difference between the two: PhenoAge is validated against mortality
+        // follow-up, the behavioural aggregate is not. A single sentence covering both would
+        // be wrong about one of them.
+        expect(bio.disclaimerFor('lifestyle')).toMatch(/not been tested against real outcomes/i);
+        expect(bio.disclaimerFor('blended')).toMatch(/not been tested against real outcomes/i);
+        expect(bio.disclaimerFor('lab')).not.toMatch(/not been tested/i);
     });
 
     it('names its provenance, so this can never be confused with the behavioural half', () => {

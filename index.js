@@ -28,6 +28,7 @@ const activityRoutes = require('./routes/activityRoutes');
 const sleepRoutes = require('./routes/sleepRoutes');
 const medicationRoutes = require('./routes/medicationRoutes');
 const scoreRoutes = require('./routes/scoreRoutes');
+const ageRoutes = require('./routes/ageRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
 const resourceRoutes = require('./routes/resourceRoutes');
 const staffRoutes = require('./routes/staffRoutes');
@@ -144,6 +145,7 @@ app.use('/api/activity', activityRoutes);
 app.use('/api/sleep', sleepRoutes);
 app.use('/api/medications', medicationRoutes);
 app.use('/api/score', scoreRoutes);
+app.use('/api/age', ageRoutes);
 app.use('/api/metrics', metricsRoutes);
 // Forecasts of a person's own metrics. The numbers are a regression, not a model — see
 // utils/predictionForecast.js.
