@@ -11,6 +11,10 @@ const { runReminderJob } = require('../jobs/reminderJob');
 exports.registerToken = async (req, res) => {
     try {
         const { token, platform, deviceName } = req.body;
+        // Real offsets run from -840 (UTC+14) to +720 (UTC-12). Anything else is dropped
+        // rather than stored, because a wrong clock is worse than none — see hydrationNudgeJob.
+        const offset = Number(req.body.tzOffset);
+        const tzOffset = Number.isFinite(offset) && offset >= -840 && offset <= 720 ? offset : null;
 
         if (!token || !isExpoPushToken(token)) {
             return res.status(400).json({ message: 'A valid Expo push token is required' });
@@ -26,7 +30,7 @@ exports.registerToken = async (req, res) => {
         await User.updateOne({ _id: req.auth.userId }, { $pull: { pushTokens: { token } } });
         await User.updateOne(
             { _id: req.auth.userId },
-            { $push: { pushTokens: { token, platform, deviceName, registeredAt: new Date() } } },
+            { $push: { pushTokens: { token, platform, deviceName, tzOffset, registeredAt: new Date() } } },
             { runValidators: true }
         );
 

@@ -114,6 +114,8 @@ require('./jobs/retentionSweep').scheduleRetentionSweep();
 require('./jobs/medicationReminderJob').scheduleMedicationReminders();
 // Bedtime reminders. Not an alarm — see the note on models/SleepSchedule.js.
 require('./jobs/sleepReminderJob').scheduleSleepReminders();
+// A soft 14:00-local nudge for people who track water and have not logged any today.
+require('./jobs/hydrationNudgeJob').scheduleHydrationNudges();
 
 app.use('/api/users', userRoutes);
 app.use('/api/test-results', testResultRoutes);

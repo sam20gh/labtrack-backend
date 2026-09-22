@@ -107,6 +107,12 @@ const UserSchema = new mongoose.Schema({
         platform: { type: String, enum: ['ios', 'android'], default: undefined },
         deviceName: { type: String },
         registeredAt: { type: Date, default: Date.now },
+        /**
+         * The device's `getTimezoneOffset()` when it last registered — minutes west of UTC.
+         * Refreshed on every launch, so it follows DST and travel. Null for a device that
+         * registered before this was sent; `jobs/hydrationNudgeJob.js` will not guess one.
+         */
+        tzOffset: { type: Number, default: null },
     }],
 
     notificationPreferences: {
