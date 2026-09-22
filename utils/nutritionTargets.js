@@ -12,6 +12,8 @@
  * number and stop there.
  */
 
+const { rulesRecommended } = require('./adviceMatch');
+
 /** Mifflin-St Jeor. The published constants; do not round them into the formula. */
 const bmr = ({ weightKg, heightCm, age, sex }) => {
     const base = 10 * weightKg + 6.25 * heightCm - 5 * age;
@@ -151,37 +153,14 @@ const GUIDANCE_SHIFTS = [
 ];
 
 /**
- * Words that set a pattern aside rather than recommend it: "Drop the broad Mediterranean
- * target for now", "no need for more protein". Matching the keyword alone applied the
- * very pattern the plan had just put on hold, shifting the macros towards it and printing
- * its foods as chips under the advice that said not to.
- *
- * Only `pattern` and `emphasise` rules can be set aside this way. For a `reduce` rule the
- * same words are the advice — "avoid white bread", "instead of white rice" — so reading them
- * as negation would cancel exactly the directives that most need to apply.
+ * Kinds whose mention can be set aside ("Drop the broad Mediterranean target for now").
+ * Not `reduce`: there "avoid white bread" and "instead of white rice" are the advice. See
+ * `utils/adviceMatch.js`.
  */
-const SET_ASIDE_BEFORE = /\b(drop|dropp(?:ed|ing)|stop|abandon|pause|skip|park|set aside|put aside|hold off(?: on)?|move away from|step back from|no longer|not|don'?t|do not|no need (?:to|for)|instead of|rather than|without)\b/i;
-const SET_ASIDE_AFTER = /^[^.;:!?]{0,40}\b(on hold|can wait|not yet|not now|is not needed|isn'?t needed)\b/i;
-const CLAUSE_BREAK = /[.;:!?]|\bbut\b|\bthen\b/gi;
-
-/** True when at least one mention of the rule in `text` is not set aside. */
-const recommends = (rule, text) => {
-    const re = new RegExp(rule.match.source, rule.match.flags.includes('g') ? rule.match.flags : `${rule.match.flags}g`);
-    const negatable = rule.kind === 'pattern' || rule.kind === 'emphasise';
-    for (const m of text.matchAll(re)) {
-        if (!negatable) return true;
-        const before = text.slice(0, m.index);
-        const clauseStart = Math.max(0, ...[...before.matchAll(CLAUSE_BREAK)].map((b) => b.index + b[0].length));
-        // The last few words of this clause, so a "not" three sentences back cannot reach it.
-        const lead = before.slice(clauseStart).split(/\s+/).slice(-8).join(' ');
-        const after = text.slice(m.index + m[0].length);
-        if (!SET_ASIDE_BEFORE.test(lead) && !SET_ASIDE_AFTER.test(after)) return true;
-    }
-    return false;
-};
+const NEGATABLE_KINDS = new Set(['pattern', 'emphasise']);
 
 /** The rules a piece of advice actually recommends. */
-const rulesFor = (text) => GUIDANCE_SHIFTS.filter((g) => recommends(g, text));
+const rulesFor = (text) => rulesRecommended(GUIDANCE_SHIFTS, text, NEGATABLE_KINDS);
 
 /** Words that carry no advice, so two directives are compared on what they actually say. */
 const STOPWORDS = new Set([

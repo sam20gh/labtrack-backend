@@ -152,6 +152,35 @@ describe('the goal', () => {
         expect(three.minutes).toBe(one.minutes);
     });
 
+    describe('advice that sets a longer night aside', () => {
+        const goalFor = (title) => targets.computeGoal({ user: {}, sleepItems: [{ _id: 'a', title }] });
+        const keysOf = (title) => targets.deriveGuidance([{ _id: 'a', title }]).map((g) => g.key);
+
+        it('does not lengthen the goal for advice that says not to chase more sleep', () => {
+            // Standard insomnia advice. Matching "sleep more" alone added thirty minutes to
+            // the goal for exactly the person that advice tells to stop spending longer in bed.
+            const { minutes, guidance } = goalFor('Rather than trying to sleep more, keep a fixed wake time every day');
+            expect(minutes).toBe(targets.BASELINE_MINUTES);
+            expect(guidance.map((g) => g.key)).toEqual(['consistency']);
+            expect(goalFor('Do not extend sleep to compensate for a poor night').minutes).toBe(targets.BASELINE_MINUTES);
+        });
+
+        it('still lengthens it when the negation belongs to another clause', () => {
+            expect(goalFor('Do not worry about the odd bad night. Get extra sleep when you can').minutes)
+                .toBe(targets.BASELINE_MINUTES + 30);
+        });
+
+        it('never cancels a behaviour rule, where "avoid" and "no" are the advice', () => {
+            expect(keysOf('Avoid screens before bed')).toEqual(['screens']);
+            expect(keysOf('No caffeine after 2pm')).toEqual(['stimulants']);
+            expect(keysOf('Stop napping during the day')).toEqual(['naps']);
+        });
+
+        it('never cancels a clinical rule, where a missed flag costs more than a needless one', () => {
+            expect(keysOf('Your readings do not suggest sleep apnoea, but mention snoring to your GP')).toEqual(['apnoea']);
+        });
+    });
+
     it('clamps a goal somebody typed to the healthy adult range, and says so', () => {
         const { minutes, basis } = targets.computeGoal({
             user: {}, sleepItems: [], override: 4 * 60,

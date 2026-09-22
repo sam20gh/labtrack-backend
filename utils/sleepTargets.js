@@ -17,6 +17,8 @@
  * the app endorsing a four-hour night by drawing a full ring around it.
  */
 
+const { rulesRecommended } = require('./adviceMatch');
+
 /**
  * The baseline, before any advice is applied.
  *
@@ -79,7 +81,7 @@ const SLEEP_SHIFTS = [
         key: 'consistency',
         kind: 'schedule',
         label: 'Keep a steady schedule',
-        match: /consistent (bed|sleep|wake)|same time (each|every) (night|day)|regular (sleep|bed) ?(time|schedule)|sleep hygiene|circadian|shift work/i,
+        match: /consistent (bed|sleep|wake)|fixed (bed|sleep|wake)[- ]?(time|up)|same time (each|every) (night|day)|regular (sleep|bed) ?(time|schedule)|sleep hygiene|circadian|shift work/i,
         shift: 0,
         focus: ['consistency'],
     },
@@ -138,6 +140,15 @@ const SLEEP_SHIFTS = [
     },
 ];
 
+/**
+ * Kinds whose mention can be set aside, so "rather than trying to sleep more, keep a fixed
+ * wake time" does not lengthen the goal. `behaviour` is excluded because "avoid screens" and
+ * "no caffeine after 2pm" are the advice. `clinical` is excluded because "not consistent with
+ * apnoea" is ambiguous, and a clinical flag raised needlessly costs less than one missed.
+ * See `utils/adviceMatch.js`.
+ */
+const NEGATABLE_KINDS = new Set(['duration', 'schedule']);
+
 /** Every focus a shift can name. The dashboard branches on these, so they are enumerated. */
 const FOCUS_KEYS = ['duration', 'consistency', 'efficiency', 'bedtime', 'deep', 'clinical'];
 
@@ -174,7 +185,7 @@ const deriveGuidance = (sleepItems = []) => {
 
     for (const item of sleepItems) {
         const text = `${item.title || ''} ${item.description || ''}`;
-        const matched = SLEEP_SHIFTS.filter((s) => s.match.test(text));
+        const matched = rulesRecommended(SLEEP_SHIFTS, text, NEGATABLE_KINDS);
 
         if (!matched.length) {
             guidance.push({
