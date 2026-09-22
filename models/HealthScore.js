@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 /**
- * One computed LabTrack score, kept.
+ * One computed Miovix score, kept.
  *
  * Append-only, like `Interpretation` and `MedicationCheck`, and for the same two reasons.
  *

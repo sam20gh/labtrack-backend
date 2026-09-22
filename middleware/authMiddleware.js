@@ -109,7 +109,7 @@ const authenticateToken = async (req, res, next) => {
         // A valid Supabase token with no matching local User means the account was never
         // provisioned here — treat as unauthenticated rather than letting it through.
         if (!auth.userId) {
-            return res.status(403).json({ message: 'No LabTrack account linked to this identity' });
+            return res.status(403).json({ message: 'No Miovix account linked to this identity' });
         }
 
         req.auth = auth;

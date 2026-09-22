@@ -1,5 +1,5 @@
 /**
- * What LabTrack can predict, where each number comes from, and how a forecast of it is read.
+ * What Miovix can predict, where each number comes from, and how a forecast of it is read.
  *
  * One registry rather than a branch per metric in the controller, for the reason
  * `MetricLog` gives about weight/water/blood pressure being one collection: the shape is
@@ -60,8 +60,8 @@ const fromDaily = (path) => async (userId) => {
 
 const METRICS = {
     /**
-     * The LabTrack score itself. The kit calls it the "Turing Score" throughout, which is the
-     * design system's name and not the product's — everything user-facing says LabTrack. It
+     * The Miovix score itself. The kit calls it the "Turing Score" throughout, which is the
+     * design system's name and not the product's — everything user-facing says Miovix. It
      * gets its own screen with a min/average/max band rather than a single line.
      *
      * Reads `HealthScore` snapshots, which are written at most once every six hours, so a
@@ -69,7 +69,7 @@ const METRICS = {
      */
     turing_score: {
         key: 'turing_score',
-        label: 'LabTrack Score',
+        label: 'Miovix Score',
         shortLabel: 'Score',
         unit: 'pts',
         icon: 'medkit',

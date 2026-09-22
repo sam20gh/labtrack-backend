@@ -96,7 +96,7 @@ const NotTestedSchema = new mongoose.Schema({
 
 const GenotypeFileSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    /** Set when the sample arrived through a LabTrack order rather than a seed or import. */
+    /** Set when the sample arrived through a Miovix order rather than a seed or import. */
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
 
     labName: { type: String },

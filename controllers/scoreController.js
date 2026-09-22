@@ -1,5 +1,5 @@
 /**
- * The LabTrack score API.
+ * The Miovix score API.
  *
  * The score used to be computed in `lib/healthScore.ts` on the phone. It moved here for
  * three reasons, in order of how much they matter:

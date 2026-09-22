@@ -104,7 +104,7 @@ exports.sendTest = async (req, res) => {
     try {
         const { notifyUser } = require('../jobs/reminderJob');
         const result = await notifyUser(req.auth.userId, {
-            title: 'LabTrack',
+            title: 'Miovix',
             body: 'Notifications are working. This is a test.',
             data: { type: 'test' },
         });

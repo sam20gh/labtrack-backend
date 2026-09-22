@@ -109,7 +109,7 @@ describe('requireReviewScope', () => {
 
         expect(next).not.toHaveBeenCalled();
         // 404 rather than 403: a 403 would confirm the patient exists, turning this into a
-        // way to ask "is this person a LabTrack patient?" one id at a time.
+        // way to ask "is this person a Miovix patient?" one id at a time.
         expect(res.status).toHaveBeenCalledWith(404);
     });
 

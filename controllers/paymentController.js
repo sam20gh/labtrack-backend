@@ -75,7 +75,7 @@ exports.createPaymentIntent = async (req, res) => {
                 automatic_payment_methods: { enabled: true },
                 // The webhook is the source of truth, and it only receives metadata
                 metadata: { orderId: String(order._id), labtrackUserId: String(user._id) },
-                description: `LabTrack order ${order._id}`,
+                description: `Miovix order ${order._id}`,
             });
 
             await Order.findByIdAndUpdate(order._id, {

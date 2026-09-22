@@ -40,7 +40,7 @@
 
 /** Appended to every rendered interaction check. The checker never issues an all-clear. */
 const SAFETY_FOOTER =
-    'This check looks at what LabTrack knows about your medicines. It cannot see anything '
+    'This check looks at what Miovix knows about your medicines. It cannot see anything '
     + 'you have not added, and no automated check replaces your pharmacist or doctor. Never '
     + 'stop or change a prescribed medicine because of what you read here — take this to '
     + 'them and ask.';

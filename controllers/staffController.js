@@ -145,7 +145,7 @@ exports.inviteStaff = async (req, res, next) => {
             return res.status(502).json({
                 message:
                     `Supabase could not send the invitation to ${email}. This is its email ` +
-                    'delivery, not LabTrack: the built-in service is rate-limited to a few ' +
+                    'delivery, not Miovix: the built-in service is rate-limited to a few ' +
                     'messages an hour and is not meant for production. Configure custom SMTP ' +
                     'under Project Settings → Authentication, then try again.',
                 providerMessage: error.message,

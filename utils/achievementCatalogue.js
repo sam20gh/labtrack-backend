@@ -15,7 +15,7 @@
  * a single "reasonable" entry.
  *
  * There is no badge for a blood pressure in range, a BMI under 25, a resting heart rate
- * under 60, or a LabTrack score above 80. Not because those are hard to compute — they are
+ * under 60, or a Miovix score above 80. Not because those are hard to compute — they are
  * the easiest things here to compute — but because a badge is a reward, and rewarding a
  * measurement rewards the people whose bodies already cooperate. A person managing
  * hypertension, or on a medication that moves their weight, would open this screen and find
@@ -392,7 +392,7 @@ const ACHIEVEMENTS = [
         unit: 'questions',
         levels: [1, 20, 100, 400],
         points: POINTS.small,
-        how: 'Ask LabTrack AI {n} questions',
+        how: 'Ask Miovix AI {n} questions',
         blurb: 'It answers with your own records in front of it.',
     },
 
@@ -433,7 +433,7 @@ const ACHIEVEMENTS = [
         unit: 'days',
         levels: [7, 30, 180, 365],
         points: POINTS.medium,
-        how: 'Be with LabTrack for {n} days',
+        how: 'Be with Miovix for {n} days',
         blurb: 'The one badge that only needs you to still be here.',
     },
 ];

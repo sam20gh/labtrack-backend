@@ -1,5 +1,5 @@
 /**
- * The LabTrack score.
+ * The Miovix score.
  *
  * The kit calls it the "turing score" and explains it as "a comprehensive health & wellness
  * score ... based on your **active data**". That last phrase is the whole design, and it is
@@ -32,7 +32,7 @@
  * to be server-side because a trend chart needs snapshots, and because the interpretation
  * engine and the plan generator both read it.
  *
- * Nothing here is a clinical instrument. It summarises the records LabTrack holds, and
+ * Nothing here is a clinical instrument. It summarises the records Miovix holds, and
  * `SCORE_DISCLAIMER` says so wherever the number is shown.
  */
 
@@ -45,7 +45,7 @@ const clamp = (n) => Math.max(0, Math.min(100, Math.round(n)));
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const SCORE_DISCLAIMER =
-    'Your score summarises the records in LabTrack — it is not a diagnosis. Always discuss results with a clinician.';
+    'Your score summarises the records in Miovix — it is not a diagnosis. Always discuss results with a clinician.';
 
 /**
  * The bands, and the words on them.
@@ -63,7 +63,7 @@ const SCORE_DISCLAIMER =
  * the next app-store release. Same argument as `SCORE_DISCLAIMER` directly above.
  *
  * None of them promises health or diagnoses its absence — they describe what the records
- * in LabTrack look like, which is the only thing this number actually knows.
+ * in Miovix look like, which is the only thing this number actually knows.
  */
 const BANDS = [
     {
@@ -72,7 +72,7 @@ const BANDS = [
         min: 71,
         max: 100,
         description:
-            'Most of what LabTrack tracks for you is sitting where it should. Keep logging — '
+            'Most of what Miovix tracks for you is sitting where it should. Keep logging — '
             + 'the score leans hardest on the areas your devices and records actually measure.',
     },
     {
@@ -476,7 +476,7 @@ const scoreHydration = ({ metrics = [] } = {}) => {
 };
 
 /**
- * BMI, from the most recent weight LabTrack holds.
+ * BMI, from the most recent weight Miovix holds.
  *
  * `weightSource` decides the provenance: a weight that arrived from a scale or a health store
  * is observed, one typed during onboarding is reported and decays like any other answer.
@@ -599,7 +599,7 @@ const MIN_PILLARS = 3;
 const DEFAULT_WINDOW_DAYS = 30;
 
 /**
- * Score one person from everything LabTrack holds about them.
+ * Score one person from everything Miovix holds about them.
  *
  * `input` is what `scoreController.gather()` assembles; every field is optional, and a
  * missing one costs its pillar rather than the score. Pure and synchronous — no database

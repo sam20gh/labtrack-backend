@@ -347,7 +347,7 @@ exports.shareAchievement = async (req, res) => {
             url,
             shareHost: shareHost(),
             /** The words the app puts in the share sheet, so both clients say the same thing. */
-            message: `I just unlocked ${achievement.name} on LabTrack — ${instruction(achievement, row.threshold).toLowerCase()}.`,
+            message: `I just unlocked ${achievement.name} on Miovix — ${instruction(achievement, row.threshold).toLowerCase()}.`,
             level: row.level,
         });
     } catch (err) {
@@ -386,7 +386,7 @@ exports.revokeShare = async (req, res) => {
  * So it is gated on `optedIn`, exactly as the avatar is: the one screen that asks for that
  * consent is the leaderboard switch, which names what becomes visible before it is flipped.
  *
- * Without it the card reads "A LabTrack member", which is a complete card — the badge is the
+ * Without it the card reads "A Miovix member", which is a complete card — the badge is the
  * subject, not the person.
  *
  * This is shared with `getAchievement` so the preview the app draws before sharing is built
@@ -483,7 +483,7 @@ exports.getLeaderboard = async (req, res) => {
         res.json({
             board: board.map((row, i) => ({
                 rank: i + 1,
-                name: row.displayName || 'LabTrack member',
+                name: row.displayName || 'Miovix member',
                 avatar: row.avatar,
                 points: row.points,
                 unlocked: row.unlockedCount,
@@ -539,7 +539,7 @@ exports.updateLeaderboardProfile = async (req, res) => {
             const existing = await AchievementProfile.findOne({ userId }).select('displayName').lean();
             if (!existing?.displayName) {
                 const user = await User.findById(userId).select('firstName').lean();
-                update.displayName = (user?.firstName || 'LabTrack member').slice(0, 40);
+                update.displayName = (user?.firstName || 'Miovix member').slice(0, 40);
             }
         }
 
@@ -635,7 +635,7 @@ exports.getStats = async (req, res) => {
                 },
             ],
             note:
-                'These are counts of what you have done in LabTrack. Your health results are '
+                'These are counts of what you have done in Miovix. Your health results are '
                 + 'on your score and results screens, and none of them are included here.',
         });
     } catch (err) {

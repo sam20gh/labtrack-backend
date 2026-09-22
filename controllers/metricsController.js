@@ -1,7 +1,7 @@
 /**
  * Health metrics: weight, hydration, blood pressure.
  *
- * The three things in the design's metric list that no device currently reports into LabTrack,
+ * The three things in the design's metric list that no device currently reports into Miovix,
  * so **entry is by hand and that is the source of truth for now**. When `healthSync` learns to
  * read body mass and blood pressure from HealthKit and Health Connect, those rows land in the
  * same `MetricLog` collection with a `source` and an `externalId`, the rollup does not change,

@@ -52,7 +52,7 @@ const requireReviewScope = async (req, res, next) => {
              * 404, not 403.
              *
              * A 403 confirms the patient exists, which turns this endpoint into a way of
-             * asking "is this person a LabTrack patient?" one id at a time.
+             * asking "is this person a Miovix patient?" one id at a time.
              * `middleware/ownership.js` makes the same call for the same reason.
              */
             return res.status(404).json({ message: 'Not found' });

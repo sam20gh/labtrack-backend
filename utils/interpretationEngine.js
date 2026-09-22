@@ -303,7 +303,7 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
      */
     if (score && score.value != null) {
         lines.push('');
-        lines.push('## Their LabTrack score');
+        lines.push('## Their Miovix score');
         lines.push(`${score.value}/100 (${score.bandLabel || score.band}), of which `
             + `${score.coverage.observedWeight}% comes from measured data rather than their answers.`);
         const weak = score.pillars

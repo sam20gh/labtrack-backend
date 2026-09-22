@@ -1,6 +1,6 @@
-# LabTrack — backend API
+# Miovix — backend API
 
-Express 4 + Mongoose 8 REST API for LabTrack, backed by MongoDB Atlas. Deployed on Render
+Express 4 + Mongoose 8 REST API for Miovix, backed by MongoDB Atlas. Deployed on Render
 at `https://labtrack-backend.onrender.com`, auto-deploying on push to `main`.
 
 The mobile client lives in a separate repo: `github.com/sam20gh/labtrack-frontend`.
@@ -58,7 +58,7 @@ uploads/                 Multer temp dir for image uploads
 
 ## Endpoints
 
-Full reference with auth requirements and payload shapes: `docs/API.md` in the LabTrack
+Full reference with auth requirements and payload shapes: `docs/API.md` in the Miovix
 workspace directory that contains this repo.
 
 | Router | Auth |
