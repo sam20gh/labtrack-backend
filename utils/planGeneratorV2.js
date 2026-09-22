@@ -14,6 +14,7 @@
  * simple date queries.
  */
 const PlanItem = require('../models/PlanItem');
+const Interpretation = require('../models/Interpretation');
 const Product = require('../models/Product');
 const Professional = require('../models/Professional');
 const { calculateAge } = require('./biomarkerEvaluator');
@@ -221,23 +222,55 @@ const buildPlanItems = ({ interpretation, user, products = [], professionals = [
  * Only untouched AI items are removed: anything the person ordered, booked, completed, or
  * dismissed, and anything a specialist added, survives regeneration. Losing a booked
  * appointment because an interpretation was re-run would be indefensible.
+ *
+ * With `interpretationId`, the newest interpretation wins, whatever order the writes land
+ * in. Delete-then-insert let two overlapping generations both delete and then both
+ * insert, leaving the person with two copies of their plan in slightly different words —
+ * the nutrition tracker showed the diet advice twice. So the new items are inserted first,
+ * tagged with the interpretation they came from, and then every mutable AI item that does
+ * not belong to the *newest* interpretation is removed — including this call's own, if a
+ * newer one was written while it ran. Two racing calls both converge on the same set.
  */
-const regeneratePlan = async ({ interpretation, user, products, professionals, sourceDnaReportId, sourceTestResultId, horizonMonths }) => {
+const regeneratePlan = async ({ interpretation, interpretationId, user, products, professionals, sourceDnaReportId, sourceTestResultId, horizonMonths }) => {
     const { items, unmatched } = buildPlanItems({
         interpretation, user, products, professionals, sourceDnaReportId, sourceTestResultId, horizonMonths,
     });
 
     // `source: 'ai'` is the guard that protects clinician-ordered follow-ups: a
     // regenerated interpretation must never delete what a doctor put on the plan.
-    const removed = await PlanItem.deleteMany({
+    const replaceable = {
         userId: user._id,
         source: 'ai',
         status: { $in: PlanItem.MUTABLE_STATUSES },
-    });
+    };
 
-    const created = items.length ? await PlanItem.insertMany(items) : [];
+    if (!interpretationId) {
+        const removed = await PlanItem.deleteMany(replaceable);
+        const created = items.length ? await PlanItem.insertMany(items) : [];
+        return { created, removedCount: removed.deletedCount, unmatched };
+    }
 
-    return { created, removedCount: removed.deletedCount, unmatched };
+    const created = items.length
+        ? await PlanItem.insertMany(items.map((i) => ({ ...i, sourceInterpretationId: interpretationId })))
+        : [];
+
+    // Read after the insert, so a newer interpretation written meanwhile is seen here or
+    // by that call's own sweep — never by neither.
+    const newest = await Interpretation.findOne({ userId: user._id })
+        .sort({ generatedAt: -1, _id: -1 })
+        .select('_id')
+        .lean();
+    const keep = newest?._id || interpretationId;
+
+    const removed = await PlanItem.deleteMany({ ...replaceable, sourceInterpretationId: { $ne: keep } });
+    const superseded = String(keep) !== String(interpretationId);
+
+    return {
+        created: superseded ? [] : created,
+        removedCount: removed.deletedCount - (superseded ? created.length : 0),
+        unmatched,
+        superseded,
+    };
 };
 
 /**
@@ -277,6 +310,7 @@ const advanceRecurringItem = async (completedItem) => {
         source: completedItem.source,
         sourceDnaReportId: completedItem.sourceDnaReportId,
         sourceTestResultId: completedItem.sourceTestResultId,
+        sourceInterpretationId: completedItem.sourceInterpretationId,
         productId: completedItem.productId,
         productName: completedItem.productName,
         professionalId: completedItem.professionalId,

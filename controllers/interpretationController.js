@@ -298,6 +298,120 @@ const presentation = (snapshot) => {
     };
 };
 
+/** Per-user generations currently running. In-process, so it holds for one server. */
+const generationsInFlight = new Map();
+
+const send = (res, { status, headers, body }, extra) => {
+    if (headers) res.set(headers);
+    return res.status(status).json(extra ? { ...body, ...extra } : body);
+};
+
+/**
+ * The model call and everything it writes, as `{ status, body, headers? }` rather than a
+ * response, so requests that join a run in flight get the same answer as the one that
+ * started it.
+ */
+const runGeneration = async ({ userId, dnaReportId, testResultId }) => {
+    try {
+        // Only reached when a model call is actually about to happen: a cache hit in the
+        // handler costs nothing and must never be rate-limited.
+        const verdict = await assessRegeneration({ userId });
+        if (!verdict.allowed) {
+            const existing = verdict.existing ? presentToPatient(verdict.existing) : null;
+            return {
+                status: 429,
+                headers: { 'Retry-After': String(verdict.retryAfterSeconds) },
+                body: {
+                    message: verdict.message,
+                    reason: verdict.reason,
+                    retryAfterSeconds: verdict.retryAfterSeconds,
+                    // Hand back what they already have, so the client can keep showing an
+                    // analysis rather than treating a refusal as an absence.
+                    interpretation: existing?.content ?? null,
+                    verification: verdict.existing ? presentation(verdict.existing) : null,
+                },
+            };
+        }
+
+        const context = await gatherContext(userId);
+        if (!context.user) return { status: 404, body: { message: 'User not found' } };
+
+        if (!context.dnaReports.length && !context.biomarkers.length) {
+            return {
+                status: 400,
+                body: { message: 'Add a test result or genetic report before generating an interpretation' },
+            };
+        }
+
+        const result = await interpret(context);
+        if (!result.ok) return { status: 502, body: { message: result.error } };
+
+        // Upsert rather than insert: the old path created a new row on every save, so later
+        // The snapshot is the only store. A failure here has to surface: swallowing it would
+        // take the user's money for a model call and then show them nothing.
+        const snapshot = await writeSnapshot({ userId, context, data: result.data, dnaReportId, testResultId });
+
+        // The report's status still drives gene-adjusted reference ranges in
+        // `biomarkerEvaluator`, so it is kept current. The interpretation itself is no
+        // longer copied here — `Interpretation` holds the one authoritative version, and
+        // two copies that could drift is the defect this migration removed.
+        if (dnaReportId) {
+            await DnaReport.findOneAndUpdate(
+                { _id: dnaReportId, userId },
+                { $set: { status: 'ai_interpreted' } },
+                { runValidators: true }
+            );
+        }
+
+        // Turn the interpretation into dated, actionable items. The server loads the
+        // catalogues itself — the old /api/plans/create made the client POST the entire
+        // product and professional lists, which is both wasteful and trivially forgeable.
+        const [products, professionals] = await Promise.all([
+            Product.find().lean(),
+            Professional.find().select('firstname lastname speciality profile_image').lean(),
+        ]);
+
+        const plan = await regeneratePlan({
+            interpretation: result.data,
+            interpretationId: snapshot?._id,
+            user: context.user,
+            products,
+            professionals,
+            sourceDnaReportId: dnaReportId,
+            sourceTestResultId: testResultId,
+        });
+
+        return {
+            status: 201,
+            body: {
+                message: 'Interpretation generated',
+                cached: false,
+                // The client must show this as AI-generated and pending clinical review
+                aiGenerated: true,
+                // Retained for older clients. `verification` below is the field to read: it is
+                // source-agnostic, where this one was only ever true for DNA reports.
+                pendingSpecialistReview: Boolean(dnaReportId),
+                verification: snapshot
+                    ? presentation(snapshot)
+                    : { status: 'unverified', withheld: false, reviewRequired: true },
+                model: MODEL,
+                interpretation: result.data,
+                plan: {
+                    created: plan.created.length,
+                    replaced: plan.removedCount,
+                    // Surfaced rather than swallowed: a recommendation with nothing to book
+                    // against is a catalogue gap someone needs to close
+                    unmatched: plan.unmatched,
+                },
+                usage: result.usage,
+            },
+        };
+    } catch (error) {
+        console.error('❌ Interpretation error:', error);
+        return { status: 500, body: { message: 'Could not generate interpretation', error: error.message } };
+    }
+};
+
 /**
  * POST /api/interpretation/generate
  *
@@ -335,92 +449,26 @@ exports.generateInterpretation = async (req, res) => {
             }
         }
 
-        // Only reached when a model call is actually about to happen: a cache hit above
-        // costs nothing and must never be rate-limited.
-        const verdict = await assessRegeneration({ userId });
-        if (!verdict.allowed) {
-            const existing = verdict.existing ? presentToPatient(verdict.existing) : null;
-            return res.status(429)
-                .set('Retry-After', String(verdict.retryAfterSeconds))
-                .json({
-                    message: verdict.message,
-                    reason: verdict.reason,
-                    retryAfterSeconds: verdict.retryAfterSeconds,
-                    // Hand back what they already have, so the client can keep showing an
-                    // analysis rather than treating a refusal as an absence.
-                    interpretation: existing?.content ?? null,
-                    verification: verdict.existing ? presentation(verdict.existing) : null,
-                });
+        // One generation per person at a time. The model call takes seconds and the home
+        // screen asks from `useFocusEffect`, so a second request routinely lands while the
+        // first is still running. Two runs meant two model calls, two snapshots and two
+        // copies of the plan worded slightly differently. A request that arrives mid-run
+        // waits for that run and is given its result. No await between the check and the
+        // set, so two requests cannot both miss it.
+        const key = String(userId);
+        const running = generationsInFlight.get(key);
+        if (running) {
+            const outcome = await running;
+            return send(res, outcome, { joined: true });
         }
 
-        const context = await gatherContext(userId);
-        if (!context.user) return res.status(404).json({ message: 'User not found' });
-
-        if (!context.dnaReports.length && !context.biomarkers.length) {
-            return res.status(400).json({
-                message: 'Add a test result or genetic report before generating an interpretation',
-            });
+        const run = runGeneration({ userId, dnaReportId, testResultId });
+        generationsInFlight.set(key, run);
+        try {
+            return send(res, await run);
+        } finally {
+            if (generationsInFlight.get(key) === run) generationsInFlight.delete(key);
         }
-
-        const result = await interpret(context);
-        if (!result.ok) return res.status(502).json({ message: result.error });
-
-        // Upsert rather than insert: the old path created a new row on every save, so later
-        // The snapshot is the only store. A failure here has to surface: swallowing it would
-        // take the user's money for a model call and then show them nothing.
-        const snapshot = await writeSnapshot({ userId, context, data: result.data, dnaReportId, testResultId });
-
-        // The report's status still drives gene-adjusted reference ranges in
-        // `biomarkerEvaluator`, so it is kept current. The interpretation itself is no
-        // longer copied here — `Interpretation` holds the one authoritative version, and
-        // two copies that could drift is the defect this migration removed.
-        if (dnaReportId) {
-            await DnaReport.findOneAndUpdate(
-                { _id: dnaReportId, userId },
-                { $set: { status: 'ai_interpreted' } },
-                { runValidators: true }
-            );
-        }
-
-        // Turn the interpretation into dated, actionable items. The server loads the
-        // catalogues itself — the old /api/plans/create made the client POST the entire
-        // product and professional lists, which is both wasteful and trivially forgeable.
-        const [products, professionals] = await Promise.all([
-            Product.find().lean(),
-            Professional.find().select('firstname lastname speciality profile_image').lean(),
-        ]);
-
-        const plan = await regeneratePlan({
-            interpretation: result.data,
-            user: context.user,
-            products,
-            professionals,
-            sourceDnaReportId: dnaReportId,
-            sourceTestResultId: testResultId,
-        });
-
-        res.status(201).json({
-            message: 'Interpretation generated',
-            cached: false,
-            // The client must show this as AI-generated and pending clinical review
-            aiGenerated: true,
-            // Retained for older clients. `verification` below is the field to read: it is
-            // source-agnostic, where this one was only ever true for DNA reports.
-            pendingSpecialistReview: Boolean(dnaReportId),
-            verification: snapshot
-                ? presentation(snapshot)
-                : { status: 'unverified', withheld: false, reviewRequired: true },
-            model: MODEL,
-            interpretation: result.data,
-            plan: {
-                created: plan.created.length,
-                replaced: plan.removedCount,
-                // Surfaced rather than swallowed: a recommendation with nothing to book
-                // against is a catalogue gap someone needs to close
-                unmatched: plan.unmatched,
-            },
-            usage: result.usage,
-        });
     } catch (error) {
         console.error('❌ Interpretation error:', error);
         res.status(500).json({ message: 'Could not generate interpretation', error: error.message });

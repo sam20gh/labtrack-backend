@@ -150,17 +150,87 @@ const GUIDANCE_SHIFTS = [
     },
 ];
 
+/** Words that carry no advice, so two directives are compared on what they actually say. */
+const STOPWORDS = new Set([
+    'the', 'and', 'for', 'with', 'your', 'you', 'from', 'that', 'this', 'into', 'more', 'less',
+    'such', 'like', 'are', 'can', 'will', 'would', 'should', 'aim', 'try', 'each', 'per',
+]);
+
+const wordsOf = (text = '') => new Set(
+    text.toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 2 && !STOPWORDS.has(w))
+        .map((w) => w.replace(/ies$/, 'y').replace(/s$/, '')),
+);
+
+const overlap = (a, b) => {
+    if (!a.size || !b.size) return 0;
+    let shared = 0;
+    for (const w of a) if (b.has(w)) shared += 1;
+    return shared / (a.size + b.size - shared);
+};
+
+/** Share of wording above which two unrecognised directives are one piece of advice. */
+const SAME_WORDING = 0.6;
+
+/**
+ * Collapse plan items that give the same advice into one, keeping the newest wording.
+ *
+ * Two generations of one interpretation word the same advice slightly differently, and
+ * before regeneration stopped racing, both copies could land on the plan — so the tracker
+ * showed one directive twice. Deliberately conservative, because merging two different
+ * pieces of advice would silently drop one:
+ *
+ *   - the same rules must match. Different macro shifts are different advice, however
+ *     similar the sentences ("eat more fibre" / "eat more protein");
+ *   - advice no rule recognises must also share most of its wording;
+ *   - a clinician's item never merges with an AI one, and is listed first so it is the
+ *     wording a shared rule is shown with.
+ *
+ * Nothing is reworded. The surviving directive is one the plan actually contains.
+ */
+const collapseSameAdvice = (dietItems) => {
+    const entries = dietItems.map((item, index) => {
+        const text = `${item.title || ''} ${item.description || ''}`;
+        return {
+            item,
+            index,
+            source: item.source || 'ai',
+            at: new Date(item.createdAt || 0).getTime() || 0,
+            keys: GUIDANCE_SHIFTS.filter((g) => g.match.test(text)).map((g) => g.key).join('|'),
+            words: wordsOf(item.title),
+            ids: [item._id],
+        };
+    });
+
+    const sameAdvice = (a, b) => a.source === b.source
+        && a.keys === b.keys
+        && (a.keys !== '' || overlap(a.words, b.words) >= SAME_WORDING);
+
+    const kept = [];
+    for (const e of [...entries].sort((a, b) => b.at - a.at || a.index - b.index)) {
+        const twin = kept.find((k) => sameAdvice(k, e));
+        if (twin) twin.ids.push(e.item._id);
+        else kept.push(e);
+    }
+
+    return kept
+        .sort((a, b) => (a.source === 'ai') - (b.source === 'ai') || a.index - b.index)
+        .map((e) => ({ ...e.item, mergedIds: e.ids.filter((id) => id != null) }));
+};
+
 /**
  * Read the plan's diet advice and return the directives it implies.
  *
- * @param {{title?: string, description?: string, _id?: any}[]} dietItems
+ * @param {{title?: string, description?: string, _id?: any, source?: string, createdAt?: any}[]} dietItems
  *        PlanItems with `type: 'lifestyle'` and `condition: 'diet'`.
  */
 const deriveGuidance = (dietItems = []) => {
     const guidance = [];
     const seen = new Set();
 
-    for (const item of dietItems) {
+    for (const item of collapseSameAdvice(dietItems)) {
         const text = `${item.title || ''} ${item.description || ''}`;
         const matched = GUIDANCE_SHIFTS.filter((g) => g.match.test(text));
 
@@ -170,6 +240,7 @@ const deriveGuidance = (dietItems = []) => {
         if (matched.length === 0) {
             guidance.push({
                 planItemId: item._id,
+                planItemIds: item.mergedIds,
                 key: 'other',
                 kind: 'other',
                 label: item.title,
@@ -186,6 +257,7 @@ const deriveGuidance = (dietItems = []) => {
             seen.add(g.key);
             guidance.push({
                 planItemId: item._id,
+                planItemIds: item.mergedIds,
                 key: g.key,
                 kind: g.kind,
                 label: g.label,

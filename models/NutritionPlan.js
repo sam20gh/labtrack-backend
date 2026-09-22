@@ -25,6 +25,8 @@ const mongoose = require('mongoose');
 const GuidanceSchema = new mongoose.Schema({
     /** The PlanItem this came from, so the tracker can link back to the plan. */
     planItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'PlanItem' },
+    /** Every PlanItem giving this same advice, when several were collapsed into one. */
+    planItemIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'PlanItem' }],
     /** Matched key from `nutritionTargets.GUIDANCE_SHIFTS`, or 'other' when unrecognised. */
     key: { type: String, required: true },
     kind: { type: String, enum: ['pattern', 'emphasise', 'reduce', 'other'], default: 'other' },

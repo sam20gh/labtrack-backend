@@ -61,6 +61,46 @@ describe('deriveGuidance', () => {
         expect(guidance.filter((g) => g.key === 'mediterranean')).toHaveLength(1);
     });
 
+    describe('collapsing the same advice given twice', () => {
+        const at = (title, minutesAgo, extra = {}) => ({
+            _id: `${title}-${minutesAgo}`, title, description: 'Because of your results.',
+            source: 'ai', createdAt: new Date(Date.now() - minutesAgo * 60000), ...extra,
+        });
+
+        it('shows one directive, in the newest wording, when two generations paraphrased it', () => {
+            const guidance = deriveGuidance([
+                at('Eat your largest meal before 3pm most days', 5),
+                at('Eat your largest meal before 3pm on most days', 1),
+            ]);
+            expect(guidance).toHaveLength(1);
+            expect(guidance[0].directive).toBe('Eat your largest meal before 3pm on most days');
+            expect(guidance[0].planItemIds).toHaveLength(2);
+        });
+
+        it('never merges advice that moves the macros differently, however alike it reads', () => {
+            const guidance = deriveGuidance([at('Eat more fibre', 2), at('Eat more protein', 1)]);
+            expect(guidance.map((g) => g.key).sort()).toEqual(['higher_protein', 'more_fibre']);
+        });
+
+        it('keeps different unrecognised advice apart', () => {
+            const guidance = deriveGuidance([
+                at('Eat your largest meal before 3pm', 2),
+                at('Stop eating two hours before bed', 1),
+            ]);
+            expect(guidance).toHaveLength(2);
+        });
+
+        it('never merges a clinician\'s advice into the AI\'s, and shows the clinician\'s wording first', () => {
+            const guidance = deriveGuidance([
+                at('Adopt a Mediterranean diet', 1),
+                at('Follow a Mediterranean diet', 3, { source: 'specialist' }),
+            ]);
+            expect(guidance).toHaveLength(1);
+            expect(guidance[0].directive).toBe('Follow a Mediterranean diet');
+            expect(guidance[0].planItemIds).toEqual(['Follow a Mediterranean diet-3']);
+        });
+    });
+
     it('returns nothing for an empty plan', () => {
         expect(deriveGuidance([])).toEqual([]);
         expect(deriveGuidance()).toEqual([]);

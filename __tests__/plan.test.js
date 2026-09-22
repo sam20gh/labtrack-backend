@@ -225,3 +225,44 @@ describe('regeneratePlan — scope', () => {
         expect(titles).toContain('Cardiology follow-up');
     });
 });
+
+describe('regeneratePlan — overlapping generations', () => {
+    const Interpretation = require('../models/Interpretation');
+    const userId = new mongoose.Types.ObjectId();
+    const user = { _id: userId, dob: '1985-03-14' };
+    const withDiet = (recommendation) => ({
+        recommended_screenings: [],
+        specialist_consultations: [],
+        lifestyle_recommendations: [{ area: 'diet', recommendation, rationale: 'Because.' }],
+    });
+    const snapshot = (minutesAgo) => Interpretation.create({
+        userId, generatedAt: new Date(Date.now() - minutesAgo * 60000), model: 'test', covers: [], content: {},
+    });
+    const dietTitles = async () => (await PlanItem.find({ userId, condition: 'diet' }).lean()).map((p) => p.title);
+
+    it('leaves one plan, from the newest interpretation, whichever finishes last', async () => {
+        const older = await snapshot(2);
+        const newer = await snapshot(1);
+
+        // The newer run lands first and the older one second — the order that used to
+        // leave both sets on the plan.
+        await regeneratePlan({ interpretation: withDiet('Adopt a Mediterranean diet'), interpretationId: newer._id, user, products: [], professionals: [] });
+        const late = await regeneratePlan({ interpretation: withDiet('Follow a Mediterranean diet'), interpretationId: older._id, user, products: [], professionals: [] });
+
+        expect(await dietTitles()).toEqual(['Adopt a Mediterranean diet']);
+        expect(late.superseded).toBe(true);
+        expect(late.created).toHaveLength(0);
+    });
+
+    it('replaces an untagged plan written before items carried their interpretation', async () => {
+        await PlanItem.create({
+            userId, type: 'lifestyle', title: 'Old advice', condition: 'diet',
+            dueDate: new Date(), status: 'upcoming', source: 'ai',
+        });
+        const current = await snapshot(0);
+
+        await regeneratePlan({ interpretation: withDiet('New advice'), interpretationId: current._id, user, products: [], professionals: [] });
+
+        expect(await dietTitles()).toEqual(['New advice']);
+    });
+});
