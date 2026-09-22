@@ -61,6 +61,35 @@ describe('deriveGuidance', () => {
         expect(guidance.filter((g) => g.key === 'mediterranean')).toHaveLength(1);
     });
 
+    describe('advice that sets a pattern aside', () => {
+        const keysOf = (title) => deriveGuidance([dietItem(title)]).map((g) => g.key);
+
+        it('does not apply a pattern the plan says to drop, and still shows the advice', () => {
+            // The live directive that prompted this: the Mediterranean shift and its oily-fish
+            // chips were applied to advice telling the person to put that pattern on hold.
+            const wording = 'Drop the broad Mediterranean target for now and hold one thing only: '
+                + 'no sugar-sweetened drinks, and nothing sweet or refined after your evening meal.';
+            const guidance = deriveGuidance([dietItem(wording, '')]);
+            expect(guidance.map((g) => g.key)).not.toContain('mediterranean');
+            expect(guidance.map((g) => g.key)).toContain('refined_carbs');
+            expect(guidance.every((g) => g.directive === wording)).toBe(true);
+        });
+
+        it('reads "on hold" and "no need for" as setting aside', () => {
+            expect(keysOf('Keep the Mediterranean pattern on hold for a month')).toEqual(['other']);
+            expect(keysOf('No need for more protein; your intake is adequate')).toEqual(['other']);
+        });
+
+        it('never cancels a reduce rule, where "avoid" and "instead of" are the advice', () => {
+            expect(keysOf('Avoid white bread and added sugar')).toEqual(['refined_carbs']);
+            expect(keysOf('Instead of white rice, choose brown rice')).toEqual(['refined_carbs']);
+        });
+
+        it('keeps a negation to its own clause', () => {
+            expect(keysOf('Do not worry about fat. Adopt a Mediterranean diet')).toEqual(['mediterranean']);
+        });
+    });
+
     describe('collapsing the same advice given twice', () => {
         const at = (title, minutesAgo, extra = {}) => ({
             _id: `${title}-${minutesAgo}`, title, description: 'Because of your results.',
