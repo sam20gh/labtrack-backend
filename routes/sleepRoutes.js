@@ -18,6 +18,7 @@ router.put('/plan', c.updatePlan);
 router.get('/overview', c.getOverview);
 router.get('/insight', c.getInsight);
 router.get('/score', c.getScore);
+router.get('/record', c.getRecord);
 
 router.get('/nights', c.listNights);
 router.post('/nights', c.createNight);

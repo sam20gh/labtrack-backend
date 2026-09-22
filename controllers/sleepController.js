@@ -12,6 +12,7 @@ const {
     stageBreakdown, stageRanges, byWeekday, consistency, comparePeriods,
     computeStreak, goalProgress, localMinutes, STAGES,
 } = require('../utils/sleepInsight');
+const { buildRecord, classifyDay, RECORD_RANGES } = require('../utils/sleepRecord');
 const scoreController = require('./scoreController');
 const achievementController = require('./achievementController');
 
@@ -852,6 +853,95 @@ exports.getInsight = async (req, res) => {
     }
 };
 
+/* -------------------------------------------------------------- record */
+
+/** `YYYY-MM-DD` shifted by whole days. Calendar arithmetic on the string, never on a clock. */
+const addDays = (day, n) =>
+    new Date(new Date(`${day}T00:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
+
+/**
+ * GET /api/sleep/record?range=&end=&tzOffset=
+ *
+ * The Sleep Record screen: every night *and nap* in a window, stacked by stage, bucketed for
+ * the chart, with the cards under it. The arithmetic is `utils/sleepRecord.js`; this only
+ * resolves the window and reads the rows.
+ *
+ * It exists beside `/overview` rather than widening it because the overview keeps one row
+ * per day and throws the rest away, which is exactly the part this screen draws.
+ *
+ * `end` pages the window back in time. It is clamped to today — a future window is a chart
+ * of nights nobody has had yet — and `all` ignores it and runs from the first night on record.
+ * `1d` also carries the day's sessions with their segments, because a single day is drawn as
+ * a timeline rather than as one bar.
+ */
+exports.getRecord = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const tzOffset = Number(req.query.tzOffset) || 0;
+        const range = Object.prototype.hasOwnProperty.call(RECORD_RANGES, req.query.range) ? req.query.range : '1w';
+        const today = localDay(new Date(), tzOffset);
+        const requested = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.end || '')) ? String(req.query.end) : today;
+        const end = range === 'all' || requested > today ? today : requested;
+
+        let length = RECORD_RANGES[range];
+        if (range === 'all') {
+            const first = await SleepSession.findOne({ userId }).sort({ day: 1 }).select('day').lean();
+            length = first
+                ? Math.round((new Date(`${end}T00:00:00Z`) - new Date(`${first.day}T00:00:00Z`)) / 86_400_000) + 1
+                : 1;
+        }
+        const days = dayRange(length, tzOffset, end);
+        const previousDays = range === 'all' ? [] : dayRange(length, tzOffset, addDays(days[0], -1));
+
+        const [plan, sessions, previous, earlier] = await Promise.all([
+            SleepPlan.findOne({ userId }).select('goalMinutes').lean(),
+            SleepSession.find({ userId, day: { $gte: days[0], $lte: days[days.length - 1] } })
+                .select(range === '1d' ? '' : '-segments')
+                .sort({ startedAt: 1 })
+                .lean(),
+            previousDays.length
+                ? SleepSession.find({
+                    userId, day: { $gte: previousDays[0], $lte: previousDays[previousDays.length - 1] },
+                }).select('asleepMin score day startedAt endedAt').lean()
+                : null,
+            SleepSession.exists({ userId, day: { $lt: days[0] } }),
+        ]);
+
+        const record = buildRecord({
+            sessions, previous, days, range, goalMinutes: plan?.goalMinutes ?? null, tzOffset,
+        });
+
+        if (range === '1d') {
+            const { night, naps } = classifyDay(sessions, tzOffset);
+            record.timeline = [
+                ...(night ? [{ kind: 'night', session: night }] : []),
+                ...naps.map((nap) => ({ kind: 'nap', session: nap })),
+            ].map(({ kind, session }) => ({
+                id: String(session._id),
+                kind,
+                startedAt: session.startedAt,
+                endedAt: session.endedAt,
+                asleepMin: session.asleepMin ?? null,
+                segments: segmentView(session),
+            }));
+        }
+
+        res.json({
+            ...record,
+            today,
+            end,
+            /** Where the ‹ and › arrows go. Null means there is nothing that way. */
+            previousEnd: range !== 'all' && earlier ? addDays(days[0], -1) : null,
+            nextEnd: range !== 'all' && end < today
+                ? (addDays(end, length) > today ? today : addDays(end, length))
+                : null,
+        });
+    } catch (err) {
+        console.error('❌ Sleep record failed:', err);
+        res.status(500).json({ message: 'Could not load your sleep record' });
+    }
+};
+
 /**
  * GET /api/sleep/score?tzOffset= — frame 8, "Your Sleep Score".
  *
@@ -1002,3 +1092,4 @@ exports._syncGuidance = syncGuidance;
 exports._dayRange = dayRange;
 exports._mainNight = mainNight;
 exports._RANGES = RANGES;
+exports._addDays = addDays;
