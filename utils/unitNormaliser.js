@@ -241,6 +241,68 @@ const BIOMARKERS = {
         units: { 'nmol/l': 1, 'ng/ml': 2.266 },
     },
 
+    rdw: {
+        displayName: 'RDW',
+        unit: '%',
+        aliases: [
+            'rdw', 'rdwcv', 'rdwcoefficientofvariation',
+            'redcelldistributionwidth', 'redbloodcelldistributionwidth',
+            'erythrocytedistributionwidth',
+        ],
+        // NOT 'rdwsd'. RDW-SD is a different measurement reported in fL — the standard
+        // deviation of cell volume rather than its coefficient of variation — and aliasing
+        // the two collapses a ~45 fL value onto a ~13 % scale. Both are printed on the same
+        // full blood count, so the mistake is one line away at all times.
+        units: { '%': 1, 'percent': 1 },
+    },
+    /**
+     * The lymphocyte pair, and why there are two of them.
+     *
+     * A full blood count prints lymphocytes twice — as a share of the white cell count
+     * ("Lymphocytes 32 %") and as an absolute count ("Lymphocytes 1.9 x10^9/L") — and very
+     * often labels both with the bare word "Lymphocytes". The two are not convertible
+     * without the white cell count, they occupy completely different numeric ranges, and
+     * nothing about the *name* tells them apart.
+     *
+     * The unit does, so `normaliseMeasurement` routes on it via `disambiguate` below. A
+     * report that prints no unit at all resolves to neither with confidence: it lands on
+     * the percent entry, `convert` reports `recognised: false`, and the row is marked
+     * `needsReview` — which is what keeps a 1.9 out of anything expecting a percentage.
+     *
+     * This matters beyond display. `utils/biologicalAge.js` feeds lymphocyte **percent**
+     * into a published equation with a coefficient calibrated to that scale; handing it an
+     * absolute count produces a plausible-looking biological age that is simply wrong, with
+     * nothing thrown anywhere.
+     */
+    lymphocytes_pct: {
+        displayName: 'Lymphocytes',
+        unit: '%',
+        aliases: [
+            'lymphocytes', 'lymphocyte', 'lymphs', 'lymph',
+            'lymphocytespercent', 'lymphocytespercentage', 'lymphocytespct', 'lymphpct',
+            'lymphocytesrelative',
+        ],
+        units: { '%': 1, 'percent': 1 },
+        disambiguate: {
+            '10^9/l': 'lymphocytes_abs', 'x10^9/l': 'lymphocytes_abs',
+            '10e9/l': 'lymphocytes_abs', 'k/ul': 'lymphocytes_abs',
+            '10^3/ul': 'lymphocytes_abs', 'thou/ul': 'lymphocytes_abs',
+            'cells/ul': 'lymphocytes_abs', '/ul': 'lymphocytes_abs',
+        },
+    },
+    lymphocytes_abs: {
+        displayName: 'Lymphocytes (absolute)',
+        unit: '10^9/L',
+        aliases: [
+            'lymphocytesabsolute', 'absolutelymphocytes', 'absolutelymphocytecount',
+            'lymphocytecount', 'lymphocytesabs', 'lymphsabs', 'alc',
+        ],
+        units: {
+            '10^9/l': 1, 'x10^9/l': 1, '10e9/l': 1, 'k/ul': 1, '10^3/ul': 1,
+            'thou/ul': 1, 'cells/ul': 0.001, '/ul': 0.001,
+        },
+        disambiguate: { '%': 'lymphocytes_pct', 'percent': 'lymphocytes_pct' },
+    },
     psa: {
         displayName: 'PSA',
         unit: 'ng/mL',
@@ -309,6 +371,24 @@ const resolveName = (reportedName) => {
 };
 
 /**
+ * Re-resolve an analyte whose *name* is ambiguous and whose *unit* is not.
+ *
+ * `resolveName` sees only the printed name, and on a full blood count the bare word
+ * "Lymphocytes" is used for two different measurements. Where an entry declares
+ * `disambiguate`, a reported unit belonging to its sibling moves the measurement there.
+ *
+ * Only ever redirects between entries that explicitly name each other, so this cannot
+ * silently re-file an analyte whose unit was merely mistyped: an unrecognised unit falls
+ * through unchanged and is caught by `convert`, which marks the row for review.
+ */
+const redirectByUnit = (canonical, reportedUnit) => {
+    if (!canonical || !reportedUnit) return canonical;
+    const map = BIOMARKERS[canonical]?.disambiguate;
+    if (!map) return canonical;
+    return map[unitKey(reportedUnit)] || canonical;
+};
+
+/**
  * HbA1c: DCCT/NGSP percent → IFCC mmol/mol.
  * Affine, not proportional: mmol/mol = (% − 2.15) × 10.929
  */
@@ -364,7 +444,7 @@ const convert = (canonicalName, value, reportedUnit) => {
  * data reaches a human instead of being flagged against a range that may not apply.
  */
 const normaliseMeasurement = ({ name, value, unit, ...rest }) => {
-    const canonical = resolveName(name);
+    const canonical = redirectByUnit(resolveName(name), unit);
 
     if (!canonical) {
         // Unknown analyte: keep it (it is still a data point) but never range-flag it
@@ -413,6 +493,7 @@ const listBiomarkers = () =>
 module.exports = {
     BIOMARKERS,
     resolveName,
+    redirectByUnit,
     convert,
     normaliseMeasurement,
     listBiomarkers,

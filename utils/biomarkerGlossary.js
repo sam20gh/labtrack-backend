@@ -82,6 +82,27 @@ const GLOSSARY = {
         low: 'Smaller than usual cells point towards iron deficiency, or towards an inherited difference in how your body builds haemoglobin.',
         high: 'Larger than usual cells point towards a shortage of vitamin B12 or folate, and can also follow regular alcohol use or an underactive thyroid.',
     },
+    rdw: {
+        plainName: 'Variation in cell size',
+        whatItIs: 'RDW describes how much your red blood cells vary in size from one another, rather than how big they are on average.',
+        whyItMatters: 'It often changes before the average size does, so it can be the earliest hint that a nutrient is running short.',
+        low: 'A low value means your red blood cells are uniform in size, which is the expected finding.',
+        high: 'A high value means the cells vary more than usual, which commonly happens when iron, B12, or folate is running low, or when a shortage is just starting to correct.',
+    },
+    lymphocytes_pct: {
+        plainName: 'Virus-fighting cells',
+        whatItIs: 'Lymphocytes are the white blood cells that handle viruses and that carry your immune memory of past infections and vaccines, and this is their share of your white cells.',
+        whyItMatters: 'They tend to move in the opposite direction to neutrophils, so the balance between the two hints at what kind of illness is going on.',
+        low: 'A low share can follow a recent infection, steroid treatment, or a condition affecting the immune system, and is often temporary.',
+        high: 'A high share commonly accompanies a viral infection such as glandular fever. A share that stays high without explanation is investigated further.',
+    },
+    lymphocytes_abs: {
+        plainName: 'Virus-fighting cell count',
+        whatItIs: 'This is the number of lymphocytes circulating in your blood, as opposed to the share of your white cells they make up.',
+        whyItMatters: 'The count and the share can move in different directions, so labs print both and a doctor reads them together.',
+        low: 'A low count can follow a recent infection, steroid treatment, or a condition affecting the immune system, and is often temporary.',
+        high: 'A high count commonly accompanies a viral infection such as glandular fever. A count that stays high without explanation is investigated further.',
+    },
     wbc: {
         plainName: 'Infection-fighting cells',
         whatItIs: 'White blood cells are your immune system in the bloodstream, and this is a count of how many are circulating.',
@@ -343,14 +364,6 @@ const UNCATALOGUED = {
         low: 'A low count can leave you more vulnerable to bacterial infection, and can follow a viral illness, certain medicines, or a problem with production in the bone marrow.',
         high: 'A high count usually means the body is fighting a bacterial infection or dealing with inflammation, and it also rises with physical stress, injury, smoking, and steroid medicines.',
     },
-    lymphocytes: {
-        label: 'Lymphocytes',
-        plainName: 'Virus-fighting cells',
-        whatItIs: 'Lymphocytes are the white blood cells that handle viruses and that carry your immune memory of past infections and vaccines.',
-        whyItMatters: 'They tend to move in the opposite direction to neutrophils, so the balance between the two hints at what kind of illness is going on.',
-        low: 'A low count can follow a recent infection, steroid treatment, or a condition affecting the immune system, and is often temporary.',
-        high: 'A high count commonly accompanies a viral infection such as glandular fever. A count that stays high without explanation is investigated further.',
-    },
     monocytes: {
         label: 'Monocytes',
         plainName: 'Clean-up immune cells',
@@ -392,14 +405,6 @@ const UNCATALOGUED = {
         whyItMatters: 'It is used alongside the other red cell measures to sort out the cause of an anaemia.',
         low: 'A low value is typically seen in iron deficiency, where cells are both smaller and paler than usual.',
         high: 'A high value is uncommon and can indicate a condition in which red blood cells are more fragile than normal. It is sometimes a laboratory artefact and gets rechecked.',
-    },
-    redcelldistributionwidth: {
-        label: 'RDW',
-        plainName: 'Variation in cell size',
-        whatItIs: 'RDW describes how much your red blood cells vary in size from one another, rather than how big they are on average.',
-        whyItMatters: 'It often changes before the average size does, so it can be the earliest hint that a nutrient is running short.',
-        low: 'A low value means your red blood cells are uniform in size, which is the expected finding.',
-        high: 'A high value means the cells vary more than usual, which commonly happens when iron, B12, or folate is running low, or when a shortage is just starting to correct.',
     },
 
     // ── Calculated lipid values — arithmetic on the measured ones ─────────────────────
@@ -449,8 +454,17 @@ const KEY_ALIASES = {
     meancorpuscularhaemoglobin: 'mch',
     mean_corpuscular_haemoglobin_concentration: 'mchc',
     meancorpuscularhaemoglobinconcentration: 'mchc',
-    rdw: 'redcelldistributionwidth',
-    red_cell_distribution_width: 'redcelldistributionwidth',
+    // Both analytes below were promoted out of UNCATALOGUED into the catalogue when
+    // `utils/biologicalAge.js` came to need them. Rows written before that carry the
+    // run-together fallback slug forever — `Biomarker` is never rewritten — so these
+    // aliases are what keep an existing result explained rather than bare.
+    redcelldistributionwidth: 'rdw',
+    red_cell_distribution_width: 'rdw',
+    lymphocytes: 'lymphocytes_pct',
+    lymphocyte_percent: 'lymphocytes_pct',
+    lymphocytespercent: 'lymphocytes_pct',
+    absolute_lymphocytes: 'lymphocytes_abs',
+    lymphocyte_count: 'lymphocytes_abs',
     non_hdl_cholesterol: 'nonhdlcholesterol',
     cholesterol_hdl_ratio: 'cholesteroltohdlratio',
     total_cholesterol_hdl_ratio: 'cholesteroltohdlratio',

@@ -128,17 +128,47 @@ describe('what reaches the record', () => {
     it('keeps the lab wording as the display name for a genuinely unknown analyte', async () => {
         // The fallback still applies to analytes outside the catalogue — but it should now
         // preserve what the report said rather than storing the key twice.
+        //
+        // This used to use RDW, which is no longer an example of anything: it was promoted
+        // into the catalogue when `utils/biologicalAge.js` came to need it. The test below
+        // is the other half of that move.
         const { saved } = await persistMeasurements({
             userId: user._id,
             user,
-            measurements: [{ name: 'Red Cell Distribution Width', value: 13.1, unit: '%' }],
+            measurements: [{ name: 'Lipoprotein (a)', value: 13.1, unit: 'nmol/L' }],
             source: 'lab_report',
         });
 
         const [row] = saved;
-        expect(row.name).toBe('redcelldistributionwidth');
-        expect(row.displayName).toBe('Red Cell Distribution Width');
+        expect(row.name).toBe('lipoproteina');
+        expect(row.displayName).toBe('Lipoprotein (a)');
         expect(row.flag).toBe('unknown');
+    });
+
+    it('normalises RDW and the lymphocyte percentage, which the biological age needs', async () => {
+        // Both were reaching the record through the fallback slug path — stored with no
+        // unit, no reference range and `flag: 'unknown'` — which is fine for display and
+        // useless to an equation. RDW carries the largest coefficient in PhenoAge, so
+        // leaving it uncatalogued was not a gap in that feature, it was the whole feature.
+        const { saved } = await persistMeasurements({
+            userId: user._id,
+            user,
+            measurements: [
+                { name: 'Red Cell Distribution Width', value: 13.1, unit: '%' },
+                { name: 'Lymphocytes', value: 32, unit: '%' },
+                { name: 'Lymphocytes', value: 1.9, unit: 'x10^9/L' },
+            ],
+            source: 'lab_report',
+        });
+
+        const byName = Object.fromEntries(saved.map((r) => [r.name, r]));
+        expect(Object.keys(byName).sort())
+            .toEqual(['lymphocytes_abs', 'lymphocytes_pct', 'rdw']);
+        expect(byName.rdw.unit).toBe('%');
+        expect(byName.rdw.needsReview).toBe(false);
+        // The pair is separated on the reported unit, because the printed name is identical.
+        expect(byName.lymphocytes_pct.value).toBe(32);
+        expect(byName.lymphocytes_abs.value).toBe(1.9);
     });
 
     it('is idempotent on the unit when the client sends an already-canonical value', async () => {
