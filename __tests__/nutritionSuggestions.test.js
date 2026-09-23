@@ -39,6 +39,29 @@ describe('the allergen screen', () => {
         expect(kept).toHaveLength(0);
     });
 
+    /** The regression: every token is singular, and every one of these used to pass. */
+    it('catches an allergen written in the plural', () => {
+        const cases = [
+            [['spinach', 'chopped walnuts'], 'tree nuts'],
+            [['rice', 'king prawns'], 'shellfish'],
+            [['toast', '2 eggs'], 'egg'],
+            [['oats', 'almonds'], 'nuts'],
+            [['pasta', 'anchovies'], 'fish'],
+        ];
+        for (const [ingredients, allergy] of cases) {
+            const { kept } = screen([suggestion('Bowl', ingredients)], { allergies: [allergy] });
+            expect({ ingredients, kept: kept.length }).toEqual({ ingredients, kept: 0 });
+        }
+    });
+
+    it('does not read a longer word as a plural', () => {
+        const { kept } = screen(
+            [suggestion('Roast eggplant', ['eggplant', 'chamomile tea'])],
+            { allergies: ['egg'], dietaryPreferences: ['halal'] }
+        );
+        expect(kept).toHaveLength(1);
+    });
+
     it('drops rather than flags — nothing unsafe is ever returned with a warning', () => {
         const { kept, dropped } = screen(
             [suggestion('Prawn linguine', ['prawns', 'linguine', 'garlic'])],

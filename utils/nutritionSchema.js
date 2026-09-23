@@ -163,6 +163,10 @@ const SUGGESTION = {
     properties: {
         name: { type: 'string', description: 'The dish as a menu or a recipe would name it, e.g. "Baked salmon with new potatoes and greens"' },
         meal_type: { enum: ['breakfast', 'lunch', 'dinner', 'snack'], description: 'The occasion this suits' },
+        image_query: {
+            type: 'string',
+            description: 'Two to four plain words to search a stock photo library for a picture of the finished dish, e.g. "salmon potatoes greens" or "overnight oats berries". The main components only — no adjectives, cooking methods or quantities.',
+        },
         why: {
             type: 'string',
             description: 'One or two sentences addressed to the person, naming the guidance from their plan this moves them towards. Never generic healthy-eating advice.',
@@ -186,7 +190,7 @@ const SUGGESTION = {
             items: { type: 'string' },
         },
     },
-    required: ['name', 'meal_type', 'why', 'ingredients', 'tags', 'prep_minutes',
+    required: ['name', 'meal_type', 'image_query', 'why', 'ingredients', 'tags', 'prep_minutes',
         'calories', 'protein', 'carbs', 'fat', 'fibre', 'guidance_keys'],
     additionalProperties: false,
 };

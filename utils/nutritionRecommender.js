@@ -22,6 +22,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { RECOMMENDATION_SCHEMA, RECOMMENDATION_PROMPT } = require('./nutritionSchema');
 const { buildGuidanceBlock } = require('./nutritionEngine');
 const { screen } = require('./nutritionSafety');
+const mealImages = require('./mealImages');
 
 const MODEL = 'claude-sonnet-5';
 
@@ -152,11 +153,15 @@ const recommend = async (context) => {
                 dropped.map((d) => `${d.name} (${d.reason})`).join('; '));
         }
 
+        // After the screen, so a search is never spent on a dish that was dropped. Best-effort:
+        // `attach` never rejects, and a suggestion without a photo keeps its tinted panel.
+        const suggestions = await mealImages.attach(kept.map(normalise), plan);
+
         return {
             ok: true,
             data: {
                 headline: raw.headline,
-                suggestions: kept.map(normalise),
+                suggestions,
                 dropped: dropped.length,
             },
             usage: message.usage,
@@ -172,6 +177,7 @@ const recommend = async (context) => {
 const normalise = (s) => ({
     name: s.name,
     mealType: s.meal_type,
+    imageQuery: s.image_query || undefined,
     why: s.why,
     ingredients: s.ingredients || [],
     tags: (s.tags || []).slice(0, 3),

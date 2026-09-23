@@ -125,8 +125,14 @@ const haystack = (suggestion) => [
  * non-letters keeps multi-word tokens ("peanut butter", "sea bass") working, which a `\b`
  * regex over a word list would not.
  */
-const mentions = (text, token) =>
-    new RegExp(`(^|[^a-z])${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z]|$)`, 'i').test(text);
+const mentions = (text, token) => {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Plurals. The tokens are singular and ingredient lists are not: "chopped walnuts",
+    // "king prawns", "2 eggs" and "anchovies" all passed this screen for an allergic
+    // person until the trailing boundary learned that an "s" is not a different word.
+    const stem = /y$/.test(escaped) ? `${escaped.slice(0, -1)}(?:y|ies)` : escaped;
+    return new RegExp(`(^|[^a-z])${stem}(?:s|es)?([^a-z]|$)`, 'i').test(text);
+};
 
 /** Token list for one free-text allergy, plus the person's own words as a literal fallback. */
 const tokensForAllergy = (allergy) => {

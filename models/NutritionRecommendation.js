@@ -14,6 +14,21 @@ const mongoose = require('mongoose');
  * Rows are never rewritten. What someone was shown on Tuesday stays what they were shown on
  * Tuesday, the same rule `MealLog.analysis` follows.
  */
+/**
+ * An example photograph of a dish like this one — never of this person's meal. Hotlinked
+ * from Unsplash and credited; see `utils/mealImages.js`. Absent when none was found or none
+ * was safe to show, and every client falls back to the tinted panel.
+ */
+const SuggestionImageSchema = new mongoose.Schema({
+    provider: { type: String, enum: ['unsplash'], default: 'unsplash' },
+    url: { type: String, required: true },
+    blurHash: { type: String },
+    color: { type: String },
+    author: { type: String },
+    authorUrl: { type: String },
+    photoUrl: { type: String },
+}, { _id: false });
+
 const SuggestionSchema = new mongoose.Schema({
     name: { type: String, required: true },
     mealType: { type: String, enum: ['breakfast', 'lunch', 'dinner', 'snack'], default: 'lunch' },
@@ -27,6 +42,10 @@ const SuggestionSchema = new mongoose.Schema({
     ingredients: [{ type: String }],
     tags: [{ type: String }],
     prepMinutes: { type: Number },
+
+    /** The words the photo was searched by. Kept so a mismatched picture can be explained. */
+    imageQuery: { type: String },
+    image: { type: SuggestionImageSchema, default: undefined },
 
     calories: { type: Number, required: true, min: 0 },
     protein: { type: Number, default: 0, min: 0 },
