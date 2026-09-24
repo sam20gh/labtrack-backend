@@ -1,5 +1,5 @@
 /**
- * Miovix Age — the lifestyle half.
+ * Predyqt Age — the lifestyle half.
  *
  * **A deterministic table, not a model** — the eleventh, beside `utils/biologicalAge.js`
  * which owns the lab half. It sits to that file as `activityScore.js` and `sleepScore.js`
@@ -72,7 +72,7 @@ const GOMPERTZ_SLOPE = 0.090165;
  * first draft of this file had one anchor per contributor and it was the guideline — 7,000
  * steps, 60 minutes of strength work, a BMI of 23 — so a person sitting on the population
  * median for every single measure came out **six years older than they are**. That is not a
- * biological age. It is a distance-from-ideal score wearing years, and Miovix already has
+ * biological age. It is a distance-from-ideal score wearing years, and Predyqt already has
  * one of those with a 0–100 scale and an honest name.
  *
  * So every contributor carries two:

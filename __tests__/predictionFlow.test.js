@@ -416,7 +416,7 @@ describe('renaming a metric', () => {
     it('calls the score by the product\'s name, not the design kit\'s', async () => {
         // The kit says "Turing Score" throughout. That is the design system's name and has
         // never been the product's.
-        expect(require('../utils/predictionMetrics').get('turing_score').label).toBe('Miovix Score');
+        expect(require('../utils/predictionMetrics').get('turing_score').label).toBe('Predyqt Score');
     });
 });
 
@@ -433,7 +433,7 @@ describe('ownership', () => {
         );
 
         // A 403 confirms the row exists, which turns the endpoint into a way of asking
-        // whether an id belongs to a Miovix patient. The call `middleware/ownership.js` makes.
+        // whether an id belongs to a Predyqt patient. The call `middleware/ownership.js` makes.
         expect(res.statusCode).toBe(404);
     });
 });

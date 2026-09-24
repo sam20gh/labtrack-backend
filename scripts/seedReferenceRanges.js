@@ -8,7 +8,7 @@
  *
  * These are widely-published adult ranges intended to make the flagging pipeline testable.
  * Ranges vary between laboratories and authorities: before this drives anything a user
- * sees clinically, they should be reviewed against the labs Miovix actually partners
+ * sees clinically, they should be reviewed against the labs Predyqt actually partners
  * with, and `source` updated accordingly.
  */
 require('dotenv').config();
@@ -16,7 +16,7 @@ const mongoose = require('mongoose');
 const connectDB = require('../config/db');
 const ReferenceRange = require('../models/ReferenceRange');
 
-const SOURCE = 'Miovix seed (common adult reference intervals) — verify per partner lab';
+const SOURCE = 'Predyqt seed (common adult reference intervals) — verify per partner lab';
 
 const RANGES = [
     // --- Iron studies -------------------------------------------------------

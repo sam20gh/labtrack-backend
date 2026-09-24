@@ -1,5 +1,5 @@
 /**
- * What Miovix can predict, where each number comes from, and how a forecast of it is read.
+ * What Predyqt can predict, where each number comes from, and how a forecast of it is read.
  *
  * One registry rather than a branch per metric in the controller, for the reason
  * `MetricLog` gives about weight/water/blood pressure being one collection: the shape is
@@ -65,8 +65,8 @@ const fromDaily = (path) => async (userId) => {
 
 const METRICS = {
     /**
-     * The Miovix score itself. The kit calls it the "Turing Score" throughout, which is the
-     * design system's name and not the product's — everything user-facing says Miovix. It
+     * The Predyqt score itself. The kit calls it the "Turing Score" throughout, which is the
+     * design system's name and not the product's — everything user-facing says Predyqt. It
      * gets its own screen with a min/average/max band rather than a single line.
      *
      * Reads `HealthScore` snapshots, which are written at most once every six hours, so a
@@ -74,7 +74,7 @@ const METRICS = {
      */
     turing_score: {
         key: 'turing_score',
-        label: 'Miovix Score',
+        label: 'Predyqt Score',
         shortLabel: 'Score',
         unit: 'pts',
         icon: 'medkit',
@@ -98,7 +98,7 @@ const METRICS = {
     },
 
     /**
-     * The Miovix Age **gap**, not the age itself.
+     * The Predyqt Age **gap**, not the age itself.
      *
      * Forecasting the absolute biological age would be forecasting mostly chronological age,
      * which rises a year per year whatever anybody does — so every prediction would come
@@ -113,7 +113,7 @@ const METRICS = {
      */
     age_delta: {
         key: 'age_delta',
-        label: 'Miovix Age gap',
+        label: 'Predyqt Age gap',
         shortLabel: 'Age gap',
         unit: 'yrs',
         icon: 'hourglass',

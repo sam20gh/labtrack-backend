@@ -173,7 +173,7 @@ describe('measure() is pure and counts only what happened', () => {
         }).trackersUsed).toBe(2);
     });
 
-    it('takes days with Miovix from a passed clock, not from Date.now', () => {
+    it('takes days with Predyqt from a passed clock, not from Date.now', () => {
         const joined = Date.parse('2026-01-01T00:00:00Z');
         const m = engine.measure({ joinedAt: new Date(joined) }, joined + 40 * 86400000);
         expect(m.daysSinceJoining).toBe(40);

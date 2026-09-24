@@ -43,7 +43,7 @@ const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * POST /api/auth/supabase/sync
  *
  * Called by the client immediately after a Supabase sign-in or sign-up. Supabase owns the
- * credential; Miovix still needs its own User document for medical records to hang off.
+ * credential; Predyqt still needs its own User document for medical records to hang off.
  * This is the only place that creates that link, so no other route can conjure accounts as
  * a side effect of a request.
  *
@@ -69,7 +69,7 @@ exports.syncSupabaseUser = async (req, res) => {
 
         // Adopt a legacy account with the same email rather than creating a duplicate.
         // Case-insensitive on purpose: Supabase normalises emails to lowercase, while
-        // legacy Miovix accounts were stored verbatim (e.g. "Test@gmail.com"). An exact
+        // legacy Predyqt accounts were stored verbatim (e.g. "Test@gmail.com"). An exact
         // match would miss, create a second account, and orphan that user's medical
         // history behind an identity they can no longer reach.
         const emailPattern = new RegExp(`^${escapeRegex(email)}$`, 'i');
@@ -99,7 +99,7 @@ exports.syncSupabaseUser = async (req, res) => {
         const user_ = created.toObject();
         delete user_.password;
 
-        console.log('✨ Provisioned Miovix account for Supabase user:', email);
+        console.log('✨ Provisioned Predyqt account for Supabase user:', email);
         return res.status(201).json({ message: 'Account created', linked: 'created', user: user_ });
     } catch (error) {
         // Unique-index race: another concurrent sync won — re-read and return that.

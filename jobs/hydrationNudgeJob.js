@@ -12,7 +12,7 @@
  *   1. **Only for people who already track water.** At least `MIN_RECENT_DAYS` distinct
  *      logged days in the last `LOOKBACK_DAYS`. Somebody who has never logged a glass has
  *      not taken the feature up, and a push is the wrong way to introduce it — the home
- *      screen's "Get more from Miovix" row already does that without interrupting anyone.
+ *      screen's "Get more from Predyqt" row already does that without interrupting anyone.
  *   2. **At 14:00 in the person's own clock**, within a `WINDOW_MINUTES` grace so a restart
  *      does not skip a day, and never later. Early afternoon because: by then a day with
  *      no logs is a real signal rather than "not up yet"; it is the post-lunch dip, when a

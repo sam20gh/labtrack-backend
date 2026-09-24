@@ -4,7 +4,7 @@ const c = require('../controllers/ageController');
 const { authenticateToken } = require('../middleware/authMiddleware');
 
 /**
- * Miovix Age.
+ * Predyqt Age.
  *
  * Every route reads one person's blood results and six months of their movement, sleep and
  * vitals, so the router is behind a token in one place rather than per route — the shape

@@ -104,7 +104,7 @@ const roleFromClaims = (claims) => claims?.app_metadata?.role || 'user';
  * **session**, not of the account: enrolling a factor does not raise an existing token, and
  * a token minted before enrolment stays `aal1` until the session steps up.
  *
- * Returns null for a token that carries no claim — a legacy Miovix-signed token, or an
+ * Returns null for a token that carries no claim — a legacy Predyqt-signed token, or an
  * older Supabase project. `requireMfa` treats null as "not proven", which is the only safe
  * reading: a missing claim must never satisfy a check about strength of authentication.
  */

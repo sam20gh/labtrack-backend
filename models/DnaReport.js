@@ -40,7 +40,7 @@ const DnaReportSchema = new mongoose.Schema({
     reportDate: { type: Date },
     /** Uploaded PDF/image of the original report. */
     documentUrl: { type: String },
-    /** Set when the report arrived via a Miovix order. */
+    /** Set when the report arrived via a Predyqt order. */
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
 
     mutations: [MutationSchema],

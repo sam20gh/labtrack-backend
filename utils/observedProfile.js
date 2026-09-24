@@ -1,5 +1,5 @@
 /**
- * Everything Miovix has actually measured about a person, and the profile derived from it.
+ * Everything Predyqt has actually measured about a person, and the profile derived from it.
  *
  * Two exports, deliberately in one file because they read the same rows and running the
  * queries twice on one request is the obvious way this gets slow:

@@ -1,5 +1,5 @@
 /**
- * Miovix Age — the lifestyle half.
+ * Predyqt Age — the lifestyle half.
  *
  * The lab half is a published equation, so its tests are mostly about refusing. This half is
  * an aggregation we assembled, so its tests are mostly about **calibration**: that a typical
@@ -46,7 +46,7 @@ describe('calibration', () => {
      *
      * A biological age is a comparison against peers. If the median person does not come out
      * at their own age, the number is a distance-from-ideal score wearing years — which is
-     * what the Miovix score already is, on an honest 0-100 scale.
+     * what the Predyqt score already is, on an honest 0-100 scale.
      */
     it('puts a person on the population median at exactly their chronological age', () => {
         for (const age of [25, 40, 55, 70]) {

@@ -215,7 +215,7 @@ const INTERPRETATION_SCHEMA = {
     additionalProperties: false,
 };
 
-const SYSTEM_PROMPT = `You are a clinical decision-support assistant for Miovix, a health monitoring platform.
+const SYSTEM_PROMPT = `You are a clinical decision-support assistant for Predyqt, a health monitoring platform.
 
 You produce a structured interpretation from a person's genetic findings, laboratory results, and health profile. Your output is reviewed by a qualified clinician before it is treated as clinical advice, and the person sees it labelled as AI-generated and pending review.
 

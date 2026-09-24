@@ -383,7 +383,7 @@ const RESOURCES = [
         ],
         workshop: {
             startsAt: new Date(Date.now() + 21 * 864e5), endsAt: new Date(Date.now() + 21 * 864e5 + 36e5),
-            mode: 'hybrid', locationName: 'Miovix Studio', address: '123 Springfield, Faze Avenue 22',
+            mode: 'hybrid', locationName: 'Predyqt Studio', address: '123 Springfield, Faze Avenue 22',
             timezone: 'Europe/London',
             whoShouldAttend: ['Health-conscious people', 'People new to tracking', 'Anyone with recent blood work', 'Anyone told to "keep an eye on" a number'],
             topics: [

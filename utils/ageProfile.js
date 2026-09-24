@@ -1,7 +1,7 @@
 /**
- * Everything Miovix Age reads, in one pass.
+ * Everything Predyqt Age reads, in one pass.
  *
- * `observedProfile.gather` does this job for the Miovix score over a thirty-day window. This
+ * `observedProfile.gather` does this job for the Predyqt score over a thirty-day window. This
  * is its longer-window sibling rather than a parameter on it, for two reasons that are really
  * one reason: the windows are different because the questions are different. A score asks
  * what somebody has been doing lately and should move within a week; a biological age asks

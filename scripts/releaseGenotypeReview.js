@@ -49,7 +49,7 @@ const buildContent = (file) => {
             (carriers.length
                 ? `${carriers.length} warrant discussion with a clinician. `
                 : 'No carrier or attention-level variants were found on this panel. ') +
-            `${rangeAffecting.length} adjust the expected range of a biomarker already tracked in Miovix. ` +
+            `${rangeAffecting.length} adjust the expected range of a biomarker already tracked in Predyqt. ` +
             'An array reports only the positions its chip carries; nothing here rules a condition out.',
 
         risks: called

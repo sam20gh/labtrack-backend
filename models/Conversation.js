@@ -2,7 +2,7 @@
  * The person's ongoing conversation with the AI health assistant.
  *
  * **One document per user, not one per thread.** The design has a single continuing
- * relationship with "Dr. Miovix" rather than a list of chats, and a single document keeps
+ * relationship with "Dr. Predyqt" rather than a list of chats, and a single document keeps
  * the read path to one query on a screen that opens on every tab switch.
  *
  * Two counters rather than one, because they answer different questions:

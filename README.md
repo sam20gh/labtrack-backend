@@ -1,6 +1,6 @@
-# Miovix — backend API
+# Predyqt — backend API
 
-Express 4 + Mongoose 8 REST API for Miovix, backed by MongoDB Atlas. Deployed on Render
+Express 4 + Mongoose 8 REST API for Predyqt, backed by MongoDB Atlas. Deployed on Render
 at `https://labtrack-backend.onrender.com`, auto-deploying on push to `main`.
 
 The mobile client lives in a separate repo: `github.com/sam20gh/labtrack-frontend`.
@@ -58,7 +58,7 @@ uploads/                 Multer temp dir for image uploads
 
 ## Endpoints
 
-Full reference with auth requirements and payload shapes: `docs/API.md` in the Miovix
+Full reference with auth requirements and payload shapes: `docs/API.md` in the Predyqt
 workspace directory that contains this repo.
 
 | Router | Auth |

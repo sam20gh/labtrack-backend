@@ -1,5 +1,5 @@
 /**
- * Miovix Age — the lab half.
+ * Predyqt Age — the lab half.
  *
  * **A deterministic table, not a model** — the tenth in the series with
  * `medicationCatalogue.js`, `bloodPressure.js`, `nutritionSafety.js`, `reviewSla.js`,
@@ -772,7 +772,7 @@ const paceFrom = (snapshots = [], { forecast } = {}) => {
 };
 
 /**
- * The fallback, for somebody who has not been using Miovix long enough to have a slope.
+ * The fallback, for somebody who has not been using Predyqt long enough to have a slope.
  *
  * Whoop's own pace compares the last thirty days against the current age, and this is the
  * same idea: recompute the behavioural half over a thirty-day window and ask how it differs

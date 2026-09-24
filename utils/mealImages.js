@@ -33,7 +33,7 @@ const MealImage = require('../models/MealImage');
 const { screen } = require('./nutritionSafety');
 
 const API = 'https://api.unsplash.com';
-const UTM = 'utm_source=miovix&utm_medium=referral';
+const UTM = 'utm_source=predyqt&utm_medium=referral';
 
 /** Candidates kept per query. Enough for the allergen check to have somewhere to go. */
 const CANDIDATES = 10;

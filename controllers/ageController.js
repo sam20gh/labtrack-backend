@@ -1,5 +1,5 @@
 /**
- * The Miovix Age API.
+ * The Predyqt Age API.
  *
  * Server-side for the three reasons `scoreController` gives — it reads data the client does
  * not hold, a trend needs snapshots, and two phones must agree — plus a fourth that is
@@ -211,7 +211,7 @@ const getAge = async (req, res) => {
         res.json({ ...result, change, pace });
     } catch (err) {
         console.log('❌ getAge failed', err.message);
-        res.status(500).json({ message: 'Could not work out your Miovix Age' });
+        res.status(500).json({ message: 'Could not work out your Predyqt Age' });
     }
 };
 
@@ -284,7 +284,7 @@ const getTrend = async (req, res) => {
         res.json({ days, points: rows, disclaimer: biologicalAge.AGE_DISCLAIMER });
     } catch (err) {
         console.log('❌ getTrend failed', err.message);
-        res.status(500).json({ message: 'Could not load your Miovix Age history' });
+        res.status(500).json({ message: 'Could not load your Predyqt Age history' });
     }
 };
 
@@ -331,7 +331,7 @@ const getLevers = async (req, res) => {
         });
     } catch (err) {
         console.log('❌ getLevers failed', err.message);
-        return res.status(500).json({ message: 'Could not work out what would move your Miovix Age' });
+        return res.status(500).json({ message: 'Could not work out what would move your Predyqt Age' });
     }
 };
 
@@ -344,7 +344,7 @@ const recomputeAge = async (req, res) => {
         res.json(result);
     } catch (err) {
         console.log('❌ recomputeAge failed', err.message);
-        res.status(500).json({ message: 'Could not work out your Miovix Age' });
+        res.status(500).json({ message: 'Could not work out your Predyqt Age' });
     }
 };
 

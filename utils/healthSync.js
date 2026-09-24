@@ -713,7 +713,7 @@ const ingestBloodPressure = async (userId, rows = [], { source, tzOffset }) => {
  * ECG and PPG recordings.
  *
  * Every derived figure is stored **as the device reported it**. Nothing here recomputes a
- * heart rate from the waveform or reads an interval off the peaks: Miovix has no ECG
+ * heart rate from the waveform or reads an interval off the peaks: Predyqt has no ECG
  * engine, and adding one is a clinical decision rather than an ingest detail.
  *
  * A recording with neither a trace nor a single derived figure is skipped. The bracelet

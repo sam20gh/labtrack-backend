@@ -110,7 +110,7 @@ const gatherContext = async (userId) => {
 };
 
 /**
- * The newest persisted Miovix score, or null.
+ * The newest persisted Predyqt score, or null.
  *
  * Deliberately does not trigger a recomputation. `scoreController` owns when the score is
  * recalculated; an interpretation reading it must not be able to append a snapshot as a side

@@ -35,7 +35,7 @@ describe('aalFromClaims', () => {
     });
 
     it('is null when the token carries no claim', () => {
-        // A legacy Miovix-signed token, or an older Supabase project. Null, so the check
+        // A legacy Predyqt-signed token, or an older Supabase project. Null, so the check
         // below has something explicit to refuse rather than an absent value to interpret.
         expect(aalFromClaims({})).toBeNull();
         expect(aalFromClaims(null)).toBeNull();

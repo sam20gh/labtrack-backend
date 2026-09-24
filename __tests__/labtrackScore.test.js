@@ -1,5 +1,5 @@
 /**
- * The Miovix score, and the one guarantee that matters: measurement beats self-report.
+ * The Predyqt score, and the one guarantee that matters: measurement beats self-report.
  *
  * The previous score read `healthAssessment.lifestyle` and nothing else, so a person could
  * connect a watch, log a month of meals and take every dose without the number moving. These

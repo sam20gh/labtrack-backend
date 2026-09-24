@@ -6,7 +6,7 @@ const { requireSupabaseIdentity } = require('../middleware/authMiddleware');
 // Professional login (legacy credential flow)
 router.post('/login', authController.loginProfessional);
 
-// Create or link the Miovix account behind a Supabase identity.
+// Create or link the Predyqt account behind a Supabase identity.
 // Called by the client right after Supabase sign-in/sign-up.
 router.post('/supabase/sync', requireSupabaseIdentity, authController.syncSupabaseUser);
 

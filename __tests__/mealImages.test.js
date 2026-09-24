@@ -46,7 +46,7 @@ describe('attaching a photo', () => {
         expect(s.image.provider).toBe('unsplash');
         expect(s.image.url).toMatch(/^https:\/\/images\.unsplash\.com\/photo-a1\?ixid=abc&w=800/);
         expect(s.image.author).toBe('Photographer a1');
-        expect(s.image.authorUrl).toContain('utm_source=miovix');
+        expect(s.image.authorUrl).toContain('utm_source=predyqt');
         expect(s.image.blurHash).toBeTruthy();
         // The description was for the check, not for the client
         expect(s.image.description).toBeUndefined();

@@ -1,5 +1,5 @@
 /**
- * Miovix Age — the lab half.
+ * Predyqt Age — the lab half.
  *
  * Every failure this file guards against is silent. The equation returns a plausible number
  * from wrong units, from a misparsed report, from somebody who happens to have a cold, and

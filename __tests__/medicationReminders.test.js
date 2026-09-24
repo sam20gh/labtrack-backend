@@ -4,7 +4,7 @@
  * Everything else about a schedule is testable by reading a row back. Delivery is not, and
  * this is where it went wrong in production: doses were materialised correctly, the sweep
  * ran on time and found them, and every one was dropped because the account had no
- * registered device. The medication screens promise "Miovix will remind you", so a
+ * registered device. The medication screens promise "Predyqt will remind you", so a
  * schedule that silently notifies nobody is the feature not working.
  *
  * Two properties are asserted here because both were real defects:

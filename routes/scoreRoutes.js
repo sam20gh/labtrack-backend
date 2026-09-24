@@ -4,7 +4,7 @@ const c = require('../controllers/scoreController');
 const { authenticateToken } = require('../middleware/authMiddleware');
 
 /**
- * The Miovix score.
+ * The Predyqt score.
  *
  * Every route reads one person's whole health record — labs, activity, sleep, meals, doses —
  * so the router is behind a token in one place rather than per route.

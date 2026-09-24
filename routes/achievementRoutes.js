@@ -8,7 +8,7 @@ const { authenticateToken } = require('../middleware/authMiddleware');
  *
  * **The card route is mounted above the token check on purpose, and it is the only route in
  * this API that is.** A share link is opened by whoever the person sent it to — in a WhatsApp
- * thread, on somebody else's phone, by Facebook's unfurler — none of which hold a Miovix
+ * thread, on somebody else's phone, by Facebook's unfurler — none of which hold a Predyqt
  * session. Requiring one would mean the card never renders for the audience it exists for.
  *
  * What makes that safe is not the route, it is `cardForToken`: the token is 32 unguessable

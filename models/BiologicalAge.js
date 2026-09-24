@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 /**
- * One computed Miovix Age, kept.
+ * One computed Predyqt Age, kept.
  *
  * Append-only, like `HealthScore`, `Interpretation` and `AchievementUnlock`, and for the two
  * reasons `HealthScore` gives plus one of its own.

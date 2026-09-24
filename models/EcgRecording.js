@@ -9,7 +9,7 @@ const mongoose = require('mongoose');
  * waveform through memory — the mistake `Plan.plan[]` made, and the one
  * `NutritionPlan`/`MealLog` were split to avoid.
  *
- * ## Nothing in Miovix interprets these
+ * ## Nothing in Predyqt interprets these
  *
  * Every derived figure below — heart rate, HRV, stress, blood pressure — is **the device's
  * own output**, stored as reported and never recomputed. There is no ECG engine here, and
