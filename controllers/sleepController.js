@@ -12,7 +12,8 @@ const {
     stageBreakdown, stageRanges, byWeekday, consistency, comparePeriods,
     computeStreak, goalProgress, localMinutes, STAGES,
 } = require('../utils/sleepInsight');
-const { buildRecord, classifyDay, RECORD_RANGES } = require('../utils/sleepRecord');
+const { buildRecord, classifyDay, dayTotal, RECORD_RANGES } = require('../utils/sleepRecord');
+const { analyse: analyseSleep } = require('../utils/sleepAnalysis');
 const scoreController = require('./scoreController');
 const achievementController = require('./achievementController');
 
@@ -52,6 +53,10 @@ const dayRange = (n, tzOffset = 0, endDay) => {
     }
     return days;
 };
+
+/** `YYYY-MM-DD` shifted by whole days. Calendar arithmetic on the string, never on a clock. */
+const addDays = (day, n) =>
+    new Date(new Date(`${day}T00:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
 
 /**
  * The night a day is represented by.
@@ -551,11 +556,41 @@ exports.getNight = async (req, res) => {
         ]);
         if (!night) return res.status(404).json({ message: 'Night not found' });
 
+        // Its day's other sessions decide whether this is the night or a nap, and the fortnight
+        // before it is what "later than usual" is measured against. Both are small reads.
+        const [sameDay, recent] = await Promise.all([
+            SleepSession.find({ userId, day: night.day })
+                .select('asleepMin startedAt endedAt day').lean(),
+            SleepSession.find({ userId, day: { $gte: addDays(night.day, -14), $lt: night.day } })
+                .select('asleepMin startedAt endedAt day').lean(),
+        ]);
+        const split = classifyDay(sameDay, tzOffset);
+        const kind = split.naps.some((n) => String(n._id) === String(night._id)) ? 'nap' : 'night';
+        const recentByDay = new Map();
+        for (const r of recent) recentByDay.set(r.day, [...(recentByDay.get(r.day) || []), r]);
+        const recentNights = [...recentByDay.values()]
+            .map((rows) => classifyDay(rows, tzOffset).night)
+            .filter(Boolean);
+        const totals = dayTotal(split);
+
         const view = nightView(night, plan?.goalMinutes, tzOffset);
         const breakdown = stageBreakdown([night]);
 
         res.json({
             night: { ...view, segments: segmentView(night) },
+            kind,
+            /** The day this sleep belongs to: its night, its naps, and the two together. */
+            day: totals,
+            analysis: analyseSleep({
+                session: night,
+                kind,
+                goalMinutes: plan?.goalMinutes,
+                day: totals,
+                night: kind === 'nap' ? split.night : null,
+                recentNights,
+                tzOffset,
+                guidance: plan?.guidance || [],
+            }),
             breakdown: breakdown.stages,
             goalMinutes: plan?.goalMinutes ?? null,
             explanation: explainScore({
@@ -854,10 +889,6 @@ exports.getInsight = async (req, res) => {
 };
 
 /* -------------------------------------------------------------- record */
-
-/** `YYYY-MM-DD` shifted by whole days. Calendar arithmetic on the string, never on a clock. */
-const addDays = (day, n) =>
-    new Date(new Date(`${day}T00:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
 
 /**
  * GET /api/sleep/record?range=&end=&tzOffset=

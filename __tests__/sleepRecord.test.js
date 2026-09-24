@@ -80,6 +80,50 @@ describe('what counts as a nap', () => {
     });
 });
 
+describe('a nap just outside the core window', () => {
+    // The day reported on 2026-09-24: a 01:05–06:58 night and an 08:42–10:39 nap.
+    const night = session({
+        day: '2026-09-24', startedAt: '2026-09-24T01:05:00.000Z', endedAt: '2026-09-24T06:58:00.000Z',
+        asleepMin: 353, inBedMin: 353,
+    });
+    const morning = nap({
+        day: '2026-09-24', startedAt: '2026-09-24T08:42:00.000Z', endedAt: '2026-09-24T10:39:00.000Z',
+        asleepMin: 117, inBedMin: 117,
+    });
+
+    it('is a nap when it is well clear of the night, even starting before 09:00', () => {
+        const { night: n, naps } = record.classifyDay([night, morning], 0);
+        expect(n.asleepMin).toBe(353);
+        expect(naps).toHaveLength(1);
+        expect(naps[0].asleepMin).toBe(117);
+    });
+
+    it('counts toward the day total and the goal', () => {
+        const out = record.buildRecord({
+            sessions: [night, morning], days: ['2026-09-24'], range: '1d', goalMinutes: 470, tzOffset: 0,
+        });
+        expect(out.series[0].asleepMin).toBe(353);
+        expect(out.series[0].totalAsleepMin).toBe(470);
+        expect(out.summary.totalSleep.avgMin).toBe(470);
+        expect(out.summary.naps.count).toBe(1);
+        expect(out.summary.goal.met).toBe(1);
+    });
+
+    it('a fragment touching the night is still part of the night, not a nap', () => {
+        const fragment = nap({
+            day: '2026-09-24', startedAt: '2026-09-24T07:20:00.000Z', endedAt: '2026-09-24T08:10:00.000Z', asleepMin: 50,
+        });
+        const { naps } = record.classifyDay([night, fragment], 0);
+        expect(naps).toHaveLength(0);
+    });
+
+    it('before 06:00 is never a nap, however far from the night', () => {
+        const early = nap({ startedAt: '2026-08-20T05:00:00.000Z', endedAt: '2026-08-20T05:40:00.000Z', asleepMin: 40 });
+        const late = session({ startedAt: '2026-08-20T08:00:00.000Z', endedAt: '2026-08-20T13:00:00.000Z', asleepMin: 290 });
+        expect(record.classifyDay([late, early], 0).naps).toHaveLength(0);
+    });
+});
+
 describe('the stacked bar', () => {
     it('sums the asleep stages to the time asleep and leaves awake on top', () => {
         const s = record.stackNight(session());
@@ -168,7 +212,8 @@ describe('GET /sleep/record', () => {
         expect(code).toBe(200);
         expect(body.days).toEqual(['2026-08-20']);
         expect(body.timeline.map((t) => t.kind)).toEqual(['night', 'nap']);
-        expect(body.summary.goal).toMatchObject({ minutes: 480, met: 0, nights: 1 });
+        // 450 asleep at night + a 40-minute nap = 490: the goal is judged on the day's total.
+        expect(body.summary.goal).toMatchObject({ minutes: 480, met: 1, nights: 1, includesNaps: true });
         expect(body.previousEnd).toBe('2026-08-19');
         expect(body.nextEnd).toBe('2026-08-21');
     });

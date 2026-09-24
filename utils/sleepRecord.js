@@ -9,13 +9,22 @@
  *
  * Three things this adds, each a way the naive version is wrong:
  *
- * 1. **A nap is a daytime session, not "any session that is not the longest".** The
+ * 1. **A nap is a separate daytime sleep, not "any session that is not the longest".** The
  *    dashboard keeps one row per day and drops the rest, which is right for a figure per day
  *    and wrong for a record that promises to show naps. But "every other session" would also
  *    call the second half of a split night a nap. So a nap is a session of at most
- *    `NAP_MAX_MIN` that *starts* inside `NAP_WINDOW` (local 09:00–20:00). A 05:30 fragment
- *    after a disturbed night is not one; a day sleep after a night shift is longer than three
- *    hours and is not one either. It is still that person's main sleep.
+ *    `NAP_MAX_MIN` that either *starts* inside `NAP_WINDOW` (local 09:00–20:00), or starts
+ *    inside the wider `NAP_WINDOW_SEPARATED` (06:00–22:00) **and** is at least
+ *    `NAP_GAP_MIN` clear of the night. The second rule is what files a 08:42 sleep after a
+ *    night that ended at 06:58 as the nap it was — under the first rule alone it was
+ *    silently discarded as a "fragment". A 05:30 fragment after a disturbed night is still
+ *    not one, and neither is anything that touches the night; a day sleep after a night
+ *    shift is longer than three hours and is not one either. It is still that person's main
+ *    sleep.
+ * 1b. **Naps count toward the day's total sleep.** `totalAsleepMin` is the night plus the
+ *    day's naps, which is what every health store reports as "total sleep", and the goal is
+ *    judged against it. The score is still the night's own — efficiency and stage balance
+ *    are properties of a night, and a nap has neither.
  * 2. **The night is chosen exactly as the dashboard chooses it**, from what is left once the
  *    naps are set aside: the longest. The only day where the two screens can disagree is one
  *    whose only session was a 40-minute afternoon nap — the dashboard draws it as a very
@@ -36,8 +45,15 @@ const mean = (values) => {
 
 /** Longest session a nap can be. Three hours covers a sick-day sleep; past that it is a sleep. */
 const NAP_MAX_MIN = 180;
-/** Local start times that make a short session a nap: 09:00 to 20:00. */
+/** Local start times that make a short session a nap on their own: 09:00 to 20:00. */
 const NAP_WINDOW = { fromMin: 9 * 60, toMin: 20 * 60 };
+/**
+ * Wider local window for a short session that is clearly apart from the night — a morning
+ * nap two hours after waking, or an evening doze before bed. Before 06:00 is still the night.
+ */
+const NAP_WINDOW_SEPARATED = { fromMin: 6 * 60, toMin: 22 * 60 };
+/** Awake time between a session and the night that makes it a separate sleep, not a fragment. */
+const NAP_GAP_MIN = 60;
 
 /** Calendar days each range spans. `all` is from the first recorded session. */
 const RECORD_RANGES = { '1d': 1, '1w': 7, '1m': 30, '1y': 364, all: null };
@@ -46,24 +62,54 @@ const BUCKET_FOR = { '1d': 'day', '1w': 'day', '1m': 'day', '1y': 'week', all: '
 
 const minutesBetween = (a, b) => Math.max(0, Math.round((new Date(b) - new Date(a)) / 60_000));
 
-const isNap = (session, tzOffset = 0) => {
-    const asleep = finite(session.asleepMin) ? session.asleepMin : minutesBetween(session.startedAt, session.endedAt);
-    if (asleep > NAP_MAX_MIN) return false;
+const asleepOf = (session) =>
+    (finite(session.asleepMin) ? session.asleepMin : minutesBetween(session.startedAt, session.endedAt));
+
+const inWindow = (session, window, tzOffset) => {
     const start = localMinutes(session.startedAt, tzOffset);
-    return start !== null && start >= NAP_WINDOW.fromMin && start < NAP_WINDOW.toMin;
+    return start !== null && start >= window.fromMin && start < window.toMin;
+};
+
+/** A short session that starts in the core daytime window — a nap whatever else happened. */
+const isNap = (session, tzOffset = 0) =>
+    asleepOf(session) <= NAP_MAX_MIN && inWindow(session, NAP_WINDOW, tzOffset);
+
+/** Minutes of wakefulness between two sessions; 0 when they touch or overlap. */
+const gapBetween = (a, b) => {
+    const [first, second] = new Date(a.startedAt) <= new Date(b.startedAt) ? [a, b] : [b, a];
+    return Math.max(0, Math.round((new Date(second.startedAt) - new Date(first.endedAt)) / 60_000));
 };
 
 /**
  * One day's sessions split into its night and its naps. Fragments that are neither — the
  * shorter half of a split night — are left out, which is what the dashboard does with them.
+ *
+ * Two passes: the core-window naps come out first, the night is the longest of what is
+ * left, and only then can "clear of the night" be asked of the remainder.
  */
 const classifyDay = (sessions = [], tzOffset = 0) => {
     const naps = [];
     const rest = [];
     for (const s of sessions) (isNap(s, tzOffset) ? naps : rest).push(s);
     const night = rest.slice().sort((a, b) => (b.asleepMin || 0) - (a.asleepMin || 0))[0] || null;
+    if (night) {
+        for (const s of rest) {
+            if (s === night) continue;
+            if (asleepOf(s) <= NAP_MAX_MIN
+                && inWindow(s, NAP_WINDOW_SEPARATED, tzOffset)
+                && gapBetween(s, night) >= NAP_GAP_MIN) naps.push(s);
+        }
+    }
     naps.sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
     return { night, naps };
+};
+
+/** Night plus naps, or null when the day has neither. */
+const dayTotal = ({ night, naps = [] } = {}) => {
+    const nightMin = night && finite(night.asleepMin) ? night.asleepMin : null;
+    const napMin = naps.length ? sum(naps.map(asleepOf)) : 0;
+    if (nightMin === null && !naps.length) return null;
+    return { nightMin, napMin, totalMin: (nightMin || 0) + napMin };
 };
 
 /**
@@ -155,6 +201,8 @@ const bucketView = (days, split, tzOffset) => {
         wakeMin: meanClock(nightRows.map((r) => localMinutes(r.endedAt, tzOffset))),
         napMin: withSleep.length && napCount ? Math.round(napMinutes / withSleep.length) : (withSleep.length ? 0 : null),
         napCount,
+        /** Night plus naps, per day that had any sleep — "total sleep" in every health store. */
+        totalAsleepMin: mean(withSleep.map((e) => dayTotal(e)?.totalMin)),
     };
 
     // Only a single day can point at one night and list its naps; a week cannot.
@@ -203,7 +251,10 @@ const buildRecord = ({
         };
     }
 
-    const measuredGoal = finite(goalMinutes) && goalMinutes > 0 ? asleep : [];
+    // The goal is judged on the day's total, naps included: a 5h 53m night and a 1h 57m nap
+    // is 7h 50m of sleep, which is what the person's other health apps will tell them too.
+    const totals = days.map((d) => dayTotal(split.get(d))).filter(Boolean);
+    const measuredGoal = finite(goalMinutes) && goalMinutes > 0 ? totals.map((t) => t.totalMin) : [];
 
     return {
         range,
@@ -214,6 +265,12 @@ const buildRecord = ({
             nights: nights.length,
             dayCount: days.length,
             totalAsleepMin: asleep.length ? sum(asleep) : null,
+            /** Night plus naps. `avgMin` is per day that had any sleep; null with none. */
+            totalSleep: {
+                avgMin: mean(totals.map((t) => t.totalMin)),
+                totalMin: totals.length ? sum(totals.map((t) => t.totalMin)) : null,
+                days: totals.length,
+            },
             avgAsleepMin: mean(asleep),
             avgInBedMin: mean(nights.map((n) => n.inBedMin)),
             avgEfficiency: mean(nights.map((n) => n.efficiency)),
@@ -235,7 +292,12 @@ const buildRecord = ({
             },
             /** Null with no goal — nobody has missed a target nobody set. */
             goal: finite(goalMinutes) && goalMinutes > 0
-                ? { minutes: goalMinutes, met: measuredGoal.filter((m) => m >= goalMinutes).length, nights: measuredGoal.length }
+                ? {
+                    minutes: goalMinutes,
+                    met: measuredGoal.filter((m) => m >= goalMinutes).length,
+                    nights: measuredGoal.length,
+                    includesNaps: true,
+                }
                 : null,
             naps: {
                 count: naps.length,
@@ -267,11 +329,15 @@ function shareOf(breakdown, stage) {
 module.exports = {
     buildRecord,
     classifyDay,
+    dayTotal,
     stackNight,
     isNap,
+    gapBetween,
     chunkDays,
     NAP_MAX_MIN,
     NAP_WINDOW,
+    NAP_WINDOW_SEPARATED,
+    NAP_GAP_MIN,
     RECORD_RANGES,
     BUCKET_FOR,
 };
