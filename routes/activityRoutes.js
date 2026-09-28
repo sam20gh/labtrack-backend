@@ -15,6 +15,9 @@ router.get('/calendar', c.getCalendar);
 
 router.get('/sessions', c.listSessions);
 router.get('/sessions/:id', c.getSession);
+router.get('/sessions/:id/track', c.getTrack);
+router.post('/sessions/live', c.createLiveSession);
+router.get('/live/context', c.getLiveContext);
 router.post('/sessions', c.createSession);
 router.patch('/sessions/:id', c.updateSession);
 router.delete('/sessions/:id', c.deleteSession);

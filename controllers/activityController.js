@@ -1,5 +1,6 @@
 const ActivitySession = require('../models/ActivitySession');
 const ActivityPlan = require('../models/ActivityPlan');
+const ActivityTrack = require('../models/ActivityTrack');
 const DailyMetrics = require('../models/DailyMetrics');
 const PlanItem = require('../models/PlanItem');
 const User = require('../models/userModel');
@@ -7,6 +8,9 @@ const { recomputeDay, localDay, resolveDay, normaliseType } = require('../utils/
 const { computeTargets, deriveGuidance, explain } = require('../utils/activityTargets');
 const { scoreSession, scoreWindow, bandFor } = require('../utils/activityScore');
 const { breakdownByType, activeHours, comparePeriods } = require('../utils/activityInsight');
+const { computeTrack, TRACKABLE_TYPES } = require('../utils/trackMetrics');
+const { activeKcal } = require('../utils/runEnergy');
+const { latestWeight } = require('../utils/observedProfile');
 const scoreController = require('./scoreController');
 const achievementController = require('./achievementController');
 
@@ -621,6 +625,237 @@ exports.createSession = async (req, res) => {
     }
 };
 
+/** A client-generated session id: a UUID, or anything shaped enough like one. */
+const CLIENT_ID = /^[A-Za-z0-9-]{8,64}$/;
+/** ~14 hours at one fix a second. Past this the upload is not a session. */
+const MAX_TRACK_POINTS = 50_000;
+const MAX_ADDRESS_LENGTH = 80;
+
+const numberColumn = (col, n) => {
+    if (col == null) return undefined;
+    if (!Array.isArray(col) || col.length !== n) return null;
+    return col.map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null));
+};
+
+const shortText = (s) => (typeof s === 'string' && s.trim()
+    ? s.trim().slice(0, MAX_ADDRESS_LENGTH)
+    : undefined);
+
+/**
+ * The body mass calories are priced with: the latest logged weight, else the profile answer,
+ * else null. One function for the live screen's estimate and the stored figure, so the phone
+ * cannot show one number during the run and the history another.
+ */
+const weightFor = async (userId) => {
+    const [logged, user] = await Promise.all([
+        latestWeight(userId),
+        User.findById(userId).select('weight').lean(),
+    ]);
+    if (Number.isFinite(logged?.value)) return { weightKg: logged.value, weightSource: 'logged' };
+    if (Number.isFinite(user?.weight) && user.weight > 0) return { weightKg: user.weight, weightSource: 'profile' };
+    return { weightKg: null, weightSource: null };
+};
+
+/**
+ * GET /api/activity/live/context — what the phone needs before a live session starts.
+ *
+ * Only the weight today. Null is an answer, not an error: the screen then shows "Add your
+ * weight for calories" rather than a number priced on a guessed body.
+ */
+exports.getLiveContext = async (req, res) => {
+    try {
+        res.json(await weightFor(req.user.id));
+    } catch (err) {
+        console.error('❌ Reading live context failed:', err);
+        res.status(500).json({ message: 'Could not prepare the session' });
+    }
+};
+
+/**
+ * POST /api/activity/sessions/live — a session recorded on the phone with GPS.
+ *
+ * Three things this does that `createSession` does not:
+ *
+ * 1. **Everything is recomputed from the track.** Distance, moving time, splits, climb,
+ *    heart rate and calories come from `trackMetrics` / `runEnergy`; any figure the client
+ *    sends is ignored. The phone's numbers were provisional — the stored ones are these, so
+ *    the list, the detail and the score cannot disagree with each other.
+ * 2. **A retry is an upsert.** `clientId` becomes `externalId` with `source: 'live'`, which
+ *    the existing partial unique index makes unique per person. A second upload of the same
+ *    run answers **200 with the stored row**, never 409, because the phone deletes its
+ *    on-disk journal on any success and must be able to tell one from a failure.
+ * 3. **`durationSec` is moving time.** Twenty minutes stood at a crossing is not twenty
+ *    minutes of exercise, and the score reads this field. A session with no usable GPS at
+ *    all (started before a lock, recorded indoors) falls back to the clock minus manual
+ *    pauses, so it still counts.
+ *
+ * Steps and distance are **not** added to the day's totals: the phone's pedometer and the
+ * bracelet already reported those steps through the health store, and `recomputeDay` takes
+ * only the session count, minutes and score from sessions. `__tests__/liveSession.test.js`
+ * pins that.
+ */
+exports.createLiveSession = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const {
+            clientId, type: rawType, startedAt, endedAt, tzOffset, day,
+            effort, notes, track, steps, hrSource, startAddress, endAddress,
+        } = req.body || {};
+
+        if (typeof clientId !== 'string' || !CLIENT_ID.test(clientId)) {
+            return res.status(400).json({ message: 'clientId is required' });
+        }
+
+        const type = normaliseType(rawType);
+        if (!TRACKABLE_TYPES.includes(type)) {
+            return res.status(400).json({
+                message: `A live session can be ${TRACKABLE_TYPES.join(', ')}`,
+            });
+        }
+
+        const existing = await ActivitySession.findOne({ userId, source: 'live', externalId: clientId }).lean();
+        if (existing) return res.json({ session: existing, duplicate: true });
+
+        const n = Array.isArray(track?.t) ? track.t.length : -1;
+        if (n < 0 || n > MAX_TRACK_POINTS) {
+            return res.status(400).json({ message: 'track.t must be an array of timestamps' });
+        }
+        const columns = {
+            t: numberColumn(track.t, n),
+            lat: numberColumn(track.lat, n),
+            lng: numberColumn(track.lng, n),
+            alt: numberColumn(track.alt, n),
+            acc: numberColumn(track.acc, n),
+            hr: numberColumn(track.hr, n),
+        };
+        if (!columns.lat || !columns.lng || Object.values(columns).some((c) => c === null)) {
+            return res.status(400).json({ message: 'Every track column must be the same length as track.t' });
+        }
+        const pauses = (Array.isArray(track.pauses) ? track.pauses : [])
+            .filter((p) => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite) && p[1] >= p[0]);
+
+        const firstT = columns.t.find(Number.isFinite);
+        const lastT = [...columns.t].reverse().find(Number.isFinite);
+        const start = new Date(startedAt ?? firstT);
+        const end = new Date(endedAt ?? lastT);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+            return res.status(400).json({ message: 'A live session needs a start before its end' });
+        }
+
+        const metrics = computeTrack({ ...columns, pauses }, { type });
+
+        const pausedSec = pauses.reduce((s, [a, b]) => s + (b - a), 0) / 1000;
+        const clockSec = Math.max(0, Math.round((end - start) / 1000 - pausedSec));
+        const durationSec = metrics.movingSec > 0 ? metrics.movingSec : clockSec;
+        if (durationSec <= 0) {
+            return res.status(400).json({ message: 'An activity needs a duration' });
+        }
+
+        const { weightKg } = await weightFor(userId);
+        const kcal = activeKcal(metrics.segments, { type, weightKg });
+
+        const stepCount = Number.isFinite(steps) && steps > 0 ? Math.round(steps) : undefined;
+        const resolvedDay = resolveDay(day, start, tzOffset);
+
+        let session;
+        try {
+            session = await ActivitySession.create({
+                userId,
+                type,
+                startedAt: start,
+                endedAt: end,
+                day: resolvedDay,
+                durationSec,
+                distanceM: metrics.distanceM || undefined,
+                activeKcal: kcal ?? undefined,
+                elevationM: metrics.elevationGainM ?? undefined,
+                avgBpm: metrics.avgBpm ?? undefined,
+                maxBpm: metrics.maxBpm ?? undefined,
+                cadence: stepCount && metrics.movingSec > 0
+                    ? Math.round(stepCount / (metrics.movingSec / 60))
+                    : undefined,
+                effort: Number.isInteger(effort) && effort >= 1 && effort <= 5 ? effort : undefined,
+                notes: typeof notes === 'string' ? notes.slice(0, 1000) : undefined,
+                splits: metrics.splits,
+                route: metrics.route.length >= 2
+                    ? { type: 'LineString', coordinates: metrics.route }
+                    : undefined,
+                startAddress: shortText(startAddress),
+                endAddress: shortText(endAddress),
+                source: 'live',
+                externalId: clientId,
+            });
+        } catch (err) {
+            // Two uploads of the same run racing each other: the loser reads the winner.
+            if (err?.code === 11000) {
+                const winner = await ActivitySession.findOne({ userId, source: 'live', externalId: clientId }).lean();
+                if (winner) return res.json({ session: winner, duplicate: true });
+            }
+            throw err;
+        }
+
+        try {
+            await ActivityTrack.create({
+                sessionId: session._id,
+                userId,
+                ...columns,
+                pauses: pauses.length ? pauses : undefined,
+                hrSource: hrSource === 'bracelet_live' && columns.hr ? 'bracelet_live' : null,
+                steps: stepCount,
+            });
+        } catch (err) {
+            // A session without its track is a run the replay cannot draw and a recompute
+            // cannot repeat. Undo it so the phone keeps its journal and retries the whole.
+            await ActivitySession.deleteOne({ _id: session._id });
+            throw err;
+        }
+
+        await recomputeDay(userId, resolvedDay);
+        console.log(`🛰️ Live ${type} u=${userId} d=${resolvedDay} ${Math.round(metrics.distanceM)}m ${durationSec}s`);
+
+        scoreController.touch(userId, 'log');
+        achievementController.touch(userId);
+
+        res.status(201).json({
+            session,
+            metrics: {
+                movingSec: metrics.movingSec,
+                elapsedSec: metrics.elapsedSec,
+                avgPacePerKm: metrics.avgPacePerKm,
+                avgSpeed: metrics.avgSpeed,
+                maxSpeed: metrics.maxSpeed,
+                pointsUsed: metrics.pointsUsed,
+                pointsDropped: metrics.pointsDropped,
+                // Why calories are absent, so the screen can ask for the right thing.
+                kcalUnavailable: kcal == null ? (weightKg == null ? 'no_weight' : 'type') : null,
+            },
+        });
+    } catch (err) {
+        console.error('❌ Saving live session failed:', err);
+        res.status(500).json({ message: 'Could not save the activity' });
+    }
+};
+
+/**
+ * GET /api/activity/sessions/:id/track — the full-resolution track, for the replay.
+ *
+ * 404 for a session that is not the caller's *and* for one with no track, identically:
+ * the difference would tell a stranger which session ids exist.
+ */
+exports.getTrack = async (req, res) => {
+    try {
+        const track = await ActivityTrack.findOne({ sessionId: req.params.id, userId: req.user.id })
+            .select('t lat lng alt hr pauses hrSource steps -_id')
+            .lean();
+        if (!track) return res.status(404).json({ message: 'No track for this activity' });
+        res.json({ track });
+    } catch (err) {
+        if (err?.name === 'CastError') return res.status(404).json({ message: 'No track for this activity' });
+        console.error('❌ Reading track failed:', err);
+        res.status(500).json({ message: 'Could not load the route' });
+    }
+};
+
 /**
  * PATCH /api/activity/sessions/:id
  *
@@ -673,6 +908,9 @@ exports.deleteSession = async (req, res) => {
         const session = await ActivitySession.findOneAndDelete({ _id: req.params.id, userId });
         if (!session) return res.status(404).json({ message: 'Activity not found' });
 
+        // A route is location history. Keeping it after the run was deleted keeps exactly
+        // what the person asked to be rid of.
+        await ActivityTrack.deleteOne({ sessionId: session._id });
         await recomputeDay(userId, session.day);
 
         res.json({
@@ -690,3 +928,4 @@ exports._computeStreak = computeStreak;
 exports._syncGuidance = syncGuidance;
 exports._RANGES = RANGES;
 exports._localDay = localDay;
+exports._weightFor = weightFor;

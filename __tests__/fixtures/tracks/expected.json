@@ -1,0 +1,354 @@
+{
+  "loop5k": {
+    "distanceM": 5012.9,
+    "movingSec": 1499,
+    "elapsedSec": 1500,
+    "avgPacePerKm": 299,
+    "maxSpeed": 5.2,
+    "elevationGainM": 0,
+    "avgBpm": 152,
+    "maxBpm": 155,
+    "splits": [
+      {
+        "label": "Km 1",
+        "order": 1,
+        "distanceM": 1000,
+        "durationSec": 298,
+        "avgBpm": 144,
+        "pacePerKm": 298
+      },
+      {
+        "label": "Km 2",
+        "order": 2,
+        "distanceM": 1000,
+        "durationSec": 300,
+        "avgBpm": 151,
+        "pacePerKm": 300
+      },
+      {
+        "label": "Km 3",
+        "order": 3,
+        "distanceM": 1000,
+        "durationSec": 299,
+        "avgBpm": 155,
+        "pacePerKm": 299
+      },
+      {
+        "label": "Km 4",
+        "order": 4,
+        "distanceM": 1000,
+        "durationSec": 299,
+        "avgBpm": 155,
+        "pacePerKm": 299
+      },
+      {
+        "label": "Km 5",
+        "order": 5,
+        "distanceM": 1000,
+        "durationSec": 298,
+        "avgBpm": 155,
+        "pacePerKm": 298
+      }
+    ],
+    "routePoints": 72,
+    "pointsUsed": 1501,
+    "activeKcal": 356
+  },
+  "redLight": {
+    "distanceM": 3003.4,
+    "movingSec": 987,
+    "elapsedSec": 1080,
+    "avgPacePerKm": 329,
+    "maxSpeed": 4.1,
+    "elevationGainM": 0,
+    "avgBpm": null,
+    "maxBpm": null,
+    "splits": [
+      {
+        "label": "Km 1",
+        "order": 1,
+        "distanceM": 1000,
+        "durationSec": 328,
+        "avgBpm": null,
+        "pacePerKm": 328
+      },
+      {
+        "label": "Km 2",
+        "order": 2,
+        "distanceM": 1000,
+        "durationSec": 328,
+        "avgBpm": null,
+        "pacePerKm": 328
+      },
+      {
+        "label": "Km 3",
+        "order": 3,
+        "distanceM": 1000,
+        "durationSec": 329,
+        "avgBpm": null,
+        "pacePerKm": 329
+      }
+    ],
+    "routePoints": 43,
+    "pointsUsed": 1081,
+    "activeKcal": 214
+  },
+  "tunnel": {
+    "distanceM": 2640.8,
+    "movingSec": 877,
+    "elapsedSec": 1000,
+    "avgPacePerKm": 332,
+    "maxSpeed": 4,
+    "elevationGainM": 0,
+    "avgBpm": null,
+    "maxBpm": null,
+    "splits": [
+      {
+        "label": "Km 1",
+        "order": 1,
+        "distanceM": 1000,
+        "durationSec": 332,
+        "avgBpm": null,
+        "pacePerKm": 332
+      },
+      {
+        "label": "Km 2",
+        "order": 2,
+        "distanceM": 1000,
+        "durationSec": 333,
+        "avgBpm": null,
+        "pacePerKm": 333
+      },
+      {
+        "label": "0.6 km",
+        "order": 3,
+        "distanceM": 640.8,
+        "durationSec": 212,
+        "avgBpm": null,
+        "pacePerKm": 331
+      }
+    ],
+    "routePoints": 32,
+    "pointsUsed": 881,
+    "activeKcal": 187
+  },
+  "teleport": {
+    "distanceM": 2010.5,
+    "movingSec": 667,
+    "elapsedSec": 667,
+    "avgPacePerKm": 332,
+    "maxSpeed": 4,
+    "elevationGainM": 0,
+    "avgBpm": null,
+    "maxBpm": null,
+    "splits": [
+      {
+        "label": "Km 1",
+        "order": 1,
+        "distanceM": 1000,
+        "durationSec": 332,
+        "avgBpm": null,
+        "pacePerKm": 332
+      },
+      {
+        "label": "Km 2",
+        "order": 2,
+        "distanceM": 1000,
+        "durationSec": 332,
+        "avgBpm": null,
+        "pacePerKm": 332
+      }
+    ],
+    "routePoints": 34,
+    "pointsUsed": 665,
+    "activeKcal": 143
+  },
+  "hill": {
+    "distanceM": 2434.9,
+    "movingSec": 1999,
+    "elapsedSec": 2000,
+    "avgPacePerKm": 821,
+    "maxSpeed": 2,
+    "elevationGainM": 58.2,
+    "avgBpm": null,
+    "maxBpm": null,
+    "splits": [
+      {
+        "label": "Km 1",
+        "order": 1,
+        "distanceM": 1000,
+        "durationSec": 823,
+        "avgBpm": null,
+        "pacePerKm": 823
+      },
+      {
+        "label": "Km 2",
+        "order": 2,
+        "distanceM": 1000,
+        "durationSec": 823,
+        "avgBpm": null,
+        "pacePerKm": 823
+      },
+      {
+        "label": "0.4 km",
+        "order": 3,
+        "distanceM": 434.9,
+        "durationSec": 353,
+        "avgBpm": null,
+        "pacePerKm": 813
+      }
+    ],
+    "routePoints": 79,
+    "pointsUsed": 2001,
+    "activeKcal": 144
+  },
+  "lowAccuracy": {
+    "distanceM": 1272.8,
+    "movingSec": 900,
+    "elapsedSec": 900,
+    "avgPacePerKm": 707,
+    "maxSpeed": 2.2,
+    "elevationGainM": 0,
+    "avgBpm": null,
+    "maxBpm": null,
+    "splits": [
+      {
+        "label": "Km 1",
+        "order": 1,
+        "distanceM": 1000,
+        "durationSec": 706,
+        "avgBpm": null,
+        "pacePerKm": 706
+      },
+      {
+        "label": "0.3 km",
+        "order": 2,
+        "distanceM": 272.8,
+        "durationSec": 194,
+        "avgBpm": null,
+        "pacePerKm": 710
+      }
+    ],
+    "routePoints": 35,
+    "pointsUsed": 881,
+    "activeKcal": 45
+  },
+  "pausedRide": {
+    "distanceM": 8384.5,
+    "movingSec": 1198,
+    "elapsedSec": 1400,
+    "avgPacePerKm": 143,
+    "maxSpeed": 8.8,
+    "elevationGainM": 0,
+    "avgBpm": null,
+    "maxBpm": null,
+    "splits": [
+      {
+        "label": "Km 1",
+        "order": 1,
+        "distanceM": 1000,
+        "durationSec": 143,
+        "avgBpm": null,
+        "pacePerKm": 143
+      },
+      {
+        "label": "Km 2",
+        "order": 2,
+        "distanceM": 1000,
+        "durationSec": 144,
+        "avgBpm": null,
+        "pacePerKm": 144
+      },
+      {
+        "label": "Km 3",
+        "order": 3,
+        "distanceM": 1000,
+        "durationSec": 143,
+        "avgBpm": null,
+        "pacePerKm": 143
+      },
+      {
+        "label": "Km 4",
+        "order": 4,
+        "distanceM": 1000,
+        "durationSec": 143,
+        "avgBpm": null,
+        "pacePerKm": 143
+      },
+      {
+        "label": "Km 5",
+        "order": 5,
+        "distanceM": 1000,
+        "durationSec": 142,
+        "avgBpm": null,
+        "pacePerKm": 142
+      },
+      {
+        "label": "Km 6",
+        "order": 6,
+        "distanceM": 1000,
+        "durationSec": 143,
+        "avgBpm": null,
+        "pacePerKm": 143
+      },
+      {
+        "label": "Km 7",
+        "order": 7,
+        "distanceM": 1000,
+        "durationSec": 142,
+        "avgBpm": null,
+        "pacePerKm": 142
+      },
+      {
+        "label": "Km 8",
+        "order": 8,
+        "distanceM": 1000,
+        "durationSec": 143,
+        "avgBpm": null,
+        "pacePerKm": 143
+      },
+      {
+        "label": "0.4 km",
+        "order": 9,
+        "distanceM": 384.5,
+        "durationSec": 55,
+        "avgBpm": null,
+        "pacePerKm": 143
+      }
+    ],
+    "routePoints": 63,
+    "pointsUsed": 1401,
+    "activeKcal": 244
+  },
+  "noWeight": {
+    "distanceM": 1204.1,
+    "movingSec": 400,
+    "elapsedSec": 400,
+    "avgPacePerKm": 332,
+    "maxSpeed": 3.8,
+    "elevationGainM": 0,
+    "avgBpm": null,
+    "maxBpm": null,
+    "splits": [
+      {
+        "label": "Km 1",
+        "order": 1,
+        "distanceM": 1000,
+        "durationSec": 332,
+        "avgBpm": null,
+        "pacePerKm": 332
+      },
+      {
+        "label": "0.2 km",
+        "order": 2,
+        "distanceM": 204.1,
+        "durationSec": 68,
+        "avgBpm": null,
+        "pacePerKm": 333
+      }
+    ],
+    "routePoints": 19,
+    "pointsUsed": 401,
+    "activeKcal": null
+  }
+}
