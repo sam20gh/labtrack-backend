@@ -650,10 +650,19 @@ const shortText = (s) => (typeof s === 'string' && s.trim()
 const weightFor = async (userId) => {
     const [logged, user] = await Promise.all([
         latestWeight(userId),
-        User.findById(userId).select('weight').lean(),
+        User.findById(userId).select('weight observed.weightKg').lean(),
     ]);
-    if (Number.isFinite(logged?.value)) return { weightKg: logged.value, weightSource: 'logged' };
-    if (Number.isFinite(user?.weight) && user.weight > 0) return { weightKg: user.weight, weightSource: 'profile' };
+    // A plausible adult or child body mass. Older rows can hold the number as a string
+    // ("70"), which a strict isFinite would read as "no weight" and ask the person for a
+    // figure they already gave.
+    const kg = (v) => {
+        const n = typeof v === 'string' ? parseFloat(v) : v;
+        return Number.isFinite(n) && n >= 20 && n <= 400 ? n : null;
+    };
+    const measured = kg(logged?.value) ?? kg(user?.observed?.weightKg);
+    if (measured != null) return { weightKg: measured, weightSource: 'logged' };
+    const profile = kg(user?.weight);
+    if (profile != null) return { weightKg: profile, weightSource: 'profile' };
     return { weightKg: null, weightSource: null };
 };
 

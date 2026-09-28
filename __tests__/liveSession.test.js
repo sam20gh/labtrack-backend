@@ -330,6 +330,15 @@ describe('GET /activity/live/context', () => {
         expect((await context(none)).body).toMatchObject({ weightKg: null, weightSource: null });
     });
 
+    it('finds a weight the person already gave wherever it is kept', async () => {
+        const observed = await seedUser();
+        await User.updateOne({ _id: observed }, { $set: { 'observed.weightKg': 81 } });
+        const asText = await seedUser();
+        await User.collection.updateOne({ _id: asText }, { $set: { weight: '74' } }); // a legacy string
+        expect((await context(observed)).body).toMatchObject({ weightKg: 81 });
+        expect((await context(asText)).body).toMatchObject({ weightKg: 74, weightSource: 'profile' });
+    });
+
     it('estimates maximum heart rate from age, and gives none without a readable birth date', async () => {
         const dated = await seedUser({ dob: '1986-03-15' });
         const undated = await seedUser();
