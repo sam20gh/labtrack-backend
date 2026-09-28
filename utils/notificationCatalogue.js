@@ -95,8 +95,26 @@ const CATEGORIES = {
         route: '/metrics',
         channel: 'enabled',
         // The one category allowed to interrupt. A blood pressure in the crisis band is the
-        // case this exists for; see `utils/bloodPressure.js`.
+        // case this exists for; see `utils/bloodPressure.js`. `utils/vitalAlerts.js` sends
+        // only its `urgent` level here.
         priority: 'critical',
+    },
+    /**
+     * The same mark as `vitals`, at normal priority.
+     *
+     * A stage 2 blood pressure or an SpO2 of 93% is worth telling somebody about, but not
+     * worth waking them at 3am. Priority belongs to the category, not the producer, so the
+     * `attention` level of `utils/vitalAlerts.js` needs a category of its own. The
+     * alternative, letting a producer choose whether to cross quiet hours, is exactly what
+     * rule 3 of `notificationCentre.publish` forbids.
+     */
+    vitals_review: {
+        label: 'Readings',
+        icon: 'pulse-outline',
+        tint: 'rose',
+        route: '/metrics',
+        channel: 'enabled',
+        priority: 'normal',
     },
     results: {
         label: 'Results',

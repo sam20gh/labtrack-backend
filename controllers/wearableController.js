@@ -5,6 +5,7 @@ const HeartRateSample = require('../models/HeartRateSample');
 const DailyMetrics = require('../models/DailyMetrics');
 const SleepPlan = require('../models/SleepPlan');
 const { ingestBatch, ACCEPTED_HR_CONTEXTS } = require('../utils/healthSync');
+const { recordReadings } = require('../utils/vitalAlertCentre');
 const scoreController = require('./scoreController');
 const achievementController = require('./achievementController');
 
@@ -151,6 +152,42 @@ exports.sync = async (req, res) => {
             },
             { upsert: true, new: true }
         );
+
+        /**
+         * Out-of-range vitals, onto the record and in front of the patient.
+         *
+         * Awaited, so the card exists before this answers and the bell the app refreshes
+         * after a sync already counts it. `recordReadings` never throws. The source and
+         * method go with each reading, because a clinician has to be able to tell a
+         * bracelet's cuffless estimate from a cuff.
+         */
+        const readingSource = platform === 'jstyle_bracelet' ? 'bracelet' : platform;
+        await recordReadings(userId, [
+            ...bloodPressure.map((r) => ({
+                metric: 'blood_pressure',
+                measuredAt: r?.measuredAt,
+                systolic: r?.systolic,
+                diastolic: r?.diastolic,
+                method: r?.method === 'optical_estimate' ? 'optical_estimate' : 'cuff',
+                source: readingSource,
+                externalId: r?.externalId,
+            })),
+            ...spo2.map((r) => ({
+                metric: 'spo2',
+                measuredAt: r?.measuredAt,
+                spo2: r?.spo2,
+                source: readingSource,
+                externalId: r?.externalId,
+            })),
+            ...heart.map((r) => ({
+                metric: 'heart_rate',
+                measuredAt: r?.measuredAt,
+                bpm: r?.bpm,
+                context: r?.context,
+                source: readingSource,
+                externalId: r?.externalId,
+            })),
+        ], { tzOffset: Number(tzOffset) || 0 });
 
         console.log(
             `🔄 Sync ${platform} u=${userId} ` +

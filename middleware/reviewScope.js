@@ -26,6 +26,7 @@
  * honest control on an admin is the audit log, which records them like anyone else.
  */
 const Interpretation = require('../models/Interpretation');
+const VitalAlert = require('../models/VitalAlert');
 
 const requireReviewScope = async (req, res, next) => {
     try {
@@ -39,11 +40,24 @@ const requireReviewScope = async (req, res, next) => {
         const patientId = req.params.userId;
         if (!patientId) return res.status(400).json({ message: 'Missing patient id' });
 
+        /**
+         * An out-of-range vital sign waiting for review is the same kind of reason as an
+         * interpretation in the queue: work any clinician is here to pick up. Having
+         * reviewed one is the same kind of reason as having reviewed an interpretation.
+         * Without this, a patient whose only open item is a crisis blood pressure would be
+         * the one record the worklist links to and no clinician can open.
+         */
         const reason = await Interpretation.exists({
             userId: patientId,
             $or: [
                 { 'review.status': 'pending' },
                 { 'review.professionalId': req.auth.userId },
+            ],
+        }) || await VitalAlert.exists({
+            userId: patientId,
+            $or: [
+                { status: 'open' },
+                { 'review.by': req.auth.userId },
             ],
         });
 

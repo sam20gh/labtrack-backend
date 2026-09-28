@@ -34,6 +34,8 @@ const AccessLogSchema = new mongoose.Schema({
         enum: [
             'queue', 'interpretation', 'patient_context', 'biomarkers', 'plan',
             'review_history', 'appointments',
+            /** The out-of-range vitals worklist, logged with a count like the queue. */
+            'vital_alerts',
             /**
              * Reading the audit trail is itself audited. An administrator who can see every
              * clinician's reads is the one account with no other check on it, so the export

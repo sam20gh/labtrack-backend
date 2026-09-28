@@ -22,6 +22,7 @@ const hydration = require('../utils/hydrationTargets');
 const { recomputeMetricDay } = require('../utils/metricRollup');
 const scoreController = require('./scoreController');
 const achievementController = require('./achievementController');
+const { recordReadings, withdrawReading } = require('../utils/vitalAlertCentre');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -213,6 +214,19 @@ exports.logBloodPressure = async (req, res) => {
         scoreController.touch(userId, 'log', { tzOffset: Number(req.body?.tzOffset) || 0 });
         achievementController.touch(userId);
 
+        // Stage 2 and crisis readings go on the record for a clinician and put a card in
+        // front of the patient. Never throws; see `utils/vitalAlertCentre.js`.
+        await recordReadings(userId, [{
+            metric: 'blood_pressure',
+            measuredAt: log.measuredAt,
+            day: log.day,
+            systolic: log.systolic,
+            diastolic: log.diastolic,
+            method: 'cuff',
+            source: 'manual',
+            logId: log._id,
+        }], { tzOffset: Number(req.body?.tzOffset) || 0 });
+
         console.log(`🩺 BP ${log.systolic}/${log.diastolic} (${category.key}) u=${userId}`);
 
         res.status(201).json({
@@ -248,6 +262,10 @@ exports.deleteLog = async (req, res) => {
         await recomputeMetricDay(userId, log.day);
         scoreController.touch(userId, 'log');
         achievementController.touch(userId);
+        // A typo'd 250/150 must not sit in a clinician's worklist after it was deleted.
+        if (['blood_pressure', 'spo2'].includes(log.kind)) {
+            await withdrawReading(userId, { logId: log._id, externalId: log.externalId });
+        }
 
         res.json({ message: 'Entry removed', day: log.day });
     } catch (err) {

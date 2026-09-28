@@ -27,6 +27,8 @@ const Professional = require('../models/Professional');
 const Product = require('../models/Product');
 const User = require('../models/userModel');
 const Biomarker = require('../models/Biomarker');
+const VitalAlert = require('../models/VitalAlert');
+const { toView: vitalAlertView, worklistOrder } = require('../utils/vitalAlertCentre');
 const { firstDueDate } = require('../utils/planGeneratorV2');
 const { notifyUser } = require('../jobs/reminderJob');
 const { recordAccess } = require('../utils/accessLog');
@@ -287,7 +289,7 @@ exports.getPatientContext = async (req, res) => {
     try {
         const { userId } = req.params;
 
-        const [patient, interpretations, planItems, biomarkers] = await Promise.all([
+        const [patient, interpretations, planItems, biomarkers, vitalAlerts] = await Promise.all([
             User.findById(userId)
                 .select('firstName lastName dob gender height weight bloodType healthAssessment observed')
                 .lean(),
@@ -306,6 +308,12 @@ exports.getPatientContext = async (req, res) => {
                 .sort({ measuredAt: -1 })
                 .limit(400)
                 .lean(),
+            // Open episodes first, then the recent history, so an unreviewed crisis cannot
+            // be pushed off the list by older reviewed ones.
+            VitalAlert.find({ userId })
+                .sort({ isOpen: -1, lastAt: -1 })
+                .limit(50)
+                .lean(),
         ]);
 
         if (!patient) return res.status(404).json({ message: 'Patient not found' });
@@ -321,6 +329,7 @@ exports.getPatientContext = async (req, res) => {
             interpretations,
             planItems,
             biomarkers,
+            vitalAlerts: vitalAlerts.map(vitalAlertView).sort(worklistOrder),
         });
     } catch (error) {
         console.error('❌ Could not load patient context:', error);
@@ -724,6 +733,135 @@ exports.releaseReview = async (req, res) => {
  * Shared by the queue and the metrics backlog so both feed `slaFor` the same numbers. One
  * query for every DNA report referenced across the set, never one per row.
  */
+/**
+ * GET /api/reviews/vitals — out-of-range vital signs across patients.
+ *
+ * The worklist behind the portal's "Vital alerts". One row is an episode (see
+ * `models/VitalAlert.js`), so a bad night of hourly SpO2 is one row with a count, not
+ * eight rows to acknowledge one at a time.
+ *
+ * Query: `status=open|reviewed|all` (default `open`), `level=all|urgent|attention`,
+ * `metric=all|blood_pressure|heart_rate|spo2`, `limit`.
+ *
+ * It names patients, so opening it is a read of patient data and is logged the way the
+ * queue is: one entry with a count.
+ */
+exports.getVitalAlerts = async (req, res) => {
+    try {
+        const { status = 'open', level = 'all', metric = 'all' } = req.query || {};
+        const limit = Math.min(Math.max(parseInt(req.query?.limit, 10) || 100, 1), 200);
+
+        const filter = {};
+        if (status === 'open') filter.status = 'open';
+        else if (status === 'reviewed') filter.status = 'reviewed';
+        else filter.status = { $in: ['open', 'reviewed'] };
+        if (['urgent', 'attention'].includes(level)) filter.level = level;
+        if (['blood_pressure', 'heart_rate', 'spo2'].includes(metric)) filter.metric = metric;
+
+        const [rows, openUrgent, openAttention] = await Promise.all([
+            VitalAlert.find(filter)
+                .sort({ lastAt: -1 })
+                .limit(limit)
+                .select('-readings')
+                .populate('userId', 'firstName lastName dob gender')
+                .lean(),
+            VitalAlert.countDocuments({ status: 'open', level: 'urgent' }),
+            VitalAlert.countDocuments({ status: 'open', level: 'attention' }),
+        ]);
+
+        const alerts = rows.map(vitalAlertView).sort(worklistOrder);
+
+        await recordAccess({ actor: req.auth, resource: 'vital_alerts', count: alerts.length });
+
+        res.json({
+            count: alerts.length,
+            counts: { openUrgent, openAttention },
+            alerts,
+        });
+    } catch (error) {
+        console.error('❌ Vital alert worklist failed:', error);
+        res.status(500).json({ message: 'Could not load vital alerts' });
+    }
+};
+
+/**
+ * POST /api/reviews/vitals/:alertId/review  `{ outcome, note? }`
+ *
+ * A clinician closes an episode with what they did about it. A closed episode is never
+ * edited or reopened. The next out-of-range reading opens a new one, because "reviewed on
+ * Tuesday, high again on Thursday" needs its own review.
+ *
+ * `measurement_error` and `no_action` need a note. Both tell the next clinician "this was
+ * looked at and set aside", and without a reason that can't be checked.
+ */
+exports.reviewVitalAlert = async (req, res) => {
+    try {
+        const { alertId } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(alertId)) {
+            return res.status(404).json({ message: 'Alert not found' });
+        }
+
+        const outcome = req.body?.outcome;
+        const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 2000) : '';
+
+        if (!VitalAlert.OUTCOMES.includes(outcome)) {
+            return res.status(400).json({
+                message: 'Choose what was done about this alert.',
+                outcomes: VitalAlert.OUTCOMES,
+            });
+        }
+        if (['measurement_error', 'no_action'].includes(outcome) && !note) {
+            return res.status(400).json({ message: 'Add a note saying why no action is needed.' });
+        }
+
+        const professional = await resolveProfessional(req.auth, 'firstname lastname');
+        const name = professional
+            ? [professional.firstname, professional.lastname].filter(Boolean).join(' ')
+            : req.auth.email || null;
+
+        /**
+         * Conditional on `isOpen` so two clinicians closing the same alert cannot both
+         * succeed. The second gets 409 and sees the first one's outcome, rather than
+         * silently overwriting it.
+         */
+        const alert = await VitalAlert.findOneAndUpdate(
+            { _id: alertId, isOpen: true },
+            {
+                $set: {
+                    status: 'reviewed',
+                    isOpen: false,
+                    review: {
+                        by: req.auth.userId,
+                        professionalId: professional?._id || null,
+                        name,
+                        at: new Date(),
+                        outcome,
+                        note: note || null,
+                    },
+                },
+            },
+            { new: true }
+        ).lean();
+
+        if (!alert) {
+            const existing = await VitalAlert.findById(alertId).select('status review').lean();
+            if (!existing) return res.status(404).json({ message: 'Alert not found' });
+            return res.status(409).json({
+                message: existing.status === 'withdrawn'
+                    ? 'The patient deleted these readings before anyone reviewed them.'
+                    : 'Someone has already reviewed this alert.',
+                review: existing.review,
+            });
+        }
+
+        console.log(`🩺 Vital alert ${alertId} reviewed: ${outcome} by ${req.auth.userId}`);
+        res.json({ alert: vitalAlertView(alert) });
+    } catch (error) {
+        console.error('❌ Reviewing vital alert failed:', error);
+        res.status(500).json({ message: 'Could not save the review' });
+    }
+};
+
 const countPathogenic = async (interpretations) => {
     const ids = interpretations.flatMap((i) =>
         (i.covers || []).filter((c) => c.kind === 'dna_report').map((c) => c.id));

@@ -27,6 +27,13 @@ router.get('/profile', c.getProfile);
 router.get('/metrics', c.getReviewMetrics);
 
 /**
+ * Out-of-range vital signs. Declared above `/:reportId` for the same reason as `/metrics`.
+ * An open alert is itself a reason to open the patient; see `middleware/reviewScope.js`.
+ */
+router.get('/vitals', c.getVitalAlerts);
+router.post('/vitals/:alertId/review', c.reviewVitalAlert);
+
+/**
  * A patient's record, for a clinician reviewing their case.
  *
  * Declared above `/:reportId` so 'patient' is never read as an interpretation id, and
