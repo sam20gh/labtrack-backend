@@ -4,7 +4,7 @@
  * Two halves, deliberately in one file because the split is what makes the feature testable:
  *
  *   - `gather()`  — reads the rows. Needs a database, and is where all the cost is.
- *   - `measure()` — turns those rows into the 24 numbers the catalogue grades against.
+ *   - `measure()` — turns those rows into the 25 numbers the catalogue grades against.
  *                   **Pure.** No database, no clock beyond what it is handed.
  *
  * `evaluate()` is the two composed. Every threshold in `achievementCatalogue.js` is asserted
@@ -103,7 +103,7 @@ const gather = async (userId) => {
         DailyMetrics.find({ userId })
             .select('day activity.steps activity.distanceM heart.samples hydration.consumedMl hydration.targetMl hydration.logs')
             .lean(),
-        ActivitySession.find({ userId }).select('day distanceM').lean(),
+        ActivitySession.find({ userId }).select('day distanceM source').lean(),
         SleepSession.find({ userId }).select('day').lean(),
         MealLog.find({ userId }).select('day imageUrl').lean(),
         MetricLog.find({ userId }).select('kind day').lean(),
@@ -140,7 +140,7 @@ const gather = async (userId) => {
  * ------------------------------------------------------------------ */
 
 /**
- * The 24 numbers, from the rows.
+ * The 25 numbers, from the rows.
  *
  * Pure, and `now` is a parameter rather than `Date.now()` so `daysSinceJoining` can be
  * asserted rather than approximated.
@@ -198,6 +198,8 @@ const measure = (facts, now = Date.now()) => {
         // about, and calling that "covered on your sessions" would inflate the badge.
         distanceKm: Math.round(sumOf(sessions, (s) => s.distanceM) / 100) / 10,
         activitySessions: sessions.length,
+        // Sessions this app recorded with GPS (`source: 'live'`) — a count of recordings.
+        gpsSessions: sessions.filter((s) => s.source === 'live').length,
 
         sleepNights: sleep.length,
         sleepStreak: longestRun(sleepDays),

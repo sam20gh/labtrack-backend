@@ -147,6 +147,21 @@ const ACHIEVEMENTS = [
         how: 'Finish {n} activity sessions',
         blurb: 'A session is anything your watch or the activity tracker records.',
     },
+    {
+        key: 'trailblazer',
+        name: 'Trailblazer',
+        plainName: 'Trailblazer',
+        category: 'activity',
+        shape: 'rosette', glyph: 'rank',
+        metric: 'gpsSessions',
+        unit: 'sessions',
+        levels: [1, 10, 50, 150],
+        points: POINTS.medium,
+        // Counts recordings, never speed or distance: a slow walk recorded is the same effort
+        // to press Start on as a fast run, and pace is a fact about a body.
+        how: 'Record {n} activities with GPS',
+        blurb: 'Press Start in the activity tracker and take your phone with you.',
+    },
 
     /* --- Sleep -------------------------------------------------------- */
     {

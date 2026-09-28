@@ -16,6 +16,7 @@
  */
 const mongoose = require('mongoose');
 const ActivitySession = require('../models/ActivitySession');
+const { sameWorkout, fillFromTwin } = require('./workoutMerge');
 const SleepSession = require('../models/SleepSession');
 const HeartRateSample = require('../models/HeartRateSample');
 const DailyMetrics = require('../models/DailyMetrics');
@@ -143,10 +144,33 @@ const upsertOp = ({ filter, set, setOnInsert }) => ({
     },
 });
 
+/**
+ * Live sessions near a batch of incoming workouts, so a watch's copy of a phone-recorded run
+ * can be recognised before it is inserted. One query, bounded by the batch's own span.
+ */
+const liveSessionsAround = async (userId, rows) => {
+    const times = rows
+        .flatMap((r) => [r?.startedAt, r?.endedAt])
+        .map((t) => new Date(t).getTime())
+        .filter(Number.isFinite);
+    if (!times.length) return [];
+    const pad = 12 * 3600_000;
+    return ActivitySession.find({
+        userId,
+        source: 'live',
+        startedAt: { $gte: new Date(Math.min(...times) - pad), $lte: new Date(Math.max(...times) + pad) },
+    }).select('_id type startedAt endedAt durationSec day avgBpm maxBpm cadence').lean();
+};
+
 /** Normalise and upsert workouts. Returns the days touched. */
 const ingestActivities = async (userId, rows = [], { source, tzOffset }) => {
     const ops = [];
     const days = new Set();
+    // A store workout that is a live session's twin is absorbed, never inserted. See
+    // `utils/workoutMerge.js`: inserting it would count the run twice, and deleting it
+    // afterwards would only bring it back on the next sync.
+    const lives = source === 'live' ? [] : await liveSessionsAround(userId, rows);
+    const fills = [];
 
     for (const row of rows) {
         if (!row?.startedAt) continue;
@@ -162,6 +186,18 @@ const ingestActivities = async (userId, rows = [], { source, tzOffset }) => {
 
         // A zero-length workout is a health store artefact, not something a person did.
         if (durationSec <= 0) continue;
+
+        const candidate = { type: normaliseType(row.type), startedAt, endedAt, durationSec };
+        const twin = lives.find((l) => sameWorkout(l, candidate));
+        if (twin) {
+            const set = fillFromTwin(twin, row);
+            if (set) {
+                fills.push({ updateOne: { filter: { _id: twin._id }, update: { $set: set } } });
+                Object.assign(twin, set); // a second twin in the same batch sees the fill
+                days.add(twin.day);
+            }
+            continue;
+        }
 
         days.add(day);
 
@@ -199,7 +235,36 @@ const ingestActivities = async (userId, rows = [], { source, tzOffset }) => {
     }
 
     if (ops.length) await ActivitySession.bulkWrite(ops, { ordered: false });
+    if (fills.length) await ActivitySession.bulkWrite(fills, { ordered: false });
     return days;
+};
+
+/**
+ * The other half of the merge: store workouts that synced *before* the live session was
+ * uploaded. Fills the live row's empty fields from them and removes them. Returns the days
+ * whose rollups need recomputing.
+ */
+const absorbStoreTwins = async (live) => {
+    const [start, end] = [new Date(live.startedAt), new Date(live.endedAt || live.startedAt)];
+    const nearby = await ActivitySession.find({
+        userId: live.userId,
+        source: { $in: ['healthkit', 'health_connect', 'aggregator'] },
+        startedAt: { $gte: new Date(start.getTime() - 12 * 3600_000), $lte: end },
+    }).lean();
+    const days = new Set();
+    let set = {};
+    const absorbed = [];
+    for (const row of nearby) {
+        if (!sameWorkout(live, row)) continue;
+        set = { ...set, ...(fillFromTwin({ ...live, ...set }, row) || {}) };
+        absorbed.push(row._id);
+        days.add(row.day);
+    }
+    if (!absorbed.length) return { days, absorbed: 0 };
+    if (Object.keys(set).length) await ActivitySession.updateOne({ _id: live._id }, { $set: set });
+    await ActivitySession.deleteMany({ _id: { $in: absorbed } });
+    days.add(live.day);
+    return { days, absorbed: absorbed.length };
 };
 
 /**
@@ -843,6 +908,7 @@ const ingestBatch = async ({
 
 module.exports = {
     ingestBatch,
+    absorbStoreTwins,
     ingestSpo2,
     ingestTemperature,
     ingestBloodPressure,

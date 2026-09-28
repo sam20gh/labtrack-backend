@@ -20,6 +20,8 @@ const DailyMetrics = require('../models/DailyMetrics');
 const { computeTrack, simplify, elevationGain } = require('../utils/trackMetrics');
 const { activeKcal } = require('../utils/runEnergy');
 const { scoreSession } = require('../utils/activityScore');
+const { ingestBatch } = require('../utils/healthSync');
+const { sameWorkout, sharedFraction } = require('../utils/workoutMerge');
 const c = require('../controllers/activityController');
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'tracks');
@@ -323,9 +325,21 @@ describe('GET /activity/live/context', () => {
         const profile = await seedUser({ weight: 90 });
         const none = await seedUser();
 
-        expect((await context(logged)).body).toEqual({ weightKg: 72, weightSource: 'logged' });
-        expect((await context(profile)).body).toEqual({ weightKg: 90, weightSource: 'profile' });
-        expect((await context(none)).body).toEqual({ weightKg: null, weightSource: null });
+        expect((await context(logged)).body).toMatchObject({ weightKg: 72, weightSource: 'logged' });
+        expect((await context(profile)).body).toMatchObject({ weightKg: 90, weightSource: 'profile' });
+        expect((await context(none)).body).toMatchObject({ weightKg: null, weightSource: null });
+    });
+
+    it('estimates maximum heart rate from age, and gives none without a readable birth date', async () => {
+        const dated = await seedUser({ dob: '1986-03-15' });
+        const undated = await seedUser();
+        const garbled = await seedUser({ dob: 'sometime in spring' });
+        const max = (await context(dated)).body.maxHr;
+        // Tanaka: 208 − 0.7 × age. Forty-ish → about 180.
+        expect(max).toBeGreaterThan(176);
+        expect(max).toBeLessThan(184);
+        expect((await context(undated)).body.maxHr).toBeNull();
+        expect((await context(garbled)).body.maxHr).toBeNull();
     });
 });
 
@@ -367,3 +381,110 @@ describe('the track after it is saved', () => {
     });
 });
 
+
+describe('one run recorded on the phone and the watch is one run', () => {
+    const loopStart = () => load('loop5k').track.t[0];
+    const watchRun = (overrides = {}) => ({
+        externalId: 'hc-watch-run-1',
+        type: 'running',
+        startedAt: new Date(loopStart() - 20_000).toISOString(),
+        endedAt: new Date(loopStart() + 1_510_000).toISOString(),
+        durationSec: 1530,
+        distanceM: 4990,
+        avgBpm: 151,
+        maxBpm: 172,
+        ...overrides,
+    });
+    const sync = (userId, activities) => ingestBatch({ userId, platform: 'health_connect', tzOffset: 0, activities });
+
+    it('does not insert the watch copy of a run the phone already recorded, and takes its heart rate', async () => {
+        const userId = await seedUser();
+        const { body } = await upload(userId, bodyFor('loop5k', { track: { ...load('loop5k').track, hr: undefined } }));
+        expect(body.session.avgBpm).toBeUndefined();
+
+        await sync(userId, [watchRun()]);
+        await sync(userId, [watchRun()]); // and again on the next foreground
+
+        const rows = await ActivitySession.find({ userId }).lean();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ source: 'live', avgBpm: 151, maxBpm: 172 });
+        // The GPS distance stays: the watch only fills what the phone did not measure.
+        expect(rows[0].distanceM).toBe(expected.loop5k.distanceM);
+    });
+
+    it('absorbs a watch copy that synced first, when the live run is uploaded', async () => {
+        const userId = await seedUser();
+        await sync(userId, [watchRun()]);
+        expect(await ActivitySession.countDocuments({ userId })).toBe(1);
+
+        const { body } = await upload(userId, bodyFor('loop5k', { track: { ...load('loop5k').track, hr: undefined } }));
+        const rows = await ActivitySession.find({ userId }).lean();
+        expect(rows).toHaveLength(1);
+        expect(rows[0].source).toBe('live');
+        expect(body.session.avgBpm).toBe(151);
+
+        const day = rows[0].day;
+        const rollup = await DailyMetrics.findOne({ userId, day }).lean();
+        expect(rollup.activity.sessions).toBe(1);
+    });
+
+    it('never overwrites a heart rate the run already has', async () => {
+        const userId = await seedUser();
+        await upload(userId, bodyFor('loop5k')); // the fixture carries bracelet heart rate
+        await sync(userId, [watchRun({ avgBpm: 99, maxBpm: 120 })]);
+        const row = await ActivitySession.findOne({ userId }).lean();
+        expect(row.avgBpm).toBe(expected.loop5k.avgBpm);
+        expect(row.maxBpm).toBe(expected.loop5k.maxBpm);
+    });
+
+    it('keeps a separate workout: a walk after the run, and a swim during it', async () => {
+        const userId = await seedUser();
+        await upload(userId, bodyFor('loop5k'));
+        const after = watchRun({
+            externalId: 'walk-after',
+            type: 'walking',
+            startedAt: new Date(loopStart() + 1_600_000).toISOString(),
+            endedAt: new Date(loopStart() + 2_400_000).toISOString(),
+            durationSec: 800,
+        });
+        const swim = watchRun({ externalId: 'swim', type: 'swimming' });
+        await sync(userId, [after, swim]);
+        expect(await ActivitySession.countDocuments({ userId })).toBe(3);
+    });
+
+    it('judges overlap against the shorter workout', () => {
+        const run = { type: 'jogging', startedAt: '2026-09-20T06:00:00Z', endedAt: '2026-09-20T07:00:00Z' };
+        const brief = { type: 'running', startedAt: '2026-09-20T06:40:00Z', endedAt: '2026-09-20T07:10:00Z' };
+        expect(sharedFraction(run, brief)).toBeCloseTo(20 / 30);
+        expect(sameWorkout(run, brief)).toBe(true);
+        expect(sameWorkout(run, { ...brief, startedAt: '2026-09-20T06:56:00Z' })).toBe(false);
+    });
+});
+
+describe('POST /activity/sessions/:id/enrich', () => {
+    const enrich = (userId, id, steps) => call(c.enrichLiveSession, { user: { id: String(userId) }, params: { id: String(id) }, body: { steps } });
+
+    it('fills steps and cadence once, and never overwrites them', async () => {
+        const userId = await seedUser();
+        const { body } = await upload(userId, bodyFor('loop5k'));
+        const first = await enrich(userId, body.session._id, 4200);
+        expect(first.body.filled).toEqual(['steps', 'cadence']);
+        expect(first.body.session.cadence).toBe(Math.round(4200 / (expected.loop5k.movingSec / 60)));
+
+        const second = await enrich(userId, body.session._id, 9999);
+        expect(second.body.filled).toEqual([]);
+        expect((await ActivityTrack.findOne({ sessionId: body.session._id }).lean()).steps).toBe(4200);
+    });
+
+    it('refuses a session that is not a live one, or not yours', async () => {
+        const userId = await seedUser();
+        const stranger = await seedUser();
+        const manual = await ActivitySession.create({
+            userId, type: 'walking', startedAt: new Date(), day: '2026-09-20', durationSec: 600, source: 'manual',
+        });
+        expect((await enrich(userId, manual._id, 1000)).status).toBe(404);
+        const { body } = await upload(userId, bodyFor('noWeight'));
+        expect((await enrich(stranger, body.session._id, 1000)).status).toBe(404);
+        expect((await enrich(userId, body.session._id, -5)).status).toBe(400);
+    });
+});

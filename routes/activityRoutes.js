@@ -17,6 +17,7 @@ router.get('/sessions', c.listSessions);
 router.get('/sessions/:id', c.getSession);
 router.get('/sessions/:id/track', c.getTrack);
 router.post('/sessions/live', c.createLiveSession);
+router.post('/sessions/:id/enrich', c.enrichLiveSession);
 router.get('/live/context', c.getLiveContext);
 router.post('/sessions', c.createSession);
 router.patch('/sessions/:id', c.updateSession);

@@ -4,7 +4,8 @@ const ActivityTrack = require('../models/ActivityTrack');
 const DailyMetrics = require('../models/DailyMetrics');
 const PlanItem = require('../models/PlanItem');
 const User = require('../models/userModel');
-const { recomputeDay, localDay, resolveDay, normaliseType } = require('../utils/healthSync');
+const { recomputeDay, localDay, resolveDay, normaliseType, absorbStoreTwins } = require('../utils/healthSync');
+const { ageFrom } = require('../utils/ageProfile');
 const { computeTargets, deriveGuidance, explain } = require('../utils/activityTargets');
 const { scoreSession, scoreWindow, bandFor } = require('../utils/activityScore');
 const { breakdownByType, activeHours, comparePeriods } = require('../utils/activityInsight');
@@ -662,9 +663,26 @@ const weightFor = async (userId) => {
  * Only the weight today. Null is an answer, not an error: the screen then shows "Add your
  * weight for calories" rather than a number priced on a guessed body.
  */
+/**
+ * Estimated maximum heart rate, for the live screen's zones — Tanaka (208 − 0.7 × age),
+ * which holds up better across ages than 220 − age. **Null without a readable birth date**:
+ * zones drawn from a guessed age would tell somebody they are in zone 4 on no evidence.
+ * Shown as an estimate, and never used for an alert — vital alerts judge heart rate only at
+ * rest (utils/vitalAlerts.js rule 2), and 175 on a hill is the hill.
+ */
+const maxHrFor = (dob) => {
+    const age = ageFrom(dob);
+    if (age == null || age < 10) return null;
+    return Math.round(208 - 0.7 * age);
+};
+
 exports.getLiveContext = async (req, res) => {
     try {
-        res.json(await weightFor(req.user.id));
+        const [weight, user] = await Promise.all([
+            weightFor(req.user.id),
+            User.findById(req.user.id).select('dob').lean(),
+        ]);
+        res.json({ ...weight, maxHr: maxHrFor(user?.dob) });
     } catch (err) {
         console.error('❌ Reading live context failed:', err);
         res.status(500).json({ message: 'Could not prepare the session' });
@@ -810,8 +828,13 @@ exports.createLiveSession = async (req, res) => {
             throw err;
         }
 
+        // A watch that recorded the same run and synced first: its heart rate fills this
+        // row's gaps and its copy goes. See utils/workoutMerge.js.
+        const merged = await absorbStoreTwins(session.toObject());
+        for (const d of merged.days) if (d !== resolvedDay) await recomputeDay(userId, d);
         await recomputeDay(userId, resolvedDay);
-        console.log(`🛰️ Live ${type} u=${userId} d=${resolvedDay} ${Math.round(metrics.distanceM)}m ${durationSec}s`);
+        if (merged.absorbed) session = await ActivitySession.findById(session._id);
+        console.log(`🛰️ Live ${type} u=${userId} d=${resolvedDay} ${Math.round(metrics.distanceM)}m ${durationSec}s${merged.absorbed ? ` (absorbed ${merged.absorbed})` : ''}`);
 
         scoreController.touch(userId, 'log');
         achievementController.touch(userId);
@@ -833,6 +856,45 @@ exports.createLiveSession = async (req, res) => {
     } catch (err) {
         console.error('❌ Saving live session failed:', err);
         res.status(500).json({ message: 'Could not save the activity' });
+    }
+};
+
+/**
+ * POST /api/activity/sessions/:id/enrich — steps for a live session, found afterwards.
+ *
+ * On Android the phone's pedometer is silent in the background, so a live run's steps come
+ * from Health Connect over the session window once it has them. **Fill-only, live-only**:
+ * it sets `steps` on the track and `cadence` on the session when neither is there, and
+ * refuses anything else — a measured value is never overwritten after the fact, and a synced
+ * workout is the store's to describe.
+ */
+exports.enrichLiveSession = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const steps = Number(req.body?.steps);
+        if (!Number.isFinite(steps) || steps <= 0 || steps > 200_000) {
+            return res.status(400).json({ message: 'steps must be a positive number' });
+        }
+        const session = await ActivitySession.findOne({ _id: req.params.id, userId, source: 'live' });
+        if (!session) return res.status(404).json({ message: 'Activity not found' });
+
+        const track = await ActivityTrack.findOne({ sessionId: session._id, userId });
+        const filled = [];
+        if (track && !Number.isFinite(track.steps)) {
+            track.steps = Math.round(steps);
+            await track.save();
+            filled.push('steps');
+        }
+        if (!Number.isFinite(session.cadence) && session.durationSec > 0) {
+            session.cadence = Math.round(steps / (session.durationSec / 60));
+            await session.save();
+            filled.push('cadence');
+        }
+        res.json({ session, filled });
+    } catch (err) {
+        if (err?.name === 'CastError') return res.status(404).json({ message: 'Activity not found' });
+        console.error('❌ Enriching session failed:', err);
+        res.status(500).json({ message: 'Could not update the activity' });
     }
 };
 
@@ -929,3 +991,4 @@ exports._syncGuidance = syncGuidance;
 exports._RANGES = RANGES;
 exports._localDay = localDay;
 exports._weightFor = weightFor;
+exports._maxHrFor = maxHrFor;
