@@ -336,3 +336,42 @@ describe('the Health Metrics blood-oxygen card', () => {
         expect(result.series.map((p) => p.value)).toEqual([null]);
     });
 });
+
+describe('the Health Metrics temperature card', () => {
+    const { _temperatureCard: card } = require('../controllers/metricsController');
+    const over = (rows) => {
+        const range = rows.map((r) => r.day);
+        const byDay = new Map(rows.map((r) => [r.day, r]));
+        return overWith((newest, series) => card(newest, series, byDay, range))(rows);
+    };
+
+    it('calls a wrist reading skin temperature and passes no verdict on it', () => {
+        const result = over([
+            { day: '2026-09-09', temperature: { wristAvg: 33.12, wristMax: 34.0, readings: 4 } },
+            { day: '2026-09-10', temperature: { wristAvg: 33.46, wristMax: 34.2, readings: 6 } },
+        ]);
+        expect(result).toMatchObject({
+            key: 'temperature', label: 'Skin Temperature', site: 'wrist', value: 33.5, unit: '°C',
+            status: 'At the wrist · runs below body temperature',
+        });
+        expect(result.series.map((p) => p.value)).toEqual([33.1, 33.5]);
+    });
+
+    it('uses underarm readings whenever the window has any, and never mixes the sites', () => {
+        const result = over([
+            { day: '2026-09-09', temperature: { wristAvg: 33.1, axillaryAvg: 36.7, axillaryMax: 36.9, readings: 3 } },
+            { day: '2026-09-10', temperature: { wristAvg: 33.4, readings: 2 } },
+        ]);
+        // The newest day has only a wrist reading; the card still describes one site.
+        expect(result).toMatchObject({
+            label: 'Body Temperature', site: 'axillary', value: 36.7, at: '2026-09-09',
+            status: 'Under the arm · highest 36.9 °C',
+        });
+        expect(result.series.map((p) => p.value)).toEqual([36.7, null]);
+    });
+
+    it('says to connect a bracelet when nothing was measured', () => {
+        const result = over([{ day: '2026-09-10', temperature: { readings: 0 } }]);
+        expect(result).toMatchObject({ value: null, status: 'Connect a bracelet' });
+    });
+});

@@ -319,6 +319,7 @@ exports.getOverview = async (req, res) => {
                 bloodPressureCard(newest, series, byDay, range),
                 heartRateCard(newest, series),
                 spo2Card(newest, series),
+                temperatureCard(newest, series, byDay, range),
                 sleepCard(newest, series),
                 hydrationCard(today, series),
                 activityCard(newest, series),
@@ -450,6 +451,45 @@ const spo2Card = (newest, series) => {
                 ? `Typical range · lowest ${day.min}%`
                 : `Lowest ${day.min}% of ${plural(day.readings)} · typical is 95–100%`,
         series: series((r) => (r?.spo2?.readings ? r.spo2.avg : null)),
+        loggable: false,
+    };
+};
+
+/**
+ * Temperature, from a bracelet — and named for where it was taken.
+ *
+ * The two sites are different measurements, which is why `TemperatureTotals` never averages
+ * them: a wrist reading is skin temperature and sits degrees below core, an underarm reading
+ * is a clinical site. So the card picks **one** site for the window — underarm if any day in
+ * it has one (only the 2208A can take them), otherwise wrist — and its label, value and
+ * sparkline all describe that site. A V8 only ever produces "Skin Temperature".
+ *
+ * No fever verdict on either. On the wrist a "normal" 33 °C is not a statement about
+ * anybody's core temperature, and the underarm figure is stated with its highest reading
+ * and left for the person to read, the way the blood-oxygen card states its lowest.
+ */
+const temperatureCard = (newest, series, byDay, range) => {
+    const underarm = range.some((d) => byDay.get(d)?.temperature?.axillaryAvg != null);
+    const avgOf = (r) => (underarm ? r?.temperature?.axillaryAvg : r?.temperature?.wristAvg);
+    const round1 = (n) => (n == null ? null : Math.round(n * 10) / 10);
+
+    const latest = newest(avgOf);
+    const day = latest.day ? byDay.get(latest.day)?.temperature : null;
+    const highest = round1(underarm ? day?.axillaryMax : day?.wristMax);
+
+    return {
+        key: 'temperature',
+        label: underarm ? 'Body Temperature' : 'Skin Temperature',
+        unit: '°C',
+        value: round1(latest.value),
+        at: latest.day,
+        site: underarm ? 'axillary' : 'wrist',
+        status: latest.value === null
+            ? 'Connect a bracelet'
+            : underarm
+                ? `Under the arm · highest ${highest} °C`
+                : 'At the wrist · runs below body temperature',
+        series: series((r) => round1(avgOf(r))),
         loggable: false,
     };
 };
@@ -612,3 +652,4 @@ exports._hydrationDay = hydrationDay;
 exports._resolveDay = resolveDay;
 exports._heartRateCard = heartRateCard;
 exports._spo2Card = spo2Card;
+exports._temperatureCard = temperatureCard;
