@@ -318,6 +318,7 @@ exports.getOverview = async (req, res) => {
                 weightCard(newest, series, user),
                 bloodPressureCard(newest, series, byDay, range),
                 heartRateCard(newest, series),
+                spo2Card(newest, series),
                 sleepCard(newest, series),
                 hydrationCard(today, series),
                 activityCard(newest, series),
@@ -420,6 +421,35 @@ const heartRateCard = (newest, series) => {
             : resting.value >= 50 && resting.value <= 70 ? 'Normal resting range'
                 : resting.value < 50 ? 'Lower than typical' : 'Higher than typical',
         series: series((r) => r?.heart?.restingBpm),
+        loggable: false,
+    };
+};
+
+/**
+ * Blood oxygen, from a bracelet's automatic and on-demand readings.
+ *
+ * The value is the day's average and the status leads with the **lowest** reading, because
+ * desaturation is an event and an average is exactly what hides one — the reason
+ * `Spo2Totals` stores `min` at all. The status states the reading and the typical range and
+ * stops there: a wrist sensor reading once an hour is not an oximeter, and a card that said
+ * "low" in a verdict's voice would be diagnosing from it.
+ */
+const spo2Card = (newest, series) => {
+    const latest = newest((r) => (r?.spo2?.readings ? r.spo2 : null));
+    const day = latest.value;
+    const plural = (n) => `${n} reading${n === 1 ? '' : 's'}`;
+    return {
+        key: 'spo2',
+        label: 'Blood Oxygen',
+        unit: '%',
+        value: day ? Math.round(day.avg) : null,
+        at: latest.day,
+        status: day === null
+            ? 'Connect a bracelet'
+            : day.min >= 95
+                ? `Typical range · lowest ${day.min}%`
+                : `Lowest ${day.min}% of ${plural(day.readings)} · typical is 95–100%`,
+        series: series((r) => (r?.spo2?.readings ? r.spo2.avg : null)),
         loggable: false,
     };
 };
@@ -581,3 +611,4 @@ exports.getReference = (req, res) => {
 exports._hydrationDay = hydrationDay;
 exports._resolveDay = resolveDay;
 exports._heartRateCard = heartRateCard;
+exports._spo2Card = spo2Card;

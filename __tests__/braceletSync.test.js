@@ -270,11 +270,8 @@ describe('the continuous heart stream survives the day rebuild', () => {
     });
 });
 
-describe('the Health Metrics heart card', () => {
-    const { _heartRateCard: card } = require('../controllers/metricsController');
-
-    /** The overview's own `newest`/`series`, over a fixed set of day rows. */
-    const over = (rows) => {
+/** The overview's own `newest`/`series`, over a fixed set of day rows. */
+const overWith = (card) => (rows) => {
         const range = rows.map((r) => r.day);
         const byDay = new Map(rows.map((r) => [r.day, r]));
         const newest = (pick) => {
@@ -286,7 +283,10 @@ describe('the Health Metrics heart card', () => {
         };
         const series = (pick) => range.map((day) => ({ day, value: pick(byDay.get(day)) ?? null }));
         return card(newest, series);
-    };
+};
+
+describe('the Health Metrics heart card', () => {
+    const over = overWith(require('../controllers/metricsController')._heartRateCard);
 
     it('shows today\'s average rather than a resting reading from two days ago', () => {
         const result = over([
@@ -309,5 +309,30 @@ describe('the Health Metrics heart card', () => {
     it('says to connect a device when there is nothing', () => {
         const result = over([{ day: '2026-09-10', heart: {} }]);
         expect(result).toMatchObject({ value: null, measure: null, status: 'Connect a device' });
+    });
+});
+
+describe('the Health Metrics blood-oxygen card', () => {
+    const over = overWith(require('../controllers/metricsController')._spo2Card);
+
+    it('shows the newest day with readings, and leads with its lowest', () => {
+        const result = over([
+            { day: '2026-09-09', spo2: { avg: 97, min: 96, max: 99, readings: 5 } },
+            { day: '2026-09-10', spo2: { avg: 96.4, min: 91, max: 99, readings: 3 } },
+        ]);
+        expect(result).toMatchObject({ key: 'spo2', value: 96, at: '2026-09-10', unit: '%' });
+        // The average hides the dip; the status must not.
+        expect(result.status).toBe('Lowest 91% of 3 readings · typical is 95–100%');
+    });
+
+    it('says typical when even the lowest reading is', () => {
+        const result = over([{ day: '2026-09-10', spo2: { avg: 97.2, min: 95, max: 99, readings: 4 } }]);
+        expect(result.status).toBe('Typical range · lowest 95%');
+    });
+
+    it('treats a day with no readings as absent, not as 0%', () => {
+        const result = over([{ day: '2026-09-10', spo2: { avg: null, min: null, max: null, readings: 0 } }]);
+        expect(result).toMatchObject({ value: null, status: 'Connect a bracelet' });
+        expect(result.series.map((p) => p.value)).toEqual([null]);
     });
 });
