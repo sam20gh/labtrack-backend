@@ -377,18 +377,48 @@ const bloodPressureCard = (newest, series, byDay, range) => {
     };
 };
 
+/**
+ * Resting heart rate where there is one, and the day's average where that is newer.
+ *
+ * A bracelet's continuous stream arrives as the day's min/max/average and carries no resting
+ * figure, so a card that read only `restingBpm` sat on a two-day-old phone reading while the
+ * band on somebody's wrist reported all day. The average is shown when it is the fresher
+ * figure, and it is **never judged against the resting range**: it includes every walk and
+ * staircase, so "Higher than typical" over it would be a verdict on a number that is
+ * supposed to be higher. The series follows the figure shown, so the sparkline and the value
+ * above it are the same measure.
+ */
 const heartRateCard = (newest, series) => {
-    const latest = newest((r) => r?.heart?.restingBpm);
+    const resting = newest((r) => r?.heart?.restingBpm);
+    const average = newest((r) => r?.heart?.avgBpm);
+    const useAverage = average.value !== null
+        && (resting.value === null || average.day > resting.day);
+
+    if (useAverage) {
+        return {
+            key: 'heart_rate',
+            label: 'Heart Rate',
+            unit: 'bpm',
+            value: average.value,
+            at: average.day,
+            measure: 'average',
+            status: 'Average across the day',
+            series: series((r) => r?.heart?.avgBpm),
+            loggable: false,
+        };
+    }
+
     return {
         key: 'heart_rate',
         label: 'Heart Rate',
         unit: 'bpm',
-        value: latest.value,
-        at: latest.day,
-        status: latest.value === null
+        value: resting.value,
+        at: resting.day,
+        measure: resting.value === null ? null : 'resting',
+        status: resting.value === null
             ? 'Connect a device'
-            : latest.value >= 50 && latest.value <= 70 ? 'Normal resting range'
-                : latest.value < 50 ? 'Lower than typical' : 'Higher than typical',
+            : resting.value >= 50 && resting.value <= 70 ? 'Normal resting range'
+                : resting.value < 50 ? 'Lower than typical' : 'Higher than typical',
         series: series((r) => r?.heart?.restingBpm),
         loggable: false,
     };
@@ -550,3 +580,4 @@ exports.getReference = (req, res) => {
 
 exports._hydrationDay = hydrationDay;
 exports._resolveDay = resolveDay;
+exports._heartRateCard = heartRateCard;

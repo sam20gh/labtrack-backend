@@ -470,6 +470,9 @@ const ingestDaySummaries = async (userId, rows = []) => {
         put('heart.minBpm', row.minBpm);
         put('heart.maxBpm', row.maxBpm);
         put('heart.avgBpm', row.avgBpm);
+        if ([row.minBpm, row.maxBpm, row.avgBpm].some((v) => v !== undefined && v !== null)) {
+            set['heart.spreadSource'] = 'device';
+        }
         put('heart.hrvMs', row.hrvMs);
         put('heart.vo2Max', row.vo2Max);
         if (Array.isArray(row.zoneMinutes)) set['heart.zoneMinutes'] = row.zoneMinutes;
@@ -499,10 +502,11 @@ const ingestDaySummaries = async (userId, rows = []) => {
  * recompute, makes it a pure function of that row and immune to sync ordering.
  */
 const recomputeDay = async (userId, day) => {
-    const [sessions, nights, samples] = await Promise.all([
+    const [sessions, nights, samples, existing] = await Promise.all([
         ActivitySession.find({ userId, day }).select('durationSec distanceM activeKcal effort scoreDelta').lean(),
         SleepSession.find({ userId, day }).select('asleepMin inBedMin stages efficiency score').lean(),
         HeartRateSample.find({ userId, day }).select('bpm context').lean(),
+        DailyMetrics.findOne({ userId, day }).select('heart.spreadSource').lean(),
     ]);
 
     const set = { recomputedAt: new Date() };
@@ -549,10 +553,17 @@ const recomputeDay = async (userId, day) => {
 
     set['heart.samples'] = samples.length;
     if (samples.length) {
-        const bpms = samples.map((s) => s.bpm);
-        set['heart.minBpm'] = Math.min(...bpms);
-        set['heart.maxBpm'] = Math.max(...bpms);
-        set['heart.avgBpm'] = Math.round(bpms.reduce((a, b) => a + b, 0) / bpms.length);
+        // A spread the device reported is left alone, as the header promises. A bracelet
+        // sends its continuous stream as the day's min/max/avg *and* a few timed spot
+        // readings as samples; rebuilding the spread from the spot readings replaced a day of
+        // monitoring with half a dozen resting values.
+        if (existing?.heart?.spreadSource !== 'device') {
+            const bpms = samples.map((s) => s.bpm);
+            set['heart.minBpm'] = Math.min(...bpms);
+            set['heart.maxBpm'] = Math.max(...bpms);
+            set['heart.avgBpm'] = Math.round(bpms.reduce((a, b) => a + b, 0) / bpms.length);
+            set['heart.spreadSource'] = 'samples';
+        }
 
         const resting = samples.filter((s) => s.context === 'resting').map((s) => s.bpm);
         if (resting.length) {

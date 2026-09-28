@@ -229,3 +229,85 @@ describe('the phone health stores are untouched', () => {
         expect(rollup.spo2.readings).toBe(0);
     });
 });
+
+/**
+ * Heart rate arrives twice from a bracelet: the continuous stream as the day's spread, and a
+ * few timed spot readings as resting samples. The spread is the fuller account of the day
+ * and the rebuild must not replace it with the spot readings; the spot readings are the only
+ * resting figure and must still set it.
+ */
+describe('the continuous heart stream survives the day rebuild', () => {
+    const batch = {
+        days: [{ day: DAY, minBpm: 48, maxBpm: 142, avgBpm: 76 }],
+        heart: [
+            { externalId: 'h1', measuredAt: at('03:00'), bpm: 58, context: 'resting' },
+            { externalId: 'h2', measuredAt: at('15:00'), bpm: 64, context: 'resting' },
+        ],
+    };
+
+    it('keeps the device spread and still takes resting from the spot readings', async () => {
+        await bracelet(batch);
+
+        const { heart } = await DailyMetrics.findOne({ userId, day: DAY }).lean();
+        expect(heart).toMatchObject({
+            minBpm: 48, maxBpm: 142, avgBpm: 76, restingBpm: 61, spreadSource: 'device',
+        });
+    });
+
+    it('holds on a re-sync, which reruns the rebuild', async () => {
+        await bracelet(batch);
+        await bracelet({ heart: batch.heart });
+
+        const { heart } = await DailyMetrics.findOne({ userId, day: DAY }).lean();
+        expect(heart.avgBpm).toBe(76);
+    });
+
+    it('still derives the spread from samples when no device reported one', async () => {
+        await bracelet({ heart: batch.heart });
+
+        const { heart } = await DailyMetrics.findOne({ userId, day: DAY }).lean();
+        expect(heart).toMatchObject({ minBpm: 58, maxBpm: 64, avgBpm: 61, spreadSource: 'samples' });
+    });
+});
+
+describe('the Health Metrics heart card', () => {
+    const { _heartRateCard: card } = require('../controllers/metricsController');
+
+    /** The overview's own `newest`/`series`, over a fixed set of day rows. */
+    const over = (rows) => {
+        const range = rows.map((r) => r.day);
+        const byDay = new Map(rows.map((r) => [r.day, r]));
+        const newest = (pick) => {
+            for (let i = range.length - 1; i >= 0; i--) {
+                const v = pick(byDay.get(range[i]));
+                if (v !== null && v !== undefined) return { value: v, day: range[i] };
+            }
+            return { value: null, day: null };
+        };
+        const series = (pick) => range.map((day) => ({ day, value: pick(byDay.get(day)) ?? null }));
+        return card(newest, series);
+    };
+
+    it('shows today\'s average rather than a resting reading from two days ago', () => {
+        const result = over([
+            { day: '2026-09-08', heart: { restingBpm: 62 } },
+            { day: '2026-09-09', heart: {} },
+            { day: '2026-09-10', heart: { avgBpm: 81 } },
+        ]);
+
+        expect(result).toMatchObject({ value: 81, at: '2026-09-10', measure: 'average' });
+        // Never judged against the resting range: an all-day average is meant to be higher.
+        expect(result.status).toBe('Average across the day');
+        expect(result.series.map((p) => p.value)).toEqual([null, null, 81]);
+    });
+
+    it('prefers resting when it is as fresh as the average', () => {
+        const result = over([{ day: '2026-09-10', heart: { restingBpm: 62, avgBpm: 81 } }]);
+        expect(result).toMatchObject({ value: 62, measure: 'resting', status: 'Normal resting range' });
+    });
+
+    it('says to connect a device when there is nothing', () => {
+        const result = over([{ day: '2026-09-10', heart: {} }]);
+        expect(result).toMatchObject({ value: null, measure: null, status: 'Connect a device' });
+    });
+});

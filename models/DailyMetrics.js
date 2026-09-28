@@ -51,6 +51,12 @@ const HeartTotalsSchema = new mongoose.Schema({
     /** Minutes spent in each zone index 1..5, computed from the person's zone boundaries. */
     zoneMinutes: { type: [Number], default: undefined },
     samples: { type: Number, default: 0 },
+    /**
+     * Where min/max/avg came from. `device` when a source reported the day's spread directly
+     * — a bracelet's continuous stream, thousands of readings — which `recomputeDay` must not
+     * then overwrite with the handful of spot samples it can see.
+     */
+    spreadSource: { type: String, enum: ['device', 'samples', null], default: null },
 }, { _id: false });
 
 const ActivityTotalsSchema = new mongoose.Schema({
