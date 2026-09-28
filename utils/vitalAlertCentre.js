@@ -28,10 +28,11 @@
 const User = require('../models/userModel');
 const Notification = require('../models/Notification');
 const VitalAlert = require('../models/VitalAlert');
+const VitalTarget = require('../models/VitalTarget');
 const { publish } = require('./notificationCentre');
 const {
-    evaluate, evaluateOne, isFresh, higherLevel, valueLabel, copyFor,
-    LEVEL_RANK, METRIC_LABEL, METRIC_ROUTE, CATEGORY_FOR_LEVEL,
+    evaluate, severity, isFresh, higherLevel, valueLabel, copyFor, reviewCopyFor,
+    LEVEL_RANK, METRIC_LABEL, METRIC_ROUTE, CATEGORY_FOR_LEVEL, DEFAULT_TARGETS,
 } = require('./vitalAlerts');
 
 const { MAX_READINGS } = VitalAlert;
@@ -71,7 +72,12 @@ const toStored = (breach, tzOffset) => ({
 
 const plain = (r) => (typeof r?.toObject === 'function' ? r.toObject() : r);
 
-const severityOf = (metric, r) => evaluateOne({ metric, ...plain(r) })?.severity ?? 0;
+/**
+ * Ranked on the level stored with the reading, never on a re-evaluation. The patient's
+ * targets may have changed since, and the level they were told at the time is the one
+ * that counts.
+ */
+const severityOf = (metric, r) => severity(metric, plain(r), r.level);
 
 /**
  * Fold one batch of breaching readings into an episode. Mutates `alert`.
@@ -179,7 +185,7 @@ const notifyPatient = async (alert, freshDays, { user, tzOffset, now }) => {
             if (alreadyUrgent) continue;
         }
 
-        const copy = copyFor({ metric: alert.metric, ...plain(worst) }, level);
+        const copy = copyFor({ metric: alert.metric, ...plain(worst) });
         if (!copy) continue;
 
         const route = METRIC_ROUTE[alert.metric];
@@ -219,6 +225,49 @@ const notifyPatient = async (alert, freshDays, { user, tzOffset, now }) => {
 };
 
 /**
+ * The thresholds this person is judged against: the defaults, unless a clinician has set a
+ * `VitalTarget`.
+ */
+const targetsFor = async (userId) => {
+    const row = await VitalTarget.findOne({ userId }).select('spo2Scale lowHeartRateExpected').lean();
+    return row
+        ? { spo2Scale: row.spo2Scale, lowHeartRateExpected: Boolean(row.lowHeartRateExpected) }
+        : { ...DEFAULT_TARGETS };
+};
+
+/**
+ * Tell the patient a clinician has looked at their readings.
+ *
+ * The alert told them something was out of range. Without this card nothing tells them
+ * anyone saw it, and "I was warned and then heard nothing" is how a patient stops trusting
+ * the warning. It goes out at normal priority (`vitals_review`) whatever the episode's
+ * level: this is news, not an interruption.
+ *
+ * The body is the clinician's `patientMessage` when they wrote one, and otherwise the
+ * outcome's default wording. It is **never** the internal `note`. That field is written for
+ * the next clinician, and a patient reading "?non-compliant, cuff too small" on their lock
+ * screen is a different conversation.
+ *
+ * @returns {Promise<Date|null>} when the card was written, or null
+ */
+const notifyReviewed = async (alert, { patientMessage = null } = {}) => {
+    const copy = reviewCopyFor(alert.metric, alert.review?.outcome, patientMessage);
+    if (!copy) return null;
+
+    const { notification } = await publish(alert.userId, {
+        category: 'vitals_review',
+        title: copy.title,
+        body: copy.body,
+        route: copy.route || METRIC_ROUTE[alert.metric],
+        actions: copy.action ? [copy.action] : [],
+        data: { alertId: String(alert._id), metric: alert.metric, outcome: alert.review?.outcome },
+        dedupeKey: `vitals:reviewed:${alert._id}`,
+        source: 'vital_alerts',
+    });
+    return notification ? new Date() : null;
+};
+
+/**
  * Evaluate readings a write path has just stored, and record any that are out of range.
  *
  * @param {string} userId
@@ -231,7 +280,11 @@ const notifyPatient = async (alert, freshDays, { user, tzOffset, now }) => {
  */
 const recordReadings = async (userId, readings, options = {}) => {
     try {
-        const breaches = evaluate(readings);
+        // Cheap pre-check before the targets read. The defaults are the strictest thresholds
+        // a clinician can set (scale 2 and an expected low heart rate only ever remove
+        // alerts), so a batch with nothing out of range under them costs no query at all.
+        if (!evaluate(readings).length) return { alerts: [], notified: 0 };
+        const breaches = evaluate(readings, await targetsFor(userId));
         if (!breaches.length) return { alerts: [], notified: 0 };
 
         const tzOffset = Number(options.tzOffset) || 0;
@@ -366,6 +419,8 @@ const worklistOrder = (a, b) =>
 module.exports = {
     recordReadings,
     withdrawReading,
+    notifyReviewed,
+    targetsFor,
     toView,
     worklistOrder,
     keyFor,

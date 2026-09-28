@@ -39,7 +39,8 @@ const HOUR = 60 * 60 * 1000;
 const hasNewDataSince = async (userId, since) => {
     if (!since) return true;
 
-    const [biomarker, result, dna, user] = await Promise.all([
+    const VitalAlert = require('../models/VitalAlert');
+    const [biomarker, result, dna, user, vital] = await Promise.all([
         Biomarker.findOne({ userId, createdAt: { $gt: since } }).select('_id').lean(),
         TestResult.findOne({ 'patient.user_id': userId, createdAt: { $gt: since } }).select('_id').lean(),
         DnaReport.findOne({ userId, createdAt: { $gt: since } }).select('_id').lean(),
@@ -48,9 +49,12 @@ const hasNewDataSince = async (userId, since) => {
             _id: userId,
             'healthAssessment.completedAt': { $gt: since },
         }).select('_id').lean(),
+        // A newly flagged vital sign feeds the prompt too, and is exactly the kind of change
+        // someone would regenerate an analysis to account for.
+        VitalAlert.findOne({ userId, updatedAt: { $gt: since } }).select('_id').lean(),
     ]);
 
-    return Boolean(biomarker || result || dna || user);
+    return Boolean(biomarker || result || dna || user || vital);
 };
 
 /**

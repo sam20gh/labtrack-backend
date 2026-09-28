@@ -28,7 +28,11 @@ const Product = require('../models/Product');
 const User = require('../models/userModel');
 const Biomarker = require('../models/Biomarker');
 const VitalAlert = require('../models/VitalAlert');
-const { toView: vitalAlertView, worklistOrder } = require('../utils/vitalAlertCentre');
+const VitalTarget = require('../models/VitalTarget');
+const {
+    toView: vitalAlertView, worklistOrder, notifyReviewed, targetsFor,
+} = require('../utils/vitalAlertCentre');
+const { SPO2_SCALES } = require('../utils/vitalAlerts');
 const { firstDueDate } = require('../utils/planGeneratorV2');
 const { notifyUser } = require('../jobs/reminderJob');
 const { recordAccess } = require('../utils/accessLog');
@@ -289,7 +293,7 @@ exports.getPatientContext = async (req, res) => {
     try {
         const { userId } = req.params;
 
-        const [patient, interpretations, planItems, biomarkers, vitalAlerts] = await Promise.all([
+        const [patient, interpretations, planItems, biomarkers, vitalAlerts, vitalTarget] = await Promise.all([
             User.findById(userId)
                 .select('firstName lastName dob gender height weight bloodType healthAssessment observed')
                 .lean(),
@@ -314,6 +318,7 @@ exports.getPatientContext = async (req, res) => {
                 .sort({ isOpen: -1, lastAt: -1 })
                 .limit(50)
                 .lean(),
+            VitalTarget.findOne({ userId }).lean(),
         ]);
 
         if (!patient) return res.status(404).json({ message: 'Patient not found' });
@@ -330,6 +335,7 @@ exports.getPatientContext = async (req, res) => {
             planItems,
             biomarkers,
             vitalAlerts: vitalAlerts.map(vitalAlertView).sort(worklistOrder),
+            vitalTargets: vitalTargetView(vitalTarget),
         });
     } catch (error) {
         console.error('❌ Could not load patient context:', error);
@@ -803,6 +809,14 @@ exports.reviewVitalAlert = async (req, res) => {
 
         const outcome = req.body?.outcome;
         const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 2000) : '';
+        const patientMessage = typeof req.body?.patientMessage === 'string'
+            ? req.body.patientMessage.trim() : '';
+        // On unless the clinician turns it off: closing the loop is the default.
+        const notifyPatient = req.body?.notifyPatient !== false;
+
+        if (patientMessage.length > 240) {
+            return res.status(400).json({ message: 'The message to the patient must be 240 characters or fewer.' });
+        }
 
         if (!VitalAlert.OUTCOMES.includes(outcome)) {
             return res.status(400).json({
@@ -837,6 +851,8 @@ exports.reviewVitalAlert = async (req, res) => {
                         at: new Date(),
                         outcome,
                         note: note || null,
+                        patientMessage: notifyPatient && patientMessage ? patientMessage : null,
+                        patientNotifiedAt: null,
                     },
                 },
             },
@@ -854,11 +870,98 @@ exports.reviewVitalAlert = async (req, res) => {
             });
         }
 
+        if (notifyPatient) {
+            // `publish` never throws; a card that could not be written leaves the review
+            // standing with `patientNotifiedAt` null, which the portal shows.
+            const at = await notifyReviewed(alert, { patientMessage });
+            if (at) {
+                await VitalAlert.updateOne({ _id: alert._id }, { $set: { 'review.patientNotifiedAt': at } });
+                alert.review.patientNotifiedAt = at;
+            }
+        }
+
         console.log(`🩺 Vital alert ${alertId} reviewed: ${outcome} by ${req.auth.userId}`);
         res.json({ alert: vitalAlertView(alert) });
     } catch (error) {
         console.error('❌ Reviewing vital alert failed:', error);
         res.status(500).json({ message: 'Could not save the review' });
+    }
+};
+
+/** The targets as the portal reads them, defaults filled in, with the scales to choose from. */
+const vitalTargetView = (row) => ({
+    spo2Scale: row?.spo2Scale || 'standard',
+    lowHeartRateExpected: Boolean(row?.lowHeartRateExpected),
+    reason: row?.reason || null,
+    setByName: row?.setByName || null,
+    setAt: row?.setAt || null,
+    history: (row?.history || []).slice().reverse(),
+    scales: Object.entries(SPO2_SCALES).map(([key, s]) => ({ key, label: s.label, target: s.target })),
+});
+
+/**
+ * PUT /api/reviews/patient/:userId/vital-targets
+ * `{ spo2Scale: 'standard'|'hypercapnic', lowHeartRateExpected: boolean, reason? }`
+ *
+ * Where a clinician says this patient's normal differs from the default. `requireReviewScope`
+ * applies: you set targets for a patient you have business with. Anything but the defaults
+ * needs a reason, because the next clinician will be looking at a patient whose alarms fire
+ * later than everyone else's and has to know why. Every change is appended to `history`.
+ *
+ * Not retroactive. Readings already on the record keep the level they were given, and an
+ * open episode is closed by reviewing it, not by moving the threshold under it.
+ */
+exports.setVitalTargets = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const spo2Scale = req.body?.spo2Scale ?? 'standard';
+        const lowHeartRateExpected = req.body?.lowHeartRateExpected === true;
+        const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 1000) : '';
+
+        if (!SPO2_SCALES[spo2Scale]) {
+            return res.status(400).json({ message: 'Unknown SpO2 scale', scales: Object.keys(SPO2_SCALES) });
+        }
+        const isDefault = spo2Scale === 'standard' && !lowHeartRateExpected;
+        if (!isDefault && !reason) {
+            return res.status(400).json({ message: 'Say why this patient’s targets differ from the default.' });
+        }
+
+        const patient = await User.exists({ _id: userId });
+        if (!patient) return res.status(404).json({ message: 'Not found' });
+
+        const professional = await resolveProfessional(req.auth, 'firstname lastname');
+        const name = professional
+            ? [professional.firstname, professional.lastname].filter(Boolean).join(' ')
+            : req.auth.email || null;
+        const now = new Date();
+
+        const row = await VitalTarget.findOneAndUpdate(
+            { userId },
+            {
+                $set: {
+                    spo2Scale,
+                    lowHeartRateExpected,
+                    reason: reason || null,
+                    setBy: req.auth.userId,
+                    setByName: name,
+                    setAt: now,
+                },
+                $push: {
+                    history: {
+                        $each: [{ spo2Scale, lowHeartRateExpected, reason: reason || null, by: req.auth.userId, name, at: now }],
+                        $slice: -50,
+                    },
+                },
+                $setOnInsert: { userId },
+            },
+            { upsert: true, new: true }
+        ).lean();
+
+        console.log(`🎯 Vital targets u=${userId}: spo2=${spo2Scale} lowHr=${lowHeartRateExpected} by ${req.auth.userId}`);
+        res.json({ vitalTargets: vitalTargetView(row), effective: await targetsFor(userId) });
+    } catch (error) {
+        console.error('❌ Setting vital targets failed:', error);
+        res.status(500).json({ message: 'Could not save the targets' });
     }
 };
 

@@ -23,6 +23,8 @@ const { recomputeMetricDay } = require('../utils/metricRollup');
 const scoreController = require('./scoreController');
 const achievementController = require('./achievementController');
 const { recordReadings, withdrawReading } = require('../utils/vitalAlertCentre');
+const VitalTarget = require('../models/VitalTarget');
+const { SPO2_SCALES } = require('../utils/vitalAlerts');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -312,10 +314,14 @@ exports.getOverview = async (req, res) => {
         const tzOffset = Number(req.query.tzOffset) || 0;
         const days = Math.min(90, Math.max(7, Number(req.query.days) || 7));
         const range = dayRange(days, tzOffset);
+        // Read further back than the window shown. HRV is judged against the person's own
+        // baseline, and a week is too short to have one.
+        const baselineRange = dayRange(Math.max(days, HRV_BASELINE_DAYS + 1), tzOffset);
 
-        const [rows, user] = await Promise.all([
-            DailyMetrics.find({ userId, day: { $gte: range[0] } }).sort({ day: 1 }).lean(),
+        const [rows, user, target] = await Promise.all([
+            DailyMetrics.find({ userId, day: { $gte: baselineRange[0] } }).sort({ day: 1 }).lean(),
             User.findById(userId).select('height weight observed').lean(),
+            VitalTarget.findOne({ userId }).select('spo2Scale').lean(),
         ]);
 
         const byDay = new Map(rows.map((r) => [r.day, r]));
@@ -336,7 +342,8 @@ exports.getOverview = async (req, res) => {
                 weightCard(newest, series, user),
                 bloodPressureCard(newest, series, byDay, range),
                 heartRateCard(newest, series),
-                spo2Card(newest, series),
+                hrvCard(newest, series, byDay, baselineRange),
+                spo2Card(newest, series, target),
                 temperatureCard(newest, series, byDay, range),
                 sleepCard(newest, series),
                 hydrationCard(today, series),
@@ -444,6 +451,67 @@ const heartRateCard = (newest, series) => {
     };
 };
 
+/** Days of history the HRV baseline is taken over, and how many it needs before it exists. */
+const HRV_BASELINE_DAYS = 28;
+const HRV_BASELINE_MIN_DAYS = 5;
+/** Within this fraction of the baseline reads as "near your usual". */
+const HRV_USUAL_BAND = 0.15;
+
+const median = (values) => {
+    const s = values.slice().sort((a, b) => a - b);
+    const mid = Math.floor(s.length / 2);
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+};
+
+/**
+ * Heart-rate variability, against the person's own baseline and never against a norm.
+ *
+ * HRV has no population normal range worth printing. It falls with age, differs several-fold
+ * between healthy people of the same age, and the sources do not even report the same
+ * measure: Apple Health gives SDNN, while Health Connect and the bracelet give RMSSD. A
+ * card that said "low" against a textbook figure would be wrong for most of the people
+ * reading it. What does mean something is a change against your own recent days, which is
+ * how every device that reports HRV presents it.
+ *
+ * So the status compares the latest day with the median of the previous
+ * `HRV_BASELINE_DAYS`, and says only which side of it the day falls. There is no verdict and
+ * no colour, and it is not a vital-alert metric: HRV has no threshold anyone would act on
+ * from one day. Until `HRV_BASELINE_MIN_DAYS` days exist it says it is still learning,
+ * rather than comparing against two numbers.
+ */
+const hrvCard = (newest, series, byDay, baselineRange) => {
+    const latest = newest((r) => r?.heart?.hrvMs);
+    const round = (n) => (n == null ? null : Math.round(n));
+
+    const history = baselineRange
+        .filter((d) => d !== latest.day)
+        .map((d) => byDay.get(d)?.heart?.hrvMs)
+        .filter((v) => Number.isFinite(v) && v > 0);
+    const baseline = history.length >= HRV_BASELINE_MIN_DAYS ? Math.round(median(history)) : null;
+
+    let status;
+    if (latest.value == null) status = 'Connect a device';
+    else if (baseline == null) status = `Learning your usual · ${history.length} of ${HRV_BASELINE_MIN_DAYS} days`;
+    else {
+        const ratio = latest.value / baseline;
+        status = ratio < 1 - HRV_USUAL_BAND ? `Below your usual ${baseline} ms`
+            : ratio > 1 + HRV_USUAL_BAND ? `Above your usual ${baseline} ms`
+                : `Near your usual ${baseline} ms`;
+    }
+
+    return {
+        key: 'hrv',
+        label: 'Heart Rate Variability',
+        unit: 'ms',
+        value: round(latest.value),
+        at: latest.day,
+        baseline,
+        status,
+        series: series((r) => round(r?.heart?.hrvMs)),
+        loggable: false,
+    };
+};
+
 /**
  * Blood oxygen, from a bracelet's automatic and on-demand readings.
  *
@@ -453,21 +521,31 @@ const heartRateCard = (newest, series) => {
  * stops there: a wrist sensor reading once an hour is not an oximeter, and a card that said
  * "low" in a verdict's voice would be diagnosing from it.
  */
-const spo2Card = (newest, series) => {
+const spo2Card = (newest, series, target = null) => {
     const latest = newest((r) => (r?.spo2?.readings ? r.spo2 : null));
     const day = latest.value;
     const plural = (n) => `${n} reading${n === 1 ? '' : 's'}`;
+    /**
+     * A clinician-set target replaces "typical is 95–100%". For somebody on the 88–92% COPD
+     * target, 90% every day is the plan working, and a card that called it below typical
+     * would contradict their own clinician. See `models/VitalTarget.js`.
+     */
+    const hypercapnic = target?.spo2Scale === 'hypercapnic';
     return {
         key: 'spo2',
         label: 'Blood Oxygen',
         unit: '%',
         value: day ? Math.round(day.avg) : null,
         at: latest.day,
+        // Named in the status, not in `target`: the dashboard draws `target` as "value / target",
+        // which is hydration's goal and would read "90 % / 88–92%" here.
         status: day === null
             ? 'Connect a bracelet'
-            : day.min >= 95
-                ? `Typical range · lowest ${day.min}%`
-                : `Lowest ${day.min}% of ${plural(day.readings)} · typical is 95–100%`,
+            : hypercapnic
+                ? `Lowest ${day.min}% · your clinician's target is ${SPO2_SCALES.hypercapnic.target}`
+                : day.min >= 95
+                    ? `Typical range · lowest ${day.min}%`
+                    : `Lowest ${day.min}% of ${plural(day.readings)} · typical is 95–100%`,
         series: series((r) => (r?.spo2?.readings ? r.spo2.avg : null)),
         loggable: false,
     };
@@ -670,4 +748,5 @@ exports._hydrationDay = hydrationDay;
 exports._resolveDay = resolveDay;
 exports._heartRateCard = heartRateCard;
 exports._spo2Card = spo2Card;
+exports._hrvCard = hrvCard;
 exports._temperatureCard = temperatureCard;

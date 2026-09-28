@@ -135,7 +135,15 @@ const VitalAlertSchema = new mongoose.Schema({
         name: { type: String, default: null },
         at: { type: Date, default: null },
         outcome: { type: String, enum: [...OUTCOMES, null], default: null },
+        /** Internal. Written for the next clinician and never shown to the patient. */
         note: { type: String, default: null, maxlength: 2000 },
+        /**
+         * What the patient's "a clinician reviewed this" card says, when the clinician wrote
+         * it. Kept apart from `note` so internal reasoning cannot reach a lock screen.
+         */
+        patientMessage: { type: String, default: null, maxlength: 240 },
+        /** When that card was written. Null means the clinician chose not to tell them. */
+        patientNotifiedAt: { type: Date, default: null },
     },
 }, { timestamps: true });
 

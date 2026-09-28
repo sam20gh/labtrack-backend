@@ -124,6 +124,46 @@ describe('the threshold table', () => {
         expect(table.evaluateOne(hrReading(140, null))).toBeNull();
     });
 
+    it('alerts on a low resting heart rate, softer than NEWS2', () => {
+        expect(table.evaluateOne(hrReading(41))).toBeNull();
+        expect(table.evaluateOne(hrReading(40)).level).toBe('attention');
+        expect(table.evaluateOne(hrReading(38, 'sleeping')).level).toBe('attention');
+        expect(table.evaluateOne(hrReading(31)).level).toBe('attention');
+        expect(table.evaluateOne(hrReading(30)).level).toBe('urgent');
+        // A low rate during a workout reading is a sensor dropout, not a finding.
+        expect(table.evaluateOne(hrReading(35, 'active'))).toBeNull();
+    });
+
+    it('drops the ≤40 band, and keeps ≤30, when a clinician expects a low rate', () => {
+        const athlete = { lowHeartRateExpected: true };
+        expect(table.evaluateOne(hrReading(36), athlete)).toBeNull();
+        expect(table.evaluateOne(hrReading(30), athlete).level).toBe('urgent');
+        expect(table.evaluateOne(hrReading(120), athlete).level).toBe('attention');
+    });
+
+    it('moves SpO2 to NEWS2 scale 2 for a hypercapnic target', () => {
+        const copd = { spo2Scale: 'hypercapnic' };
+        for (const v of [93, 92, 90, 88, 86]) expect(table.evaluateOne(spo2Reading(v), copd)).toBeNull();
+        expect(table.evaluateOne(spo2Reading(85), copd)).toMatchObject({ level: 'attention', rule: 'spo2.scale2_at_most_85' });
+        expect(table.evaluateOne(spo2Reading(83), copd)).toMatchObject({ level: 'urgent', rule: 'spo2.scale2_at_most_83' });
+    });
+
+    it('never lets a target alert where the defaults would not', () => {
+        // The centre skips the targets read when the defaults find nothing; this is what
+        // makes that safe.
+        const targets = [{ spo2Scale: 'hypercapnic' }, { lowHeartRateExpected: true }, { spo2Scale: 'hypercapnic', lowHeartRateExpected: true }];
+        for (let v = 70; v <= 100; v++) {
+            for (const t of targets) {
+                if (table.evaluateOne(spo2Reading(v), t)) expect(table.evaluateOne(spo2Reading(v))).not.toBeNull();
+            }
+        }
+        for (let bpm = 20; bpm <= 200; bpm++) {
+            for (const t of targets) {
+                if (table.evaluateOne(hrReading(bpm), t)) expect(table.evaluateOne(hrReading(bpm))).not.toBeNull();
+            }
+        }
+    });
+
     it('treats only the last day as fresh', () => {
         expect(table.isFresh(hoursAgo(23), NOW)).toBe(true);
         expect(table.isFresh(hoursAgo(25), NOW)).toBe(false);
@@ -133,46 +173,78 @@ describe('the threshold table', () => {
 });
 
 describe('the copy', () => {
-    const cases = [];
-    for (const metric of table.METRICS) {
-        for (const level of table.LEVELS) {
-            const reading = metric === 'blood_pressure' ? bpReading(level === 'urgent' ? 186 : 152, 94, NOW, { method: 'optical_estimate' })
-                : metric === 'spo2' ? spo2Reading(level === 'urgent' ? 88 : 93)
-                    : hrReading(level === 'urgent' ? 140 : 110);
-            cases.push([metric, level, table.copyFor(reading, level)]);
-        }
-    }
+    // One reading that fires each rule, so every entry in COPY is exercised.
+    const FIRING = {
+        'blood_pressure.stage_2': [bpReading(152, 94, NOW, { method: 'optical_estimate' })],
+        'blood_pressure.crisis': [bpReading(186, 94)],
+        'spo2.at_most_93': [spo2Reading(93)],
+        'spo2.at_most_91': [spo2Reading(88)],
+        'spo2.scale2_at_most_85': [spo2Reading(85), { spo2Scale: 'hypercapnic' }],
+        'spo2.scale2_at_most_83': [spo2Reading(80), { spo2Scale: 'hypercapnic' }],
+        'heart_rate.resting_over_100': [hrReading(110)],
+        'heart_rate.resting_at_least_131': [hrReading(140)],
+        'heart_rate.resting_at_most_40': [hrReading(38)],
+        'heart_rate.resting_at_most_30': [hrReading(28)],
+    };
+    const cases = table.RULES.map((rule) => {
+        const [reading, targets] = FIRING[rule] || [];
+        const evaluated = reading && table.evaluate([reading], targets)[0];
+        return [rule, evaluated?.level, evaluated && table.copyFor(evaluated)];
+    });
 
-    it.each(cases)('%s/%s fits the card', (metric, level, copy) => {
+    it('has a firing reading, and copy, for every rule', () => {
+        expect(Object.keys(FIRING).sort()).toEqual([...table.RULES].sort());
+        for (const [rule, , copy] of cases) expect([rule, Boolean(copy)]).toEqual([rule, true]);
+        for (const [rule] of cases) expect(table.evaluate([FIRING[rule][0]], FIRING[rule][1])[0].rule).toBe(rule);
+    });
+
+    it.each(cases)('%s fits the card', (rule, level, copy) => {
         expect(copy.title.length).toBeLessThanOrEqual(80);
         expect(copy.body.length).toBeLessThanOrEqual(240);
         expect(copy.body).toContain(copy.chip);
     });
 
-    it.each(cases)('%s/%s never names a condition', (metric, level, copy) => {
+    it.each(cases)('%s never names a condition', (rule, level, copy) => {
         const text = `${copy.title} ${copy.body}`.toLowerCase();
-        for (const word of ['hypertension', 'tachycardia', 'hypoxia', 'hypoxaemia', 'hypoxemia', 'arrhythmia']) {
+        for (const word of ['hypertension', 'tachycardia', 'bradycardia', 'hypoxia', 'hypoxaemia', 'hypoxemia', 'arrhythmia', 'copd']) {
             expect(text).not.toContain(word);
         }
         // "If you have chest pain" is advice; "you have high blood pressure" is a diagnosis.
         expect(text).not.toMatch(/(?<!if )you have/);
     });
 
-    it.each(cases.filter(([, level]) => level === 'urgent'))('%s/%s says when to seek care', (metric, level, copy) => {
+    it.each(cases.filter(([, level]) => level === 'urgent'))('%s says when to seek care', (rule, level, copy) => {
         expect(copy.body).toMatch(/seek emergency care now/i);
     });
 
     it('names the bracelet when the blood pressure is an estimate', () => {
-        expect(table.copyFor(bpReading(152, 94, NOW, { method: 'optical_estimate' }), 'attention').body)
-            .toMatch(/^Your bracelet estimated/);
-        expect(table.copyFor(bpReading(152, 94, NOW, { method: 'cuff' }), 'attention').body)
-            .toMatch(/^You logged/);
+        const [estimate] = table.evaluate([bpReading(152, 94, NOW, { method: 'optical_estimate' })]);
+        const [cuff] = table.evaluate([bpReading(152, 94, NOW, { method: 'cuff' })]);
+        expect(table.copyFor(estimate).body).toMatch(/^Your bracelet estimated/);
+        expect(table.copyFor(cuff).body).toMatch(/^You logged/);
     });
 
-    it('routes to screens the app has, and the categories exist with the right priority', () => {
-        for (const route of Object.values(table.METRIC_ROUTE)) expect(route).toMatch(/^\/metrics/);
+    it('routes to the screen the metrics dashboard opens for that card', () => {
+        expect(table.METRIC_ROUTE).toEqual({
+            blood_pressure: '/metrics/blood-pressure',
+            heart_rate: '/activity',
+            spo2: '/bracelet',
+        });
         expect(CATEGORIES[table.CATEGORY_FOR_LEVEL.urgent].priority).toBe('critical');
         expect(CATEGORIES[table.CATEGORY_FOR_LEVEL.attention].priority).toBe('normal');
+    });
+
+    it('has review wording for every outcome, never naming a condition', () => {
+        expect(Object.keys(table.REVIEW_COPY).sort()).toEqual([...VitalAlert.OUTCOMES].sort());
+        for (const metric of table.METRICS) {
+            for (const outcome of VitalAlert.OUTCOMES) {
+                const copy = table.reviewCopyFor(metric, outcome);
+                expect(copy.title.length).toBeLessThanOrEqual(80);
+                expect(copy.body.length).toBeLessThanOrEqual(240);
+                expect(copy.body.toLowerCase()).not.toMatch(/hypertension|tachycardia|bradycardia|copd/);
+            }
+        }
+        expect(table.reviewCopyFor('spo2', 'escalated').body).toMatch(/seek emergency care/);
     });
 });
 
@@ -482,5 +554,177 @@ describe('clinician review', () => {
 
             expect((await reach(doctor())).next).not.toHaveBeenCalled();
         });
+    });
+});
+
+/* ------------------------------------------------------------------ *
+ * Clinician-set targets
+ * ------------------------------------------------------------------ */
+
+describe('clinician-set targets', () => {
+    const VitalTarget = require('../models/VitalTarget');
+    const doctor = () => ({ userId: String(new mongoose.Types.ObjectId()), role: 'professional', email: 'doc@example.com' });
+
+    it('a COPD patient at 90% raises nothing; at 84% raises the scale 2 alert', async () => {
+        await VitalTarget.create({ userId, spo2Scale: 'hypercapnic', reason: 'COPD, LTOT' });
+
+        await recordReadings(userId, [spo2Reading(90, hoursAgo(2), { externalId: 'c1' })], { now: NOW });
+        expect(await VitalAlert.countDocuments()).toBe(0);
+
+        await recordReadings(userId, [spo2Reading(84, hoursAgo(1), { externalId: 'c2' })], { now: NOW });
+        const alert = await VitalAlert.findOne().lean();
+        expect(alert.readings[0].rule).toBe('spo2.scale2_at_most_85');
+        expect((await Notification.findOne().lean()).title).toBe('Blood oxygen below your target');
+    });
+
+    it('requires a reason for anything but the defaults, and keeps the history', async () => {
+        const refused = mockRes();
+        await review.setVitalTargets({
+            auth: doctor(), params: { userId: String(userId) }, body: { spo2Scale: 'hypercapnic' },
+        }, refused);
+        expect(refused.status).toHaveBeenCalledWith(400);
+
+        const first = mockRes();
+        await review.setVitalTargets({
+            auth: doctor(), params: { userId: String(userId) },
+            body: { spo2Scale: 'hypercapnic', lowHeartRateExpected: true, reason: 'COPD; on bisoprolol' },
+        }, first);
+        expect(first.status).not.toHaveBeenCalled();
+        expect(first.json.mock.calls[0][0].effective).toEqual({ spo2Scale: 'hypercapnic', lowHeartRateExpected: true });
+
+        await review.setVitalTargets({
+            auth: doctor(), params: { userId: String(userId) }, body: { spo2Scale: 'standard' },
+        }, mockRes());
+
+        const row = await VitalTarget.findOne({ userId }).lean();
+        expect(row.spo2Scale).toBe('standard');
+        expect(row.history.map((h) => h.spo2Scale)).toEqual(['hypercapnic', 'standard']);
+    });
+
+    it('rejects an unknown scale', async () => {
+        const res = mockRes();
+        await review.setVitalTargets({
+            auth: doctor(), params: { userId: String(userId) }, body: { spo2Scale: 'lenient', reason: 'x' },
+        }, res);
+        expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('is on the patient record', async () => {
+        await VitalTarget.create({ userId, spo2Scale: 'hypercapnic', reason: 'COPD' });
+        const res = mockRes();
+        await review.getPatientContext({ auth: doctor(), params: { userId: String(userId) } }, res);
+        const { vitalTargets } = res.json.mock.calls[0][0];
+        expect(vitalTargets).toMatchObject({ spo2Scale: 'hypercapnic', reason: 'COPD' });
+        expect(vitalTargets.scales.map((sc) => sc.key)).toEqual(['standard', 'hypercapnic']);
+    });
+});
+
+/* ------------------------------------------------------------------ *
+ * Telling the patient a clinician looked
+ * ------------------------------------------------------------------ */
+
+describe('the review reaches the patient', () => {
+    const doctor = () => ({ userId: String(new mongoose.Types.ObjectId()), role: 'professional', email: 'doc@example.com' });
+    const openAlert = async () => {
+        await recordReadings(userId, [spo2Reading(92, hoursAgo(1), { externalId: `m${Math.random()}` })], { now: NOW });
+        return VitalAlert.findOne({ isOpen: true }).lean();
+    };
+    const reviewed = () => Notification.findOne({ dedupeKey: /^vitals:reviewed:/ }).lean();
+
+    it('sends the clinician\'s own message, never the internal note', async () => {
+        const alert = await openAlert();
+        await review.reviewVitalAlert({
+            auth: doctor(), params: { alertId: String(alert._id) },
+            body: {
+                outcome: 'measurement_error',
+                note: 'Cold peripheries on video call; poor waveform.',
+                patientMessage: 'Your reading was probably affected by cold hands. Warm up and try again.',
+            },
+        }, mockRes());
+
+        const card = await reviewed();
+        expect(card.category).toBe('vitals_review');
+        expect(card.title).toBe('A clinician reviewed your blood oxygen readings');
+        expect(card.body).toBe('Your reading was probably affected by cold hands. Warm up and try again.');
+        expect(card.body).not.toContain('peripheries');
+        expect((await VitalAlert.findById(alert._id).lean()).review.patientNotifiedAt).toBeTruthy();
+    });
+
+    it('falls back to the outcome\'s wording, with its action', async () => {
+        const alert = await openAlert();
+        await review.reviewVitalAlert({
+            auth: doctor(), params: { alertId: String(alert._id) }, body: { outcome: 'plan_item' },
+        }, mockRes());
+
+        const card = await reviewed();
+        expect(card.body).toBe(table.REVIEW_COPY.plan_item.body);
+        expect(card.route).toBe('/myplans');
+        expect(card.actions.map((a) => a.route)).toEqual(['/myplans']);
+    });
+
+    it('stays silent when the clinician turns it off', async () => {
+        const alert = await openAlert();
+        await review.reviewVitalAlert({
+            auth: doctor(), params: { alertId: String(alert._id) },
+            body: { outcome: 'no_action', note: 'Known, managed.', notifyPatient: false },
+        }, mockRes());
+
+        expect(await reviewed()).toBeNull();
+        expect((await VitalAlert.findById(alert._id).lean()).review.patientNotifiedAt).toBeNull();
+    });
+
+    it('refuses a patient message over the card limit', async () => {
+        const alert = await openAlert();
+        const res = mockRes();
+        await review.reviewVitalAlert({
+            auth: doctor(), params: { alertId: String(alert._id) },
+            body: { outcome: 'advised_patient', patientMessage: 'x'.repeat(241) },
+        }, res);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect((await VitalAlert.findById(alert._id).lean()).status).toBe('open');
+    });
+});
+
+/* ------------------------------------------------------------------ *
+ * The AI context
+ * ------------------------------------------------------------------ */
+
+describe('the interpretation and the assistant see the alerts', () => {
+    const { _gatherVitalAlerts } = require('../controllers/interpretationController');
+    const { buildContext } = require('../utils/interpretationEngine');
+    const { hasNewDataSince } = require('../utils/regenerationGuard');
+    const VitalTarget = require('../models/VitalTarget');
+
+    it('says nothing when there is nothing to say', async () => {
+        expect(await _gatherVitalAlerts(userId)).toBeNull();
+    });
+
+    it('states open episodes, reviewed outcomes and targets, but never the internal note', async () => {
+        await recordReadings(userId, [bpReading(188, 124, hoursAgo(1), { externalId: 'ai1', method: 'optical_estimate', source: 'bracelet' })]);
+        await recordReadings(userId, [spo2Reading(89, hoursAgo(1), { externalId: 'ai2' })]);
+        const spo2 = await VitalAlert.findOne({ metric: 'spo2' });
+        spo2.status = 'reviewed';
+        spo2.isOpen = false;
+        spo2.review = { at: new Date(), outcome: 'measurement_error', note: 'SECRET internal reasoning' };
+        await spo2.save();
+        await VitalTarget.create({ userId, spo2Scale: 'hypercapnic', reason: 'COPD' });
+
+        const vitals = await _gatherVitalAlerts(userId);
+        const text = buildContext({ user: { firstName: 'Pat' }, vitalAlerts: vitals });
+
+        expect(text).toContain('## Vital signs flagged out of range');
+        expect(text).toContain('Blood pressure: worst 188/124 mmHg');
+        expect(text).toContain('includes cuffless bracelet estimates');
+        expect(text).toContain('awaiting clinician review');
+        expect(text).toContain('judged NOT a valid reading');
+        expect(text).toContain('88–92%');
+        expect(text).not.toContain('SECRET');
+    });
+
+    it('counts a new alert as new data for regeneration', async () => {
+        const since = new Date(Date.now() - 1000);
+        expect(await hasNewDataSince(userId, since)).toBe(false);
+        await recordReadings(userId, [spo2Reading(88, hoursAgo(0.5), { externalId: 'rg' })]);
+        expect(await hasNewDataSince(userId, since)).toBe(true);
     });
 });

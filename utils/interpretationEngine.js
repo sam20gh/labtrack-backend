@@ -40,7 +40,7 @@ const isoDay = (d) => {
     return Number.isNaN(t) ? 'undated' : new Date(t).toISOString().slice(0, 10);
 };
 
-const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, series = {}, testResults = [], previous = null, nutrition = null, medications = null, observed = null, score = null }) => {
+const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, series = {}, testResults = [], previous = null, nutrition = null, medications = null, observed = null, score = null, vitalAlerts = null }) => {
     const age = calculateAge(user?.dob);
     const lines = [];
 
@@ -292,6 +292,48 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
         }
 
         for (const line of bpLines) lines.push(line);
+    }
+
+    /**
+     * Out-of-range vital signs, flagged by `utils/vitalAlerts.js`, and what a clinician did.
+     *
+     * Stated as flags raised by a fixed table and never as a diagnosis, because that is
+     * what they are: one reading from a wrist sensor or a home cuff crossed a threshold. The
+     * model is told to weigh them and to respect a clinician's outcome. Re-escalating a
+     * reading a doctor has already judged a measurement error would teach the patient that
+     * the review changed nothing.
+     */
+    if (vitalAlerts) {
+        const OUTCOME_WORDS = {
+            no_action: 'reviewed by a clinician: no action needed',
+            advised_patient: 'reviewed by a clinician, who advised the patient',
+            appointment: 'reviewed by a clinician, who asked for a consultation',
+            plan_item: 'reviewed by a clinician, who added a follow-up to the plan',
+            escalated: 'reviewed by a clinician and escalated for urgent care',
+            measurement_error: 'reviewed by a clinician and judged NOT a valid reading',
+        };
+        lines.push('');
+        lines.push('## Vital signs flagged out of range');
+        if (vitalAlerts.targets?.spo2) {
+            lines.push(`A clinician has set their SpO2 target to ${vitalAlerts.targets.spo2} (NEWS2 scale 2, `
+                + 'hypercapnic risk). Readings in that range are on target: do not call them low.');
+        }
+        if (vitalAlerts.targets?.lowHeartRateExpected) {
+            lines.push('A clinician has recorded that a low resting heart rate is expected for them '
+                + '(training or medication). Do not treat a rate in the 40s as a concern.');
+        }
+        if (vitalAlerts.episodes.length) {
+            lines.push('Each line is an episode raised by a fixed threshold table from home or wearable readings.');
+            for (const e of vitalAlerts.episodes) {
+                const when = isoDay(e.from) === isoDay(e.to) ? isoDay(e.from) : `${isoDay(e.from)} to ${isoDay(e.to)}`;
+                const state = e.status === 'open' ? 'awaiting clinician review' : OUTCOME_WORDS[e.outcome] || 'reviewed';
+                lines.push(`  ${e.metric}: worst ${e.worst}, ${e.readings} reading${e.readings === 1 ? '' : 's'}, `
+                    + `${when}, level ${e.level}${e.estimate ? ', includes cuffless bracelet estimates' : ''} — ${state}.`);
+            }
+            lines.push('Read the biomarkers in light of these, and mention an open urgent episode plainly with');
+            lines.push('advice to get it reviewed. Do not diagnose from them, and do not re-escalate an');
+            lines.push('episode a clinician has already reviewed; follow their outcome.');
+        }
     }
 
     /**

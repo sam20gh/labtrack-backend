@@ -42,6 +42,12 @@ router.post('/vitals/:alertId/review', c.reviewVitalAlert);
  */
 router.get('/patient/:userId/context', requireReviewScope, c.getPatientContext);
 
+/**
+ * A clinician-set exception to the vital-sign thresholds: the COPD SpO2 target, an expected
+ * low heart rate. Scoped like the record it belongs to. See `models/VitalTarget.js`.
+ */
+router.put('/patient/:userId/vital-targets', requireReviewScope, c.setVitalTargets);
+
 router.get('/:reportId', c.getReportForReview);
 router.post('/:reportId', c.submitReview);
 router.post('/:reportId/plan-items', c.addPlanItem);

@@ -87,6 +87,7 @@ const gatherContext = async (userId) => {
 
     const nutrition = await gatherNutrition(userId);
     const medications = await gatherMedications(userId);
+    const vitalAlerts = await gatherVitalAlerts(userId);
 
     /**
      * What the trackers measured, and the score built from it.
@@ -105,7 +106,73 @@ const gatherContext = async (userId) => {
 
     return {
         user, dnaReports, biomarkers, trends, series, testResults, previous,
-        nutrition, medications, observed, score,
+        nutrition, medications, observed, score, vitalAlerts,
+    };
+};
+
+/** How far back reviewed vital alerts are read. Open ones are read whatever their age. */
+const VITAL_ALERT_WINDOW_DAYS = 90;
+
+/**
+ * Out-of-range vital signs, and what a clinician made of them.
+ *
+ * The interpretation and the assistant both read this, and each needs it for its own reason:
+ *
+ *   - **An interpretation that ignores a crisis blood pressure is wrong**, whatever its
+ *     biomarkers say. A raised creatinine alongside a run of stage 2 readings is a
+ *     different paragraph, and the same holds for a low SpO2 next to a raised haemoglobin.
+ *   - **The assistant is asked "why did I get this alert?"** It has to be able to see the
+ *     alert to answer that, in the same words the card used.
+ *
+ * Clinician outcomes travel with the episode, and so do the patient's targets. A reading a
+ * clinician judged a measurement error must not be re-escalated by a model that cannot see
+ * that judgement, and a COPD patient at 90% is on target, not "low".
+ *
+ * The clinician's internal `note` is **not** included. It is written for the next
+ * clinician, and both engines write text the patient reads. The outcome is enough to stop
+ * the model contradicting the review.
+ *
+ * Returns null when there is nothing to say, for the reason every gatherer here does.
+ */
+const gatherVitalAlerts = async (userId) => {
+    const VitalAlert = require('../models/VitalAlert');
+    const VitalTarget = require('../models/VitalTarget');
+    const { valueLabel, METRIC_LABEL, SPO2_SCALES } = require('../utils/vitalAlerts');
+
+    const since = new Date(Date.now() - VITAL_ALERT_WINDOW_DAYS * 86400000);
+    const [alerts, target] = await Promise.all([
+        VitalAlert.find({
+            userId,
+            $or: [{ status: 'open' }, { status: 'reviewed', lastAt: { $gte: since } }],
+        })
+            .select('metric level status firstAt lastAt readingCount worst hasEstimate review.outcome review.at')
+            .sort({ isOpen: -1, lastAt: -1 })
+            .limit(10)
+            .lean(),
+        VitalTarget.findOne({ userId }).select('spo2Scale lowHeartRateExpected').lean(),
+    ]);
+
+    const customTargets = target && (target.spo2Scale === 'hypercapnic' || target.lowHeartRateExpected);
+    if (!alerts.length && !customTargets) return null;
+
+    return {
+        windowDays: VITAL_ALERT_WINDOW_DAYS,
+        targets: customTargets ? {
+            spo2: target.spo2Scale === 'hypercapnic' ? SPO2_SCALES.hypercapnic.target : null,
+            lowHeartRateExpected: Boolean(target.lowHeartRateExpected),
+        } : null,
+        episodes: alerts.map((a) => ({
+            metric: METRIC_LABEL[a.metric] || a.metric,
+            level: a.level,
+            status: a.status,
+            from: a.firstAt,
+            to: a.lastAt,
+            readings: a.readingCount,
+            worst: a.worst ? valueLabel({ metric: a.metric, ...a.worst }) : null,
+            estimate: Boolean(a.hasEstimate),
+            outcome: a.status === 'reviewed' ? a.review?.outcome || null : null,
+            reviewedAt: a.status === 'reviewed' ? a.review?.at || null : null,
+        })),
     };
 };
 
@@ -662,3 +729,4 @@ exports.getStatus = async (req, res) => {
 exports._gatherContext = gatherContext;
 exports._gatherNutrition = gatherNutrition;
 exports._gatherMedications = gatherMedications;
+exports._gatherVitalAlerts = gatherVitalAlerts;
