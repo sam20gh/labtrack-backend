@@ -47,6 +47,21 @@ const AnalysisSchema = new mongoose.Schema({
     model: { type: String },
 }, { _id: false });
 
+/**
+ * One piece of a sleep that arrived in several — see `utils/sleepStitch.js`. Kept whole, with
+ * its own segments, so a later sync that re-sends or extends one piece can rebuild the sleep
+ * from its pieces rather than add the piece to a total that already contains it.
+ */
+const SleepPartSchema = new mongoose.Schema({
+    externalId: { type: String, required: true },
+    startedAt: { type: Date, required: true },
+    endedAt: { type: Date, required: true },
+    asleepMin: { type: Number, min: 0 },
+    inBedMin: { type: Number, min: 0 },
+    stages: { type: StagesSchema, default: () => ({}) },
+    segments: [StageSegmentSchema],
+}, { _id: false });
+
 const SleepSessionSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
@@ -79,10 +94,15 @@ const SleepSessionSchema = new mongoose.Schema({
 
     source: {
         type: String,
-        enum: ['healthkit', 'health_connect', 'manual', 'aggregator'],
+        enum: ['healthkit', 'health_connect', 'manual', 'aggregator', 'jstyle_bracelet'],
         required: true,
     },
     externalId: { type: String, default: null },
+    /**
+     * The pieces this row was joined from, when there was more than one. `externalId` is then
+     * the earliest piece's. Absent on a sleep that arrived whole.
+     */
+    parts: { type: [SleepPartSchema], default: undefined },
     sourceDevice: {
         name: { type: String },
         model: { type: String },

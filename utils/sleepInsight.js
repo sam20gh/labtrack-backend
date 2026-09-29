@@ -282,7 +282,14 @@ const consistency = (nights = [], tzOffset = 0) => {
  * Null on either side gives a null comparison rather than a percentage — the same call
  * `activityInsight.comparePeriods` makes, and for the same reason: a first week has no
  * previous window and "+100%" is not a true thing to print about it.
+ *
+ * **Both sides also need `MIN_COMPARE_NIGHTS`.** One stray row is not a week: a previous
+ * window holding a single 37-minute piece of a night printed "↑ 814.9% vs previous week" on
+ * 2026-09-29. `tooFewNights` says why there is no percentage, so a screen can say so rather
+ * than "no change".
  */
+const MIN_COMPARE_NIGHTS = 3;
+
 const comparePeriods = (current = [], previous = [], key = 'asleepMin') => {
     const mean = (rows) => {
         const values = rows.map((r) => r?.[key]).filter(finite);
@@ -295,6 +302,17 @@ const comparePeriods = (current = [], previous = [], key = 'asleepMin') => {
     const before = mean(previous);
     if (!now || !before || before.value === 0) {
         return { current: now?.value ?? null, previous: before?.value ?? null, deltaPct: null, direction: null };
+    }
+    if (now.nights < MIN_COMPARE_NIGHTS || before.nights < MIN_COMPARE_NIGHTS) {
+        return {
+            current: now.value,
+            previous: before.value,
+            currentNights: now.nights,
+            previousNights: before.nights,
+            deltaPct: null,
+            direction: null,
+            tooFewNights: true,
+        };
     }
 
     const deltaPct = round(((now.value - before.value) / before.value) * 100, 1);
@@ -346,6 +364,7 @@ module.exports = {
     byWeekday,
     consistency,
     comparePeriods,
+    MIN_COMPARE_NIGHTS,
     computeStreak,
     goalProgress,
     meanClock,

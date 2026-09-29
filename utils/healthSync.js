@@ -25,6 +25,7 @@ const EcgRecording = require('../models/EcgRecording');
 const { classify } = require('./bloodPressure');
 const { scoreNight } = require('./sleepScore');
 const { scoreSession } = require('./activityScore');
+const { clusterSessions, mergeSessions, STITCH_GAP_MIN } = require('./sleepStitch');
 
 /** `YYYY-MM-DD` for an instant in a given timezone offset (minutes, as `getTimezoneOffset()`). */
 const localDay = (date, tzOffsetMinutes = 0) => {
@@ -403,7 +404,80 @@ const ingestSleep = async (userId, rows = [], { source, tzOffset, goalMinutes })
         });
     }
 
-    /* ------------------------------- 2. collapse accounts of the same night */
+    const joined = await joinSleep(userId, candidates, { source, tzOffset, goalMinutes });
+    for (const day of joined) days.add(day);
+    return days;
+};
+
+/**
+ * Steps 2–5 of `ingestSleep`, on their own: fold a batch's nights into what is stored around
+ * them — collapse duplicates, join the pieces of one sleep, write, and remove what was folded.
+ * Returns the days whose rollups need recomputing.
+ *
+ * Called with an empty batch and an explicit `window` by `scripts/stitchSleep.js`, which is
+ * how rows stored before joining existed are repaired by exactly the rule a sync applies.
+ */
+const joinSleep = async (userId, candidates = [], { source, tzOffset, goalMinutes, window = null }) => {
+    const days = new Set();
+
+    /* ------------------------------- 2. the pieces already stored nearby */
+
+    /**
+     * A night can arrive over several syncs — the bracelet's 00:23 and 02:23 blocks at 04:30,
+     * the rest after waking — so joining only within a batch would leave it in pieces. The
+     * stored rows around the batch are expanded back into their pieces and joined afresh
+     * with it. Twelve hours either side also picks up a chain of rows stored before joining
+     * existed, so a night left in pieces heals on the next sync that touches it.
+     *
+     * Manual nights are left alone: they have no identity to join on, and they arrive
+     * through their own form, not here.
+     */
+    if (!candidates.length && !window) return days;
+
+    const pieces = new Map();
+    const storedIds = new Map(); // externalId → stored row, for rows this ingest may replace
+
+    if (source !== 'manual') {
+        const pad = 12 * 3600_000;
+        const from = window?.from
+            || new Date(Math.min(...candidates.map((c) => c.startedAt.getTime())) - pad);
+        const to = window?.to
+            || new Date(Math.max(...candidates.map((c) => c.endedAt.getTime())) + pad);
+        const stored = await SleepSession.find({
+            userId, source,
+            externalId: { $type: 'string' },
+            startedAt: { $lte: to },
+            endedAt: { $gte: from },
+        }).lean();
+
+        for (const row of stored) {
+            storedIds.set(row.externalId, row);
+            const parts = row.parts?.length ? row.parts : [row];
+            for (const p of parts) {
+                pieces.set(p.externalId, {
+                    externalId: p.externalId,
+                    startedAt: new Date(p.startedAt),
+                    endedAt: new Date(p.endedAt),
+                    asleepMin: p.asleepMin,
+                    inBedMin: p.inBedMin,
+                    stages: p.stages || {},
+                    segments: p.segments || [],
+                    day: row.day,
+                    sourceDevice: row.sourceDevice,
+                });
+            }
+        }
+    }
+
+    // The batch's copy of a piece wins over the stored one: a block synced while it was still
+    // being recorded comes back longer, under the same id.
+    const anonymous = [];
+    for (const c of candidates) {
+        if (c.externalId) pieces.set(c.externalId, c);
+        else anonymous.push(c);
+    }
+
+    /* ------------------------------- 3. collapse accounts of the same night */
 
     /**
      * Two apps writing the same sleep into one health store is the normal case, not the
@@ -411,28 +485,80 @@ const ingestSleep = async (userId, rows = [], { source, tzOffset, goalMinutes })
      * writes its own record with its own UUID. `externalId` cannot see that they are the
      * same night; overlapping clock time can.
      *
-     * Collapsed here, before anything is written, so the winner is chosen from the whole
-     * batch rather than from whichever record happened to be upserted last.
+     * Collapsed over the stored pieces and the batch together, so the winner is chosen from
+     * everything rather than from whichever record happened to be upserted last — and a
+     * duplicate stored before this rule existed is removed by the next sync that sees it.
      */
     const kept = [];
-    const superseded = [];
+    const ordered = [...pieces.values()].sort((a, b) =>
+        (a.startedAt - b.startedAt) || String(a.externalId).localeCompare(String(b.externalId)));
 
-    for (const candidate of candidates) {
-        const rivalIndex = kept.findIndex((k) => sameNight(k, candidate));
-        if (rivalIndex === -1) { kept.push(candidate); continue; }
-
-        const rival = kept[rivalIndex];
-        const winner = preferSleep(rival, candidate);
-        kept[rivalIndex] = winner;
-        superseded.push(winner === rival ? candidate : rival);
+    for (const piece of ordered) {
+        const rivalIndex = kept.findIndex((k) => sameNight(k, piece));
+        if (rivalIndex === -1) { kept.push(piece); continue; }
+        kept[rivalIndex] = preferSleep(kept[rivalIndex], piece);
     }
 
-    for (const row of kept) days.add(row.day);
+    /* ------------------------------------- 4. join the pieces of one sleep */
 
-    /* ----------------------------------------------------------- 3. persist */
+    /**
+     * See `utils/sleepStitch.js`. Pieces at most `STITCH_GAP_MIN` apart are one sleep, stored
+     * as one row that keeps its pieces. The row's identity is its earliest piece's id, and its
+     * day is the wake day of the whole sleep — a block that ended at 23:50 belongs to the
+     * night it started, not to the evening.
+     */
+    const merged = clusterSessions(kept, STITCH_GAP_MIN).map((cluster) => {
+        const figures = mergeSessions(cluster);
+        const first = cluster[0];
+        // Every piece already carries its own wake day; the sleep's is the last one's.
+        const last = cluster.reduce((a, b) => (b.endedAt > a.endedAt ? b : a));
+        const day = resolveDay(last.day, figures.endedAt, tzOffset);
+        return {
+            userId,
+            ...figures,
+            day,
+            score: scoreNight({
+                asleepMin: figures.asleepMin,
+                efficiency: figures.efficiency,
+                stages: figures.stages,
+                goalMinutes,
+            }),
+            source,
+            externalId: first.externalId,
+            sourceDevice: first.sourceDevice || undefined,
+            parts: cluster.length > 1
+                ? cluster.map((p) => ({
+                    externalId: p.externalId,
+                    startedAt: p.startedAt,
+                    endedAt: p.endedAt,
+                    asleepMin: p.asleepMin,
+                    inBedMin: p.inBedMin,
+                    stages: p.stages,
+                    segments: p.segments,
+                }))
+                : [],
+            touchesBatch: cluster.some((p) => candidates.includes(p)),
+            // Every day a piece was filed under before, so the one it leaves is recomputed too.
+            pieceDays: cluster.map((p) => p.day).filter(Boolean),
+        };
+    });
 
-    if (kept.length) {
-        await SleepSession.bulkWrite(kept.map((row) => upsertOp({
+    /* ----------------------------------------------------------- 5. persist */
+
+    // A row that is exactly what was stored — the same single piece, nothing from this batch —
+    // is not rewritten. Everything else is, because its pieces or its figures moved.
+    const writes = merged.filter((row) => row.touchesBatch
+        || row.parts.length !== (storedIds.get(row.externalId)?.parts?.length || 0)
+        || !storedIds.has(row.externalId));
+
+    const toWrite = [...writes, ...anonymous.map((c) => ({ ...c, touchesBatch: true }))];
+    for (const row of toWrite) {
+        days.add(row.day);
+        for (const d of row.pieceDays || []) days.add(d);
+    }
+
+    if (toWrite.length) {
+        await SleepSession.bulkWrite(toWrite.map(({ touchesBatch, pieceDays, ...row }) => upsertOp({
             filter: row.externalId
                 ? { userId, source, externalId: row.externalId }
                 : { userId, source, endedAt: row.endedAt },
@@ -442,25 +568,22 @@ const ingestSleep = async (userId, rows = [], { source, tzOffset, goalMinutes })
     }
 
     /**
-     * Rows this batch has just proved are duplicates.
+     * Stored rows that no longer stand for a sleep of their own: absorbed into a longer one,
+     * or the losing copy of a duplicated night.
      *
-     * Self-healing on purpose: the loser is written by its app on every sync, so leaving it
-     * in place would show the person the same night twice in their history forever, and a
-     * one-off cleanup script would only hold until the next app was connected. Removal is
-     * safe because the health store still holds both records — nothing here is the only
-     * copy — and it is scoped to rows this batch actually saw overlap.
+     * Self-healing on purpose: a mirrored copy is written by its app on every sync, so leaving
+     * it would show the same night twice forever. Removal is safe because nothing here is the
+     * only copy — a duplicate's twin survives, and an absorbed piece lives on in `parts`.
      */
-    const losers = superseded.map((row) => row.externalId).filter(Boolean);
-    if (losers.length) {
-        const removed = await SleepSession.deleteMany({
-            userId, source, externalId: { $in: losers },
-        });
-        if (removed.deletedCount) {
-            console.log(
-                `🌙 Dropped ${removed.deletedCount} duplicate sleep row(s) for u=${userId} ` +
-                `— another app had already recorded the same night`
-            );
-        }
+    const identities = new Set(merged.map((row) => row.externalId));
+    const orphaned = [...storedIds.values()].filter((row) => !identities.has(row.externalId));
+    if (orphaned.length) {
+        for (const row of orphaned) days.add(row.day);
+        await SleepSession.deleteMany({ _id: { $in: orphaned.map((row) => row._id) } });
+        console.log(
+            `🌙 Folded ${orphaned.length} sleep row(s) for u=${userId} into another — `
+            + 'a duplicate of the same night, or a piece of a longer sleep'
+        );
     }
 
     return days;
@@ -908,6 +1031,7 @@ const ingestBatch = async ({
 
 module.exports = {
     ingestBatch,
+    joinSleep,
     absorbStoreTwins,
     ingestSpo2,
     ingestTemperature,

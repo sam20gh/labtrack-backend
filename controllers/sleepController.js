@@ -363,7 +363,7 @@ exports.getOverview = async (req, res) => {
 
         const [nights, schedules] = await Promise.all([
             SleepSession.find({ userId, day: { $gte: days[0], $lte: days[days.length - 1] } })
-                .select('-segments')
+                .select('-segments -parts')
                 .sort({ endedAt: 1 })
                 .lean(),
             SleepSchedule.find({ userId }).sort({ bedtimeMin: 1 }).lean(),
@@ -521,7 +521,7 @@ exports.listNights = async (req, res) => {
 
         const [plan, nights, total] = await Promise.all([
             SleepPlan.findOne({ userId }).select('goalMinutes').lean(),
-            SleepSession.find(filter).select('-segments').sort(order)
+            SleepSession.find(filter).select('-segments -parts').sort(order)
                 .skip(Number(skip) || 0).limit(capped).lean(),
             SleepSession.countDocuments(filter),
         ]);
@@ -813,7 +813,7 @@ exports.getInsight = async (req, res) => {
         const [plan, nights, previousNights] = await Promise.all([
             SleepPlan.findOne({ userId }).select('goalMinutes guidance').lean(),
             SleepSession.find({ userId, day: { $gte: days[0], $lte: days[days.length - 1] } })
-                .select('-segments').sort({ endedAt: 1 }).lean(),
+                .select('-segments -parts').sort({ endedAt: 1 }).lean(),
             previousDays.length
                 ? SleepSession.find({
                     userId,
@@ -927,7 +927,7 @@ exports.getRecord = async (req, res) => {
         const [plan, sessions, previous, earlier] = await Promise.all([
             SleepPlan.findOne({ userId }).select('goalMinutes').lean(),
             SleepSession.find({ userId, day: { $gte: days[0], $lte: days[days.length - 1] } })
-                .select(range === '1d' ? '' : '-segments')
+                .select(range === '1d' ? '-parts' : '-segments -parts')
                 .sort({ startedAt: 1 })
                 .lean(),
             previousDays.length
@@ -943,7 +943,7 @@ exports.getRecord = async (req, res) => {
         });
 
         if (range === '1d') {
-            const { night, naps } = classifyDay(sessions, tzOffset);
+            const { night, naps } = classifyDay(sessions, tzOffset, { goalMinutes: plan?.goalMinutes });
             record.timeline = [
                 ...(night ? [{ kind: 'night', session: night }] : []),
                 ...naps.map((nap) => ({ kind: 'nap', session: nap })),
@@ -989,7 +989,7 @@ exports.getScore = async (req, res) => {
         const [plan, nights] = await Promise.all([
             SleepPlan.findOne({ userId }).select('goalMinutes').lean(),
             SleepSession.find({ userId, day: { $gte: days[0], $lte: days[days.length - 1] } })
-                .select('-segments').sort({ endedAt: -1 }).lean(),
+                .select('-segments -parts').sort({ endedAt: -1 }).lean(),
         ]);
 
         const latest = nights[0] || null;

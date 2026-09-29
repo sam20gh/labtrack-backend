@@ -29,12 +29,21 @@
  *    naps are set aside: the longest. The only day where the two screens can disagree is one
  *    whose only session was a 40-minute afternoon nap — the dashboard draws it as a very
  *    short night and this draws it as what it was.
+ * 2b. **Pieces of one sleep are joined before anything is chosen.** A source that reports a
+ *    night in blocks — the J-Style bracelet sends one per two hours — would otherwise hand
+ *    this "the longest block" as the night and discard the rest. Ingest joins them
+ *    (`utils/sleepStitch.js`); `classifyDay` joins again, at the same `STITCH_GAP_MIN`, for
+ *    what ingest cannot — a hand-entered night beside a device one, or rows stored before
+ *    joining existed. A joined view carries the longest piece's `_id` and lists every
+ *    piece in `partIds`.
  * 3. **The stacked bar sums to the time asleep.** A source that reports a total and no stages
  *    still measured a night, so the remainder is drawn as `unstagedMin` rather than being
  *    dropped — dropping it would draw a seven-hour night as a two-hour bar. Awake is drawn
  *    on top and is not part of the sum, because time awake in bed is not sleep.
  */
 const { meanClock, clockSpread, localMinutes, stageBreakdown, comparePeriods } = require('./sleepInsight');
+const { clusterSessions, mergeSessions, STITCH_GAP_MIN } = require('./sleepStitch');
+const { scoreNight } = require('./sleepScore');
 
 const finite = (v) => Number.isFinite(v);
 const sum = (values) => values.reduce((a, b) => a + b, 0);
@@ -81,16 +90,38 @@ const gapBetween = (a, b) => {
 };
 
 /**
+ * The day's sessions with the pieces of one sleep joined — see rule 2b. A session that stands
+ * alone is returned as it is. A joined one is rescored, because each piece was scored as if
+ * it were a whole night.
+ */
+const joinPieces = (sessions = [], goalMinutes = null) =>
+    clusterSessions(sessions, STITCH_GAP_MIN).map((cluster) => {
+        if (cluster.length === 1) return cluster[0];
+        const longest = cluster.reduce((a, b) => (asleepOf(b) > asleepOf(a) ? b : a));
+        const last = cluster.reduce((a, b) => (new Date(b.endedAt) > new Date(a.endedAt) ? b : a));
+        const figures = mergeSessions(cluster);
+        return {
+            ...longest,
+            ...figures,
+            _id: longest._id,
+            day: last.day,
+            score: scoreNight({ ...figures, goalMinutes }),
+            partIds: cluster.map((p) => String(p._id)),
+        };
+    });
+
+/**
  * One day's sessions split into its night and its naps. Fragments that are neither — the
  * shorter half of a split night — are left out, which is what the dashboard does with them.
  *
- * Two passes: the core-window naps come out first, the night is the longest of what is
- * left, and only then can "clear of the night" be asked of the remainder.
+ * Three passes: pieces of one sleep are joined (rule 2b), the core-window naps come out, the
+ * night is the longest of what is left, and only then can "clear of the night" be asked of
+ * the remainder.
  */
-const classifyDay = (sessions = [], tzOffset = 0) => {
+const classifyDay = (sessions = [], tzOffset = 0, { goalMinutes = null } = {}) => {
     const naps = [];
     const rest = [];
-    for (const s of sessions) (isNap(s, tzOffset) ? naps : rest).push(s);
+    for (const s of joinPieces(sessions, goalMinutes)) (isNap(s, tzOffset) ? naps : rest).push(s);
     const night = rest.slice().sort((a, b) => (b.asleepMin || 0) - (a.asleepMin || 0))[0] || null;
     if (night) {
         for (const s of rest) {
@@ -142,11 +173,11 @@ const napView = (nap, tzOffset) => ({
 });
 
 /** Every session in the window, grouped by its (wake) day and split. */
-const byDay = (sessions = [], tzOffset = 0) => {
+const byDay = (sessions = [], tzOffset = 0, goalMinutes = null) => {
     const grouped = new Map();
     for (const s of sessions) grouped.set(s.day, [...(grouped.get(s.day) || []), s]);
     const out = new Map();
-    for (const [day, rows] of grouped) out.set(day, classifyDay(rows, tzOffset));
+    for (const [day, rows] of grouped) out.set(day, classifyDay(rows, tzOffset, { goalMinutes }));
     return out;
 };
 
@@ -230,7 +261,7 @@ const buildRecord = ({
     sessions = [], previous = null, days = [], range = '1w', goalMinutes = null, tzOffset = 0,
 }) => {
     const bucket = BUCKET_FOR[range] || 'day';
-    const split = byDay(sessions, tzOffset);
+    const split = byDay(sessions, tzOffset, goalMinutes);
     const series = chunkDays(days, bucket).map((chunk) => bucketView(chunk, split, tzOffset));
 
     const nights = days.map((d) => split.get(d)?.night).filter(Boolean);
@@ -244,7 +275,7 @@ const buildRecord = ({
 
     let comparison = null;
     if (previous) {
-        const prevNights = [...byDay(previous, tzOffset).values()].map((x) => x.night).filter(Boolean);
+        const prevNights = [...byDay(previous, tzOffset, goalMinutes).values()].map((x) => x.night).filter(Boolean);
         comparison = {
             asleepMin: comparePeriods(nights, prevNights, 'asleepMin'),
             score: comparePeriods(nights, prevNights, 'score'),
@@ -329,6 +360,7 @@ function shareOf(breakdown, stage) {
 module.exports = {
     buildRecord,
     classifyDay,
+    joinPieces,
     dayTotal,
     stackNight,
     isNap,

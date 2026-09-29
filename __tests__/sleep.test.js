@@ -533,7 +533,7 @@ describe('two apps writing the same night', () => {
         expect(rows[1].asleepMin).toBe(35);
     });
 
-    it('leaves two adjacent stretches of a split night alone', async () => {
+    it('joins two adjacent stretches of a split night into one', async () => {
         const id = userId();
         await ingestBatch({
             userId: id,
@@ -544,8 +544,12 @@ describe('two apps writing the same night', () => {
                 { externalId: 'part-2', startedAt: '2026-09-05T01:30:00.000Z', endedAt: '2026-09-05T06:00:00.000Z' },
             ],
         });
-        // They touch but do not overlap: a watch splitting a disturbed night, not a duplicate.
-        expect(await SleepSession.countDocuments({ userId: id })).toBe(2);
+        // Not a duplicate — a watch splitting a disturbed night. Half an hour up is still one
+        // night, so it is stored as one, with both stretches kept. See utils/sleepStitch.js.
+        const rows = await SleepSession.find({ userId: id }).lean();
+        expect(rows).toHaveLength(1);
+        expect(rows[0].asleepMin).toBe(180 + 270);
+        expect(rows[0].parts.map((p) => p.externalId)).toEqual(['part-1', 'part-2']);
     });
 });
 
