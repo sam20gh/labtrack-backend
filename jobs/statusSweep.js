@@ -8,6 +8,12 @@
  *
  * Only `upcoming`, `due`, and `urgent` are mutable. An item the person ordered, booked,
  * completed, or dismissed is never rewritten by the sweep.
+ *
+ * **Lifestyle items are not dated work and are held at `upcoming`.** The generator writes
+ * them with `dueDate: today` because the field is required, and the sweep used to roll that
+ * into `urgent` the next morning — so "ask your prescriber whether 25 mg of zinc…" read
+ * "Overdue" in the app and was offered on the home screen as something to order. Advice has
+ * no deadline to miss. The last update walks any already swept back, so no migration is needed.
  */
 const PlanItem = require('../models/PlanItem');
 const Professional = require('../models/Professional');
@@ -64,10 +70,11 @@ const runStatusSweep = async () => {
      * items. Caught by a test asserting protected statuses were untouched.
      */
     const mutableExcept = (excluded) => ({
+        type: { $ne: 'lifestyle' },
         status: { $in: PlanItem.MUTABLE_STATUSES.filter((s) => s !== excluded) },
     });
 
-    const [toUrgent, toDue, toUpcoming] = await Promise.all([
+    const [toUrgent, toDue, toUpcoming, adviceReset] = await Promise.all([
         PlanItem.updateMany(
             { ...mutableExcept('urgent'), dueDate: { $lt: today } },
             { $set: { status: 'urgent' } }
@@ -82,6 +89,10 @@ const runStatusSweep = async () => {
             { ...mutableExcept('upcoming'), dueDate: { $gte: tomorrow } },
             { $set: { status: 'upcoming' } }
         ),
+        PlanItem.updateMany(
+            { type: 'lifestyle', status: { $in: ['due', 'urgent'] } },
+            { $set: { status: 'upcoming' } }
+        ),
     ]);
 
     const suggested = await attachSuggestions();
@@ -90,6 +101,7 @@ const runStatusSweep = async () => {
         urgent: toUrgent.modifiedCount,
         due: toDue.modifiedCount,
         upcoming: toUpcoming.modifiedCount,
+        adviceReset: adviceReset.modifiedCount,
         professionalsAttached: suggested,
     };
 

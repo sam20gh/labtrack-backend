@@ -266,3 +266,33 @@ describe('regeneratePlan — overlapping generations', () => {
         expect(await dietTitles()).toEqual(['New advice']);
     });
 });
+
+/**
+ * Advice is not dated work. The generator writes lifestyle items with `dueDate: today`, and
+ * the sweep used to roll that to `urgent` the next morning, so a sentence about zinc read
+ * "Overdue" and home offered to order it.
+ */
+describe('runStatusSweep — advice has no deadline', () => {
+    const { runStatusSweep } = require('../jobs/statusSweep');
+    const userId = new mongoose.Types.ObjectId();
+
+    it('never makes advice overdue, and walks back any it already did', async () => {
+        const yesterday = daysFromNow(-1);
+        const [fresh, swept, screening, dismissed] = await PlanItem.create([
+            { userId, type: 'lifestyle', condition: 'supplementation', title: 'Ask about zinc', dueDate: yesterday, status: 'upcoming' },
+            { userId, type: 'lifestyle', condition: 'diet', title: 'More fibre', dueDate: yesterday, status: 'urgent' },
+            { userId, type: 'test', title: 'Lipid panel', dueDate: yesterday, status: 'upcoming' },
+            { userId, type: 'lifestyle', condition: 'sleep', title: 'Earlier nights', dueDate: yesterday, status: 'dismissed' },
+        ]);
+
+        await runStatusSweep();
+
+        const status = async (doc) => (await PlanItem.findById(doc._id).lean()).status;
+        expect(await status(fresh)).toBe('upcoming');
+        expect(await status(swept)).toBe('upcoming');
+        // The sweep still does its job on real dated items…
+        expect(await status(screening)).toBe('urgent');
+        // …and still never touches a decision the person made.
+        expect(await status(dismissed)).toBe('dismissed');
+    });
+});
