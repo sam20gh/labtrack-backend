@@ -127,6 +127,33 @@ const syncGuidance = async (userId, plan, user) => {
 };
 
 /**
+ * The plan a meal is judged against, synced first.
+ *
+ * The analysers used to read the stored `NutritionPlan` as it was left by the last dashboard
+ * visit. Guidance is derived state, so a person who restored (or was given) diet advice and
+ * went straight to the camera from the quick actions was judged against the old guidance —
+ * or against none, and every meal came back unassessed. The same sync every read runs.
+ */
+const planForAnalysis = async (userId) => {
+    const [existing, user] = await Promise.all([
+        NutritionPlan.findOne({ userId }),
+        User.findById(userId).select('dob gender height weight healthAssessment').lean(),
+    ]);
+    const plan = await syncGuidance(userId, existing, user);
+    return plan ? plan.toObject() : null;
+};
+
+/**
+ * Why a draft carries no verdict, for the review screen to say rather than leave a gap.
+ * `no_guidance` is the person's plan saying nothing about diet — fixable from the plan.
+ * `not_judged` is guidance that existed and the model still declined to use.
+ */
+const verdictState = (plan, draft) => {
+    if (draft.analysis.alignment !== 'unassessed') return 'judged';
+    return (plan?.guidance || []).some((g) => g.directive) ? 'not_judged' : 'no_guidance';
+};
+
+/**
  * GET /api/nutrition/plan — the person's targets and the plan advice behind them.
  *
  * Returns `plan: null` rather than 404 when they have not set one up: "no plan yet" is the
@@ -358,7 +385,7 @@ exports.analyseMealPhoto = async (req, res) => {
             return res.status(400).json({ message: 'Image exceeds the 10MB limit' });
         }
 
-        const plan = await NutritionPlan.findOne({ userId: req.auth.userId }).lean();
+        const plan = await planForAnalysis(req.auth.userId);
         const result = await analysePhoto(
             fs.readFileSync(tempPath),
             req.file.mimetype,
@@ -390,9 +417,11 @@ exports.analyseMealPhoto = async (req, res) => {
           record, which is the right way round.
         */
         const imageUrl = await imageStore.uploadImageOrNull(tempPath);
+        const draft = toMealDraft(result.data, { source: 'photo', model: result.model });
 
         res.json({
-            draft: toMealDraft(result.data, { source: 'photo', model: result.model }),
+            draft,
+            verdict: verdictState(plan, draft),
             imageUrl,
             needsConfirmation: (result.data.confidence ?? 0) < CONFIDENCE_THRESHOLD,
             uncertainties: result.data.uncertainties || [],
@@ -421,7 +450,7 @@ exports.estimateFromDescription = async (req, res) => {
             return res.status(400).json({ message: 'Describe what you ate, e.g. "grilled salmon with new potatoes"' });
         }
 
-        const plan = await NutritionPlan.findOne({ userId: req.auth.userId }).lean();
+        const plan = await planForAnalysis(req.auth.userId);
         const result = await analyseDescription(description.slice(0, 500), plan);
 
         if (!result.ok) {
@@ -434,8 +463,10 @@ exports.estimateFromDescription = async (req, res) => {
             });
         }
 
+        const draft = toMealDraft(result.data, { source: 'description', model: result.model });
         res.json({
-            draft: toMealDraft(result.data, { source: 'description', model: result.model }),
+            draft,
+            verdict: verdictState(plan, draft),
             needsConfirmation: (result.data.confidence ?? 0) < CONFIDENCE_THRESHOLD,
             uncertainties: result.data.uncertainties || [],
         });

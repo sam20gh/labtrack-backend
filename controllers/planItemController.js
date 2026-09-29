@@ -48,13 +48,37 @@ exports.createPlanItem = async (req, res) => {
  */
 const USER_SETTABLE = ['ordered', 'booked', 'completed', 'dismissed'];
 
+/**
+ * `restore` is the one way back, and only from `dismissed`.
+ *
+ * Dismissing used to be permanent, and diet, sleep and exercise advice feed their tracker
+ * while open — so one mis-tap on "Dismiss" silently switched off every meal's plan verdict
+ * with no way to switch it on again. The status is not the client's to name: advice goes
+ * back to `upcoming` (it has no deadline), dated work to whatever its due date says today,
+ * so a restored overdue screening does not read "Scheduled" until the next sweep.
+ */
+const restoreDismissed = async (req, res) => {
+    const item = await PlanItem.findOne({ _id: req.params.id, userId: req.auth.userId });
+    if (!item) return res.status(404).json({ message: 'Plan item not found' });
+    if (item.status !== 'dismissed') {
+        return res.status(409).json({ message: 'Only a dismissed item can be restored' });
+    }
+
+    item.status = item.type === 'lifestyle' ? 'upcoming' : PlanItem.deriveStatus(item.dueDate);
+    await item.save();
+    console.log(`↩️ Plan item ${item._id} restored to ${item.status}`);
+    res.json({ message: 'Plan item restored', item });
+};
+
 exports.updateStatus = async (req, res) => {
     try {
         const { status, orderId, appointmentId, resultingTestResultId } = req.body;
 
+        if (status === 'restore') return await restoreDismissed(req, res);
+
         if (!USER_SETTABLE.includes(status)) {
             return res.status(400).json({
-                message: `status must be one of: ${USER_SETTABLE.join(', ')}`,
+                message: `status must be one of: ${[...USER_SETTABLE, 'restore'].join(', ')}`,
             });
         }
 
