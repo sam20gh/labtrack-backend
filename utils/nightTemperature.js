@@ -89,14 +89,27 @@ const affectedDays = ({ tempDays = [], sleepDays = [] }) => {
     return [...out].sort();
 };
 
-/** `{ day, celsius }` for every night in a range that has a figure — the tracker's input. */
+/**
+ * `{ day, celsius, source }` for every night in a range that has a figure — the tracker's
+ * input. The bracelet's own median wins where both exist; Apple Watch's reported night
+ * fills the rest. `source` travels with each night because the two sensors sit on different
+ * baselines, and `cycleForecast.temperatureShifts` must never compare one with the other.
+ */
 const nightsBetween = async (userId, from, to) => {
     const rows = await DailyMetrics.find({
         userId,
         day: { $gte: from, $lte: to },
-        'temperature.wristSleepMedian': { $ne: null },
-    }).select('day temperature.wristSleepMedian').sort({ day: 1 }).lean();
-    return rows.map((r) => ({ day: r.day, celsius: r.temperature.wristSleepMedian }));
+        $or: [
+            { 'temperature.wristSleepMedian': { $ne: null } },
+            { 'temperature.wristSleepReported': { $ne: null } },
+        ],
+    }).select('day temperature').sort({ day: 1 }).lean();
+    return rows.map((r) => {
+        const t = r.temperature || {};
+        return t.wristSleepMedian != null
+            ? { day: r.day, celsius: t.wristSleepMedian, source: 'bracelet' }
+            : { day: r.day, celsius: t.wristSleepReported, source: t.wristSleepReportedSource || 'device' };
+    });
 };
 
 module.exports = { MIN_READINGS, nightMedian, recomputeNight, affectedDays, nightsBetween };

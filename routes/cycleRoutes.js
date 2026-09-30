@@ -26,6 +26,7 @@ router.get('/days/:day', c.getDay);
 router.put('/days/:day', c.putDay);
 router.delete('/days/:day', c.deleteDay);
 
+router.delete('/imported', c.deleteImported);
 router.delete('/data', c.deleteAll);
 
 module.exports = router;

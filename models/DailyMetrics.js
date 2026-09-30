@@ -171,6 +171,15 @@ const TemperatureTotalsSchema = new mongoose.Schema({
      */
     wristSleepMedian: { type: Number, default: null },
     wristSleepReadings: { type: Number, default: 0 },
+    /**
+     * A night figure a health store computed itself — Apple Watch's sleeping wrist
+     * temperature, one sample per night. Kept apart from `wristSleepMedian` rather than
+     * written into it: it is a different sensor with a different baseline, and
+     * `nightTemperature.recomputeNight` would otherwise overwrite it with null on any night
+     * the bracelet did not take enough readings.
+     */
+    wristSleepReported: { type: Number, default: null },
+    wristSleepReportedSource: { type: String, default: null },
 }, { _id: false });
 
 const DailyMetricsSchema = new mongoose.Schema({

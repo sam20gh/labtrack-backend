@@ -57,33 +57,50 @@ const localDay = (date, tzOffset = 0) =>
 const isBleeding = (flow) => BLEEDING.has(flow);
 
 /**
- * One row per day, oldest first.
+ * One row per day, oldest first, merged across sources **field by field**.
  *
- * A day can have a manual row and, from phase 2, rows mirrored from a health store. The
- * person's own row wins outright — it is their correction of whatever an app copied — and
- * between two stores the earliest-created wins, so the answer never depends on sync order.
+ * A day can have the person's own row and rows mirrored from a health store. Flow comes
+ * from the manual row when it states one, or when it explicitly cleared one
+ * (`flowCleared`); otherwise from the store. Symptoms, mood and notes are only ever the
+ * app's. Merging whole rows instead — the manual row simply winning — would let a logged
+ * headache erase a heavy day Health Connect recorded, which is the failure this exists to
+ * prevent. Between two stores the earliest-created row with a flow wins, so the answer never
+ * depends on sync order.
+ *
+ * `source` on the result is where the **flow** came from.
  */
 const mergeDays = (rows = []) => {
     const byDay = new Map();
-    const rank = (r) => (r.source === 'manual' ? 0 : 1);
     for (const r of rows) {
         if (!isDay(r.day)) continue;
-        const held = byDay.get(r.day);
-        if (!held || rank(r) < rank(held)
-            || (rank(r) === rank(held) && new Date(r.createdAt || 0) < new Date(held.createdAt || 0))) {
-            byDay.set(r.day, r);
-        }
+        if (!byDay.has(r.day)) byDay.set(r.day, []);
+        byDay.get(r.day).push(r);
     }
-    return [...byDay.values()]
-        .map((r) => ({
-            day: r.day,
-            flow: r.flow ?? null,
-            symptoms: r.symptoms || [],
-            mood: r.mood ?? null,
-            note: r.note ?? null,
-            source: r.source || 'manual',
-        }))
-        .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+    const created = (r) => new Date(r.createdAt || 0).getTime();
+    const out = [];
+    for (const [day, list] of byDay) {
+        const manual = list.find((r) => (r.source || 'manual') === 'manual') || null;
+        const stores = list.filter((r) => (r.source || 'manual') !== 'manual').sort((a, b) => created(a) - created(b));
+        const store = stores.find((r) => r.flow) || stores[0] || null;
+
+        let flow = null;
+        let source = 'manual';
+        if (manual?.flow) {
+            flow = manual.flow;
+        } else if (!manual?.flowCleared && store?.flow) {
+            flow = store.flow;
+            source = store.source;
+        }
+        out.push({
+            day,
+            flow,
+            symptoms: manual?.symptoms || [],
+            mood: manual?.mood ?? null,
+            note: manual?.note ?? null,
+            source,
+        });
+    }
+    return out.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 };
 
 /**

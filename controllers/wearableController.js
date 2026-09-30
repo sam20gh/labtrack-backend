@@ -90,6 +90,8 @@ exports.sync = async (req, res) => {
             // HealthKit and Health Connect batch is posted without them and must keep
             // working unchanged.
             spo2 = [], temperature = [], bloodPressure = [], ecg = [],
+            // The cycle import. Only a phone that switched it on sends these.
+            cycle = [], cycleWindow = null, nightTemperature = [],
         } = req.body || {};
 
         if (!['apple_health', 'health_connect', 'aggregator', 'jstyle_bracelet'].includes(platform)) {
@@ -97,7 +99,8 @@ exports.sync = async (req, res) => {
         }
 
         const total = activities.length + sleep.length + heart.length + days.length
-            + spo2.length + temperature.length + bloodPressure.length + ecg.length;
+            + spo2.length + temperature.length + bloodPressure.length + ecg.length
+            + cycle.length + nightTemperature.length;
         if (total > MAX_ROWS_PER_BATCH) {
             return res.status(413).json({
                 message: `Batch too large: ${total} rows. Page at ${MAX_ROWS_PER_BATCH}.`,
@@ -133,6 +136,9 @@ exports.sync = async (req, res) => {
             temperature,
             bloodPressure,
             ecg,
+            cycle,
+            cycleWindow,
+            nightTemperature,
             goalMinutes: plan?.goalMinutes,
         });
 

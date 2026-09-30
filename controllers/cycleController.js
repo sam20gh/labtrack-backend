@@ -128,15 +128,25 @@ const dayView = (row) => (row ? {
 
 /* ----------------------------------------------------------------- plan */
 
+/** How many days each health store has contributed. For the settings screen's import row. */
+const importedCounts = async (userId) => {
+    const rows = await CycleDay.aggregate([
+        { $match: { userId: new (require('mongoose').Types.ObjectId)(String(userId)), source: { $ne: 'manual' } } },
+        { $group: { _id: '$source', days: { $sum: 1 } } },
+    ]);
+    return Object.fromEntries(rows.map((r) => [r._id, r.days]));
+};
+
 /** GET /api/cycle/plan */
 exports.getPlan = async (req, res) => {
     try {
         const userId = req.user.id;
-        const [plan, user] = await Promise.all([
+        const [plan, user, imported] = await Promise.all([
             CyclePlan.findOne({ userId }).lean(),
             User.findById(userId).select('gender').lean(),
+            importedCounts(userId),
         ]);
-        res.json({ access: accessFor(user, plan), plan: planView(plan), statuses: STATUSES });
+        res.json({ access: accessFor(user, plan), plan: planView(plan), statuses: STATUSES, imported });
     } catch (err) {
         console.error('❌ Loading cycle plan failed:', err);
         res.status(500).json({ message: 'Could not load your cycle settings' });
@@ -284,8 +294,7 @@ exports.getDay = async (req, res) => {
         const userId = req.user.id;
         const { day } = req.params;
         if (!isDay(day)) return res.status(400).json({ message: 'Not a date' });
-        const rows = await CycleDay.find({ userId, day }).lean();
-        res.json({ entry: dayView(mergeDays(rows)[0] || null) });
+        res.json({ entry: dayView(await mergedDay(userId, day)) });
     } catch (err) {
         console.error('❌ Loading cycle day failed:', err);
         res.status(500).json({ message: 'Could not load that day' });
@@ -295,25 +304,30 @@ exports.getDay = async (req, res) => {
 /**
  * Write the manual row for a day, or remove it when nothing is left on it.
  *
- * Shared by the day log and the range edit, so a day that ends up with no flow, no symptoms,
- * no mood and no note is deleted by both — an empty row would still be "a day somebody
- * logged" to anything that counts rows.
+ * Shared by the day log and the range edit, so a day that ends up with nothing on it is
+ * deleted by both — an empty row would still be "a day somebody logged" to anything that
+ * counts rows. The one exception is `flowCleared`: a manual row that says "not a period day"
+ * about a day a health store says was is kept, empty or not, because it is the only thing
+ * standing between the person's correction and the mirrored flow (see `cycleEngine.mergeDays`).
  */
 const writeManual = async (userId, day, fields) => {
-    const empty = !fields.flow && !fields.symptoms?.length && !fields.mood && !fields.note;
-    if (empty) {
+    const mirrored = await CycleDay.findOne({ userId, day, source: { $ne: 'manual' }, flow: { $ne: null } }).lean();
+    const flowCleared = fields.flow === null && fields.keepStoreFlow !== true && Boolean(mirrored);
+    const { keepStoreFlow, ...stored } = fields;
+    const empty = !stored.flow && !stored.symptoms?.length && !stored.mood && !stored.note;
+    if (empty && !flowCleared) {
         await CycleDay.deleteOne({ userId, day, source: 'manual' });
-        // A store row for the same day would otherwise reappear through the merge; a manual
-        // row with nothing on it is how "not a period day" overrides a mirrored one.
-        const mirrored = await CycleDay.exists({ userId, day, source: { $ne: 'manual' } });
-        if (!mirrored) return null;
+        return null;
     }
     return CycleDay.findOneAndUpdate(
         { userId, day, source: 'manual' },
-        { $set: { ...fields }, $setOnInsert: { userId, day, source: 'manual' } },
+        { $set: { ...stored, flowCleared }, $setOnInsert: { userId, day, source: 'manual' } },
         { upsert: true, new: true, runValidators: true },
     ).lean();
 };
+
+/** The day as a screen reads it — the manual row merged with any store rows. */
+const mergedDay = async (userId, day) => mergeDays(await CycleDay.find({ userId, day }).lean())[0] || null;
 
 /**
  * PUT /api/cycle/days/:day
@@ -328,7 +342,11 @@ exports.putDay = async (req, res) => {
         if (!isDay(day)) return res.status(400).json({ message: 'Not a date' });
         if (day > todayFor(req)) return res.status(400).json({ message: 'You can only log days that have happened' });
 
-        const { flow = null, symptoms = [], mood = null, note = null } = req.body || {};
+        // `flow` omitted means "whatever the health store says" — the log screen sends it only
+        // when somebody touched it, so saving a headache does not freeze an imported flow.
+        const { symptoms = [], mood = null, note = null } = req.body || {};
+        const flowGiven = Object.prototype.hasOwnProperty.call(req.body || {}, 'flow');
+        const flow = flowGiven ? req.body.flow : null;
         if (flow !== null && !FLOWS.includes(flow)) return res.status(400).json({ message: 'Unknown flow' });
         if (!Array.isArray(symptoms)) return res.status(400).json({ message: 'symptoms must be a list' });
         const cleanSymptoms = [...new Set(symptoms)].filter((s) => SYMPTOMS.includes(s));
@@ -339,10 +357,10 @@ exports.putDay = async (req, res) => {
         const cleanNote = typeof note === 'string' && note.trim() ? note.trim().slice(0, 500) : null;
 
         const row = await writeManual(userId, day, {
-            flow, symptoms: cleanSymptoms, mood: cleanMood, note: cleanNote,
+            flow, symptoms: cleanSymptoms, mood: cleanMood, note: cleanNote, keepStoreFlow: !flowGiven,
         });
         console.log(`🌸 Cycle day ${row ? 'saved' : 'cleared'} u=${userId}`);
-        res.json({ entry: dayView(row) });
+        res.json({ entry: dayView(await mergedDay(userId, day)) });
     } catch (err) {
         console.error('❌ Saving cycle day failed:', err);
         res.status(500).json({ message: 'Could not save that day' });
@@ -385,15 +403,27 @@ exports.putPeriodDays = async (req, res) => {
         if (add.some((d) => d > today)) return res.status(400).json({ message: 'You can only log days that have happened' });
 
         const touched = [...new Set([...add, ...remove])];
-        const existing = new Map(
-            (await CycleDay.find({ userId, day: { $in: touched }, source: 'manual' }).lean()).map((r) => [r.day, r]),
-        );
+        const rows = await CycleDay.find({ userId, day: { $in: touched } }).lean();
+        const existing = new Map(rows.filter((r) => r.source === 'manual').map((r) => [r.day, r]));
+        // Merged, so a day a health store already has as a period day is not overwritten
+        // with "unspecified" and lose the flow the store recorded.
+        const merged = new Map(mergeDays(rows).map((d) => [d.day, d]));
 
         let added = 0;
         let removed = 0;
         for (const day of new Set(add)) {
             const row = existing.get(day);
-            if (isBleeding(row?.flow)) continue;
+            if (isBleeding(merged.get(day)?.flow)) continue;
+            // A store row with bleeding that the person had cleared: undo the clear rather
+            // than invent a flow over the one the store recorded.
+            const storeBleeds = rows.some((r) => r.day === day && r.source !== 'manual' && isBleeding(r.flow));
+            if (storeBleeds && row?.flowCleared) {
+                await writeManual(userId, day, {
+                    flow: null, symptoms: row.symptoms || [], mood: row.mood ?? null, note: row.note ?? null, keepStoreFlow: true,
+                });
+                added += 1;
+                continue;
+            }
             await writeManual(userId, day, {
                 flow: 'unspecified',
                 symptoms: row?.symptoms || [],
@@ -491,6 +521,34 @@ exports.getInsight = async (req, res) => {
     } catch (err) {
         console.error('❌ Loading cycle insight failed:', err);
         res.status(500).json({ message: 'Could not load your cycle insight' });
+    }
+};
+
+/**
+ * DELETE /api/cycle/imported?source=health_connect|apple_health
+ *
+ * The days a health store contributed, and nothing the person logged. For somebody who
+ * switches the import off and does not want what it brought in either. The store still holds
+ * its own copy; switching the import back on brings them back.
+ */
+exports.deleteImported = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { source } = req.query;
+        if (!['health_connect', 'apple_health'].includes(source)) {
+            return res.status(400).json({ message: 'source must be health_connect or apple_health' });
+        }
+        const { deletedCount } = await CycleDay.deleteMany({ userId, source });
+        // A manual "not a period day" only meant something against a store row.
+        await CycleDay.updateMany({ userId, source: 'manual', flowCleared: true }, { $set: { flowCleared: false } });
+        await CycleDay.deleteMany({
+            userId, source: 'manual', flow: null, symptoms: { $size: 0 }, mood: null, note: null,
+        });
+        console.log(`🌸 Imported cycle days removed u=${userId} source=${source} (${deletedCount})`);
+        res.json({ deletedDays: deletedCount });
+    } catch (err) {
+        console.error('❌ Removing imported cycle days failed:', err);
+        res.status(500).json({ message: 'Could not remove the imported days' });
     }
 };
 

@@ -103,13 +103,21 @@ describe('days become periods', () => {
         expect(cyclesFrom(periods)).toEqual([]);
     });
 
-    it('a manual row wins over a mirrored one for the same day', () => {
+    it('merges field by field: a logged headache does not hide an imported period day', () => {
         const merged = mergeDays([
             { day: '2026-09-02', flow: 'heavy', source: 'health_connect', createdAt: new Date(1) },
-            { day: '2026-09-02', flow: null, source: 'manual', createdAt: new Date(2) },
+            { day: '2026-09-02', flow: null, symptoms: ['headache'], source: 'manual', createdAt: new Date(2) },
         ]);
         expect(merged).toHaveLength(1);
-        expect(merged[0].flow).toBeNull();
+        expect(merged[0]).toMatchObject({ flow: 'heavy', symptoms: ['headache'], source: 'health_connect' });
+    });
+
+    it('a manual flow, or an explicit "not a period day", beats the store', () => {
+        const store = { day: '2026-09-02', flow: 'heavy', source: 'apple_health' };
+        expect(mergeDays([store, { day: '2026-09-02', flow: 'light', source: 'manual' }])[0])
+            .toMatchObject({ flow: 'light', source: 'manual' });
+        expect(mergeDays([store, { day: '2026-09-02', flow: null, flowCleared: true, source: 'manual' }])[0].flow)
+            .toBeNull();
     });
 });
 
@@ -568,5 +576,113 @@ describe('the assistant context', () => {
         expect(text).toMatch(/cycle day 21/);
         expect(text).toMatch(/2026-09-16 to 2026-09-20/);
         expect(text).toMatch(/not contraception/);
+    });
+});
+
+/* ------------------------------------------------------- health-store import */
+
+describe('importing from a health store', () => {
+    const today = engine.localDay(new Date(), 0);
+    const d = (n) => addDays(today, n);
+    const window = { from: d(-180), to: today };
+
+    it('writes one row per day, replaces the window, and never touches manual rows', async () => {
+        const user = await makeUser({ gender: 'Female' });
+        await CycleDay.create({ userId: user._id, day: d(-10), flow: null, symptoms: ['cramps'] });
+        await CycleDay.create({ userId: user._id, day: d(-400), flow: 'medium', source: 'health_connect' });
+
+        await ingestBatch({
+            userId: user._id, platform: 'health_connect', tzOffset: 0, cycleWindow: window,
+            cycle: [
+                { day: d(-10), flow: 'unspecified', externalId: 'p1' },
+                { day: d(-10), flow: 'heavy', externalId: 'f1' },
+                { day: d(-9), flow: 'medium', externalId: 'f2' },
+            ],
+        });
+        let rows = await CycleDay.find({ userId: user._id, source: 'health_connect' }).sort({ day: 1 }).lean();
+        expect(rows.map((r) => [r.day, r.flow])).toEqual([[d(-400), 'medium'], [d(-10), 'heavy'], [d(-9), 'medium']]);
+
+        // Deleted in the Health app: the next window no longer mentions it.
+        await ingestBatch({
+            userId: user._id, platform: 'health_connect', tzOffset: 0, cycleWindow: window,
+            cycle: [{ day: d(-10), flow: 'heavy', externalId: 'f1' }],
+        });
+        rows = await CycleDay.find({ userId: user._id, source: 'health_connect' }).sort({ day: 1 }).lean();
+        expect(rows.map((r) => r.day)).toEqual([d(-400), d(-10)]);
+        expect(await CycleDay.countDocuments({ userId: user._id, source: 'manual' })).toBe(1);
+
+        const { body } = await call(cycleController.getDay, { user: { id: user._id }, params: { day: d(-10) } });
+        expect(body.entry).toMatchObject({ flow: 'heavy', symptoms: ['cramps'], source: 'health_connect' });
+    });
+
+    it('a batch without a window deletes nothing', async () => {
+        const user = await makeUser({ gender: 'Female' });
+        await CycleDay.create({ userId: user._id, day: d(-5), flow: 'medium', source: 'apple_health' });
+        await ingestBatch({ userId: user._id, platform: 'apple_health', tzOffset: 0, activities: [] });
+        expect(await CycleDay.countDocuments({ userId: user._id })).toBe(1);
+    });
+
+    it('saving a day without touching its flow leaves the imported flow live', async () => {
+        const user = await makeUser({ gender: 'Female' });
+        await CycleDay.create({ userId: user._id, day: d(-2), flow: 'heavy', source: 'health_connect' });
+        await call(cycleController.putDay, {
+            user: { id: user._id }, params: { day: d(-2) }, query: { tzOffset: 0 }, body: { symptoms: ['bloating'] },
+        });
+        const manual = await CycleDay.findOne({ userId: user._id, source: 'manual' }).lean();
+        expect(manual).toMatchObject({ flow: null, flowCleared: false, symptoms: ['bloating'] });
+        await CycleDay.updateOne({ userId: user._id, source: 'health_connect' }, { $set: { flow: 'medium' } });
+        const { body } = await call(cycleController.getDay, { user: { id: user._id }, params: { day: d(-2) } });
+        expect(body.entry.flow).toBe('medium');
+    });
+
+    it('switching an imported period day off clears it, and switching it back on restores the store\'s flow', async () => {
+        const user = await makeUser({ gender: 'Female' });
+        await CycleDay.create({ userId: user._id, day: d(-2), flow: 'heavy', source: 'health_connect' });
+        const req = { user: { id: user._id }, query: { tzOffset: 0 } };
+
+        await call(cycleController.putPeriodDays, { ...req, body: { remove: [d(-2)] } });
+        let manual = await CycleDay.findOne({ userId: user._id, source: 'manual' }).lean();
+        expect(manual.flowCleared).toBe(true);
+        expect((await call(cycleController.getDay, { ...req, params: { day: d(-2) } })).body.entry.flow).toBeNull();
+
+        await call(cycleController.putPeriodDays, { ...req, body: { add: [d(-2)] } });
+        expect(await CycleDay.countDocuments({ userId: user._id, source: 'manual' })).toBe(0);
+        expect((await call(cycleController.getDay, { ...req, params: { day: d(-2) } })).body.entry.flow).toBe('heavy');
+    });
+
+    it('removes what a store imported, and nothing the person logged', async () => {
+        const user = await makeUser({ gender: 'Female' });
+        await CycleDay.create({ userId: user._id, day: d(-3), flow: 'heavy', source: 'apple_health' });
+        await CycleDay.create({ userId: user._id, day: d(-3), flow: null, flowCleared: true, source: 'manual' });
+        await CycleDay.create({ userId: user._id, day: d(-1), flow: 'light', source: 'manual' });
+
+        const { body } = await call(cycleController.deleteImported, { user: { id: user._id }, query: { source: 'apple_health' } });
+        expect(body.deletedDays).toBe(1);
+        const left = await CycleDay.find({ userId: user._id }).lean();
+        expect(left.map((r) => r.day)).toEqual([d(-1)]);
+    });
+
+    it('files an Apple Watch night under its day, keeps it through both rollups, and labels its source', async () => {
+        const { nightsBetween, recomputeNight } = require('../utils/nightTemperature');
+        const userId = new mongoose.Types.ObjectId();
+        await ingestBatch({
+            userId, platform: 'apple_health', tzOffset: 0,
+            nightTemperature: [{ day: '2026-09-20', celsius: 35.12, externalId: 'w1' }, { day: '2026-09-21', celsius: 12, externalId: 'bad' }],
+        });
+        await recomputeNight(userId, '2026-09-20');
+        await recomputeMetricDay(userId, '2026-09-20');
+        expect(await nightsBetween(userId, '2026-09-01', '2026-09-30'))
+            .toEqual([{ day: '2026-09-20', celsius: 35.12, source: 'apple_watch' }]);
+    });
+
+    it('never finds a shift by comparing two sensors', () => {
+        // Six bracelet nights at 33.0, then an Apple Watch appears at 35: a device change,
+        // not ovulation. The bracelet has more nights, so it alone is read.
+        const nights = [
+            ...Array.from({ length: 9 }, (_, i) => ({ day: addDays('2026-09-01', i), celsius: 33.0 + (i % 2) * 0.02, source: 'bracelet' })),
+            ...Array.from({ length: 3 }, (_, i) => ({ day: addDays('2026-09-10', i), celsius: 35.1, source: 'apple_watch' })),
+        ];
+        const periods = findPeriods(period('2026-09-01')).periods;
+        expect(fc.temperatureShifts(periods, nights, '2026-09-20')[0].shift).toBeNull();
     });
 });

@@ -186,7 +186,14 @@ const detectShift = (nights = []) => {
  */
 const temperatureShifts = (periods, nights, today) => periods.map((p, i) => {
     const end = periods[i + 1] ? addDays(periods[i + 1].start, -1) : today;
-    const inCycle = nights.filter((x) => x.day >= p.start && x.day <= end);
+    const all = nights.filter((x) => x.day >= p.start && x.day <= end);
+    // One sensor per cycle. The bracelet and an Apple Watch sit on different baselines, and a
+    // rise found by comparing one with the other is a change of device, not ovulation. The
+    // source with the most nights in the cycle is the one read.
+    const counts = {};
+    for (const x of all) counts[x.source || 'bracelet'] = (counts[x.source || 'bracelet'] || 0) + 1;
+    const main = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+    const inCycle = all.filter((x) => (x.source || 'bracelet') === main);
     const shift = detectShift(inCycle);
     return {
         cycleStart: p.start,

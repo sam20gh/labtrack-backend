@@ -132,6 +132,8 @@ const recomputeMetricDay = async (userId, day) => {
         // not know about. Carried over so rebuilding the day's totals cannot erase it.
         wristSleepMedian: existing?.temperature?.wristSleepMedian ?? null,
         wristSleepReadings: existing?.temperature?.wristSleepReadings ?? 0,
+        wristSleepReported: existing?.temperature?.wristSleepReported ?? null,
+        wristSleepReportedSource: existing?.temperature?.wristSleepReportedSource ?? null,
     };
 
     return DailyMetrics.findOneAndUpdate(

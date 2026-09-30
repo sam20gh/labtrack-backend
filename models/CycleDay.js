@@ -49,12 +49,22 @@ const CycleDaySchema = new mongoose.Schema({
     note: { type: String, maxlength: 500, default: null },
 
     /**
-     * Where the row came from. Only `manual` is written in phase 1; the health stores join in
-     * phase 2 with their own rows, and a manual row for the same day wins on read — the
-     * person's own correction beats what an app mirrored.
+     * Where the row came from. A health store's rows (`utils/healthSync.ingestCycle`) sit
+     * beside the person's own manual row for the same day and are merged field by field on
+     * read — see `cycleEngine.mergeDays`. Store rows carry flow only; symptoms, mood and
+     * notes are the app's.
      */
     source: { type: String, enum: SOURCES, default: 'manual' },
     externalId: { type: String, default: null },
+
+    /**
+     * Manual rows only: "this was not a period day", said about a day a health store says
+     * was. Without it, a manual row with no flow would be ambiguous — somebody who logged
+     * only a headache on a day Health Connect has as heavy has not said the bleeding did not
+     * happen, and must not hide it; somebody who switched the day off has. The two look
+     * identical without this flag.
+     */
+    flowCleared: { type: Boolean, default: false },
 }, { timestamps: true });
 
 // One row per person per day per source. The read path merges sources; see `cycleEngine.mergeDays`.

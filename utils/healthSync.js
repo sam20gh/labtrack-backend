@@ -858,6 +858,86 @@ const ingestTemperature = async (userId, rows = [], { source, tzOffset }) => {
 };
 
 /**
+ * Period days from a phone health store.
+ *
+ * **The store's window replaces what the store said before inside it.** A cursor carries
+ * additions but not deletions, and a period somebody removed in Apple Health must disappear
+ * here too — so the client reads a fixed window every sync and says which one (`window`),
+ * and every row of this source inside it that the batch does not mention is deleted. Rows
+ * outside the window, and every manual row, are untouched.
+ *
+ * One row per day per source: several records on one day (a flow sample and a period span)
+ * collapse to the heaviest flow, with `unspecified` below any stated one.
+ */
+const FLOW_ORDER = { spotting: 0, unspecified: 1, light: 2, medium: 3, heavy: 4 };
+const MAX_CYCLE_WINDOW_DAYS = 800;
+
+const ingestCycle = async (userId, rows = [], { source, window }) => {
+    if (!['health_connect', 'apple_health'].includes(source)) return [];
+    const CycleDay = require('../models/CycleDay');
+
+    const byDay = new Map();
+    for (const row of rows) {
+        if (!isDayString(row?.day) || !(row.flow in FLOW_ORDER)) continue;
+        const held = byDay.get(row.day);
+        if (!held || FLOW_ORDER[row.flow] > FLOW_ORDER[held.flow]) byDay.set(row.day, row);
+    }
+
+    const ops = [...byDay.values()].map((row) => ({
+        updateOne: {
+            filter: { userId, day: row.day, source },
+            update: {
+                $set: { flow: row.flow, externalId: row.externalId ? String(row.externalId).slice(0, 200) : null },
+                $setOnInsert: { userId, day: row.day, source, symptoms: [] },
+            },
+            upsert: true,
+        },
+    }));
+    if (ops.length) await CycleDay.bulkWrite(ops, { ordered: false });
+
+    const validWindow = window && isDayString(window.from) && isDayString(window.to) && window.from <= window.to
+        && (Date.parse(window.to) - Date.parse(window.from)) / 86_400_000 <= MAX_CYCLE_WINDOW_DAYS;
+    let removed = 0;
+    if (validWindow) {
+        const result = await CycleDay.deleteMany({
+            userId, source, day: { $gte: window.from, $lte: window.to, $nin: [...byDay.keys()] },
+        });
+        removed = result.deletedCount || 0;
+    }
+    return { written: ops.length, removed };
+};
+
+/**
+ * A night's wrist temperature the store computed itself — Apple Watch's sleeping wrist
+ * temperature. Filed under the wake day the client resolved. Outside a plausible skin range is
+ * a sensor fault and is dropped, not rejected.
+ */
+const ingestNightTemperature = async (userId, rows = [], { source }) => {
+    const days = new Set();
+    const ops = [];
+    for (const row of rows) {
+        const celsius = Number(row?.celsius);
+        if (!isDayString(row?.day) || !Number.isFinite(celsius) || celsius < 25 || celsius > 40) continue;
+        days.add(row.day);
+        ops.push({
+            updateOne: {
+                filter: { userId, day: row.day },
+                update: {
+                    $set: {
+                        'temperature.wristSleepReported': Math.round(celsius * 100) / 100,
+                        'temperature.wristSleepReportedSource': source === 'apple_health' ? 'apple_watch' : source,
+                    },
+                    $setOnInsert: { userId, day: row.day },
+                },
+                upsert: true,
+            },
+        });
+    }
+    if (ops.length) await DailyMetrics.bulkWrite(ops, { ordered: false });
+    return days;
+};
+
+/**
  * Cuffless blood-pressure estimates from the bracelet's optical sensor.
  *
  * **Classified exactly like a cuff reading**, by product decision: `bloodPressure.classify`
@@ -959,6 +1039,7 @@ const ingestEcg = async (userId, rows = [], { tzOffset }) => {
 const ingestBatch = async ({
     userId, platform, tzOffset, activities = [], sleep = [], heart = [], days = [], goalMinutes,
     spo2 = [], temperature = [], bloodPressure = [], ecg = [],
+    cycle = [], cycleWindow = null, nightTemperature = [],
 }) => {
     const source = platform === 'aggregator' ? 'aggregator' : platform;
     // `MetricLog.source` has its own, shorter vocabulary — it predates these platforms and
@@ -978,6 +1059,13 @@ const ingestBatch = async ({
     const tempDays = await ingestTemperature(id, temperature, { source: metricSource, tzOffset });
     const bpDays = await ingestBloodPressure(id, bloodPressure, { source: metricSource, tzOffset });
     const ecgDays = await ingestEcg(id, ecg, { tzOffset });
+
+    // The cycle tracker's two phone-store families. Sent only by a phone that switched the
+    // cycle import on (`lib/health/cycleImport.ts`); every other batch omits both.
+    const cycleResult = (cycle.length || cycleWindow)
+        ? await ingestCycle(id, cycle, { source, window: cycleWindow })
+        : null;
+    await ingestNightTemperature(id, nightTemperature, { source });
 
     for (const set of [
         activityDays, sleepDays, heartDays, summaryDays,
@@ -1036,7 +1124,10 @@ const ingestBatch = async ({
             temperature: temperature.length,
             bloodPressure: bloodPressure.length,
             ecg: ecg.length,
+            cycle: cycle.length,
+            nightTemperature: nightTemperature.length,
         },
+        cycle: cycleResult,
         days: [...touched].sort(),
         rejectedHeartSamples: rejected,
     };
@@ -1050,6 +1141,8 @@ module.exports = {
     ingestTemperature,
     ingestBloodPressure,
     ingestEcg,
+    ingestCycle,
+    ingestNightTemperature,
     recomputeDay,
     sameNight,
     preferSleep,
