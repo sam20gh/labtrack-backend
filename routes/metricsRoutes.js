@@ -14,6 +14,8 @@ router.use(authenticateToken);
 router.get('/overview', c.getOverview);
 router.get('/reference', c.getReference);
 router.get('/hydration/today', c.getHydrationToday);
+// weight | water | blood-pressure, and the device-fed heart-rate | hrv | spo2 | temperature |
+// sleep | steps, which answer the same shape read-only.
 router.get('/:kind/history', c.getHistory);
 
 router.post('/weight', c.logWeight);

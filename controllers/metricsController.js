@@ -25,6 +25,8 @@ const achievementController = require('./achievementController');
 const { recordReadings, withdrawReading } = require('../utils/vitalAlertCentre');
 const VitalTarget = require('../models/VitalTarget');
 const { SPO2_SCALES } = require('../utils/vitalAlerts');
+const HeartRateSample = require('../models/HeartRateSample');
+const SleepSession = require('../models/SleepSession');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -648,11 +650,14 @@ exports.getHistory = async (req, res) => {
     try {
         const userId = req.auth.userId;
         const kind = KINDS[req.params.kind];
-        if (!kind) return res.status(404).json({ message: 'Unknown metric' });
+        const device = DEVICE_HISTORY[req.params.kind];
+        if (!kind && !device) return res.status(404).json({ message: 'Unknown metric' });
 
         const tzOffset = Number(req.query.tzOffset) || 0;
         const days = Math.min(365, Math.max(7, Number(req.query.days) || 30));
         const range = dayRange(days, tzOffset);
+
+        if (device) return res.json(await deviceHistory(req.params.kind, device, userId, range, days));
 
         const [logs, rows] = await Promise.all([
             MetricLog.find({ userId, kind, day: { $gte: range[0] } })
@@ -690,6 +695,220 @@ exports.getHistory = async (req, res) => {
         console.error('❌ getHistory failed:', err);
         res.status(500).json({ message: 'Could not load that history' });
     }
+};
+
+/* ------------------------------------------------------------------ *
+ * History of the device-fed metrics
+ * ------------------------------------------------------------------ */
+
+/**
+ * The other six cards on the list — heart rate, HRV, blood oxygen, temperature, sleep, steps.
+ *
+ * They answer the **same shape** as the loggable kinds (a day series behind the chart, the
+ * entries under it) so every card on the Health Metrics list opens the same kind of screen.
+ * Before this, only weight and blood pressure had one, and the rest opened whatever feature
+ * happened to own the data: heart rate landed on Activity, blood oxygen on the bracelet's
+ * pairing screen — a device settings page when somebody had asked to see a number.
+ *
+ * What differs per kind is where the entries come from. Where the record keeps individual
+ * readings (heart-rate samples, oximetry, temperature, nights) those are the entries; where it
+ * keeps only a day's figure (HRV, steps) each day is one entry. Heart rate falls back to day
+ * rows when a source reported only the day's spread, so a chart is never drawn over an empty
+ * list.
+ *
+ * **Nothing here is deletable.** These rows came from a device, and removing one locally is
+ * not the same act as correcting a typo — a night deleted from a watch comes back on the next
+ * sync, and a bracelet reading does not come back at all. `app/sleep/history.tsx` owns that
+ * decision for nights, with the warning it needs.
+ */
+const ENTRY_LIMIT = 200;
+
+const roundTo = (n, dp = 0) =>
+    (n == null || !Number.isFinite(n) ? null : Math.round(n * 10 ** dp) / 10 ** dp);
+
+const HR_CONTEXT = {
+    resting: 'Resting', active: 'Active', recovery: 'Recovery',
+    sleeping: 'Asleep', manual: 'Spot check', unknown: null,
+};
+
+/** One entry per day that has a value, newest first. For metrics recorded only as a day. */
+const dayEntries = (series, unit, detail = () => null) => series
+    .filter((p) => p.value != null)
+    .reverse()
+    .map((p) => ({ id: `day:${p.day}`, day: p.day, at: null, value: p.value, unit, label: null, detail: detail(p), perDay: true }));
+
+const DEVICE_HISTORY = {
+    'heart-rate': async ({ userId, range, byDay }) => {
+        // One measure for the whole window, for the reason `heartRateCard` gives: a line that
+        // switched between resting and all-day average would draw a step nobody's heart took.
+        const average = range.some((d) => byDay.get(d)?.heart?.avgBpm != null);
+        const series = range.map((day) => {
+            const h = byDay.get(day)?.heart;
+            return {
+                day,
+                value: roundTo(average ? h?.avgBpm : h?.restingBpm),
+                min: h?.minBpm || null,
+                max: h?.maxBpm || null,
+            };
+        });
+        const samples = await HeartRateSample.find({ userId, day: { $gte: range[0] } })
+            .sort({ measuredAt: -1 }).limit(ENTRY_LIMIT + 1).lean();
+        const entries = samples.length
+            ? samples.map((s) => ({
+                id: String(s._id), day: s.day, at: s.measuredAt, value: s.bpm, unit: 'bpm',
+                label: HR_CONTEXT[s.context] ?? null, detail: null,
+            }))
+            : dayEntries(series, 'bpm', (p) => (p.min && p.max ? `Range ${p.min}–${p.max} bpm` : null));
+        return {
+            label: 'Heart Rate',
+            unit: 'bpm',
+            series,
+            entries,
+            note: average
+                ? "The line is each day's average, which includes every walk and staircase, so it sits above a resting figure. Resting readings are labelled in the list."
+                : 'Resting heart rate, one figure a day. A typical resting range is 50–70 bpm, and fit people often sit lower.',
+        };
+    },
+
+    hrv: async ({ range, byDay }) => {
+        const series = range.map((day) => ({ day, value: roundTo(byDay.get(day)?.heart?.hrvMs) }));
+        const values = series.filter((p) => p.value != null && p.value > 0);
+        // The same rule as the card: the latest day is not part of its own baseline, and no
+        // baseline is claimed from fewer than five days.
+        const earlier = values.slice(0, -1).map((p) => p.value);
+        const baseline = earlier.length >= HRV_BASELINE_MIN_DAYS ? Math.round(median(earlier)) : null;
+        return {
+            label: 'Heart Rate Variability',
+            unit: 'ms',
+            series,
+            entries: dayEntries(series, 'ms'),
+            note: `${baseline != null ? `Your usual is about ${baseline} ms. ` : ''}HRV differs several-fold between healthy people and devices measure it differently, so it is only ever compared with your own days — never with a norm.`,
+        };
+    },
+
+    spo2: async ({ userId, range, byDay }) => {
+        const target = await VitalTarget.findOne({ userId }).select('spo2Scale').lean();
+        const series = range.map((day) => {
+            const o = byDay.get(day)?.spo2;
+            return o?.readings
+                ? { day, value: roundTo(o.avg), min: o.min ?? null, max: o.max ?? null }
+                : { day, value: null };
+        });
+        const logs = await MetricLog.find({ userId, kind: 'spo2', day: { $gte: range[0] } })
+            .sort({ measuredAt: -1 }).limit(ENTRY_LIMIT + 1).lean();
+        return {
+            label: 'Blood Oxygen',
+            unit: '%',
+            series,
+            entries: logs.map((l) => ({
+                id: String(l._id), day: l.day, at: l.measuredAt, value: l.spo2, unit: '%', label: null, detail: null,
+            })),
+            note: target?.spo2Scale === 'hypercapnic'
+                ? `Your clinician has set your target at ${SPO2_SCALES.hypercapnic.target}. A wrist sensor can misread in cold hands, so warm them and measure again before reading much into one figure.`
+                : 'Typical is 95–100%. A wrist sensor can misread in cold hands, so warm them and measure again before reading much into one low figure.',
+        };
+    },
+
+    temperature: async ({ userId, range, byDay }) => {
+        // One site for the window, as the card picks it — the two are different measurements.
+        const underarm = range.some((d) => byDay.get(d)?.temperature?.axillaryAvg != null);
+        const series = range.map((day) => {
+            const t = byDay.get(day)?.temperature;
+            return {
+                day,
+                value: roundTo(underarm ? t?.axillaryAvg : t?.wristAvg, 1),
+                max: roundTo(underarm ? t?.axillaryMax : t?.wristMax, 1),
+            };
+        });
+        const logs = await MetricLog.find({
+            userId, kind: 'temperature', day: { $gte: range[0] },
+            site: underarm ? 'axillary' : { $ne: 'axillary' },
+        }).sort({ measuredAt: -1 }).limit(ENTRY_LIMIT + 1).lean();
+        return {
+            label: underarm ? 'Body Temperature' : 'Skin Temperature',
+            unit: '°C',
+            series,
+            entries: logs.map((l) => ({
+                id: String(l._id), day: l.day, at: l.measuredAt, value: roundTo(l.celsius, 1), unit: '°C',
+                label: underarm ? 'Under the arm' : 'At the wrist', detail: null,
+            })),
+            note: underarm
+                ? 'Taken under the arm, a clinical site. Only readings from the same site are shown together.'
+                : 'Taken at the wrist. Skin runs several degrees below body temperature, so this is a trend line, not a temperature.',
+        };
+    },
+
+    sleep: async ({ userId, range, byDay }) => {
+        const series = range.map((day) => {
+            const m = byDay.get(day)?.sleep?.asleepMin;
+            return { day, value: m ? roundTo(m / 60, 1) : null };
+        });
+        const nights = await SleepSession.find({ userId, day: { $gte: range[0] } })
+            .select('day startedAt endedAt asleepMin score')
+            .sort({ startedAt: -1 }).limit(ENTRY_LIMIT + 1).lean();
+        return {
+            label: 'Sleep',
+            unit: 'h',
+            series,
+            entries: nights.map((n) => ({
+                id: String(n._id), day: n.day, at: n.startedAt, end: n.endedAt,
+                value: roundTo(n.asleepMin / 60, 1), unit: 'h',
+                label: n.score != null ? `Score ${n.score}` : null, detail: null,
+                route: `/sleep/${n._id}`,
+            })),
+            note: "Each sleep is filed under the day you woke up. Tap one for its stages and score.",
+        };
+    },
+
+    steps: async ({ range, byDay }) => {
+        const series = range.map((day) => {
+            const a = byDay.get(day)?.activity;
+            return { day, value: a?.steps ?? null, exerciseMin: a?.exerciseMin ?? null };
+        });
+        return {
+            label: 'Steps',
+            unit: 'steps',
+            series: series.map(({ day, value }) => ({ day, value })),
+            entries: dayEntries(series, 'steps', (p) => (p.exerciseMin ? `${p.exerciseMin} min of exercise` : null)),
+            note: 'Day totals as your phone or device reported them.',
+        };
+    },
+};
+
+/** Window figures for the summary card, from the day series. Null, never zero. */
+const seriesStats = (series) => {
+    const days = series.filter((p) => p.value != null);
+    if (!days.length) return null;
+    const lows = days.map((p) => p.min ?? p.value);
+    const highs = days.map((p) => p.max ?? p.value);
+    const latest = days[days.length - 1];
+    return {
+        latest: { value: latest.value, day: latest.day },
+        average: roundTo(days.reduce((a, p) => a + p.value, 0) / days.length, 1),
+        min: Math.min(...lows),
+        max: Math.max(...highs),
+        daysWithData: days.length,
+    };
+};
+
+const deviceHistory = async (slug, load, userId, range, days) => {
+    const rows = await DailyMetrics.find({ userId, day: { $gte: range[0] } }).sort({ day: 1 }).lean();
+    const byDay = new Map(rows.map((r) => [r.day, r]));
+    const out = await load({ userId, range, byDay });
+    const truncated = out.entries.length > ENTRY_LIMIT;
+    return {
+        kind: slug,
+        days,
+        label: out.label,
+        unit: out.unit,
+        series: out.series,
+        logs: [],
+        entries: out.entries.slice(0, ENTRY_LIMIT),
+        truncated,
+        stats: seriesStats(out.series),
+        summary: null,
+        note: out.note,
+    };
 };
 
 /**
@@ -750,3 +969,4 @@ exports._heartRateCard = heartRateCard;
 exports._spo2Card = spo2Card;
 exports._hrvCard = hrvCard;
 exports._temperatureCard = temperatureCard;
+exports._DEVICE_HISTORY_KINDS = Object.keys(DEVICE_HISTORY);
