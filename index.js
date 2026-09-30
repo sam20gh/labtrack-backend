@@ -34,6 +34,7 @@ const resourceRoutes = require('./routes/resourceRoutes');
 const staffRoutes = require('./routes/staffRoutes');
 const predictionRoutes = require('./routes/predictionRoutes');
 const achievementRoutes = require('./routes/achievementRoutes');
+const cycleRoutes = require('./routes/cycleRoutes');
 
 const app = express();
 
@@ -117,6 +118,8 @@ require('./jobs/medicationReminderJob').scheduleMedicationReminders();
 require('./jobs/sleepReminderJob').scheduleSleepReminders();
 // A soft 14:00-local nudge for people who track water and have not logged any today.
 require('./jobs/hydrationNudgeJob').scheduleHydrationNudges();
+// Period reminders at 09:00 local, only for people who switched the cycle tracker on.
+require('./jobs/cycleReminderJob').scheduleCycleReminders();
 
 app.use('/api/users', userRoutes);
 app.use('/api/test-results', testResultRoutes);
@@ -143,6 +146,8 @@ app.use('/api/nutrition', nutritionRoutes);
 app.use('/api/wearables', wearableRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/sleep', sleepRoutes);
+// The cycle tracker. Predictions are a table, not a model — see utils/cycleForecast.js.
+app.use('/api/cycle', cycleRoutes);
 app.use('/api/medications', medicationRoutes);
 app.use('/api/score', scoreRoutes);
 app.use('/api/age', ageRoutes);

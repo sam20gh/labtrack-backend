@@ -169,6 +169,10 @@ const upsert = async (userId, doc, dedupeKey, reviveOnUpdate) => {
  * @param {Date} [input.deliveredAt]   for a producer that sends its own push: when it went
  *                                     out. Only meaningful with `push: false`.
  * @param {boolean} [input.reviveOnUpdate=false]
+ * @param {object} [input.lockScreen]  `{ title, body }` the push shows instead of the card's
+ *                                     own. For a category whose detail should not sit on a
+ *                                     lock screen — a period reminder. The inbox, behind
+ *                                     sign-in, keeps the detail; nothing about this is stored.
  * @param {object} [options]
  * @param {object} [options.user]      an already-loaded user, to save a query
  * @param {number} [options.tzOffsetMinutes]  minutes west of UTC, as `getTimezoneOffset()`
@@ -233,9 +237,13 @@ const publish = async (userId, input, options = {}) => {
             return { notification: row, pushed: 0 };
         }
 
+        const cover = {
+            title: clean(input.lockScreen?.title, 80),
+            body: clean(input.lockScreen?.body, 240),
+        };
         const messages = messagesFor(user, {
-            title: row.title,
-            body: row.body,
+            title: cover.title || row.title,
+            body: cover.body || row.body,
             // The push carries the row's id so tapping it can open the card and mark it
             // read, rather than dumping the person on a tab and leaving it unread.
             data: { ...row.data, notificationId: String(row._id), route: row.route },

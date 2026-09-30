@@ -148,6 +148,19 @@ const CATEGORIES = {
         channel: 'orderUpdates',
         priority: 'normal',
     },
+    /**
+     * Period reminders from `jobs/cycleReminderJob.js`. Its own tint rather than `rose`,
+     * which is the vitals mark: a period that is due is not a reading out of range, and the
+     * same colour on both would make one look like the other.
+     */
+    cycle: {
+        label: 'Cycle',
+        icon: 'flower-outline',
+        tint: 'cycle',
+        route: '/cycle',
+        channel: 'enabled',
+        priority: 'normal',
+    },
     achievement: {
         label: 'Badges',
         icon: 'trophy-outline',
@@ -169,7 +182,7 @@ const CATEGORIES = {
 const CATEGORY_KEYS = Object.keys(CATEGORIES);
 
 /** Tints the client knows how to paint. A tint outside this list renders as `slate`. */
-const TINTS = ['violet', 'indigo', 'blue', 'green', 'rose', 'amber', 'slate'];
+const TINTS = ['violet', 'indigo', 'blue', 'green', 'rose', 'amber', 'slate', 'cycle'];
 
 /**
  * The preference switches a category may be gated on.

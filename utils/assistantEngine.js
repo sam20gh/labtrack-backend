@@ -22,6 +22,7 @@ const Interpretation = require('../models/Interpretation');
 const { presentToPatient } = require('../config/clinicalPolicy');
 const { buildContext } = require('./interpretationEngine');
 const { _gatherContext } = require('../controllers/interpretationController');
+const { gatherCycle, renderCycle } = require('./cycleContext');
 const { ASSISTANT_SCHEMA, SYSTEM_PROMPT } = require('./assistantSchema');
 
 const MODEL = 'claude-opus-5';
@@ -142,9 +143,12 @@ const renderActionable = ({ planItems, professionals, products, interpretation }
  * id) may move above those breakpoints or the cache silently stops hitting.
  */
 const buildPrompt = async (userId) => {
-    const [profile, actionable] = await Promise.all([
+    const [profile, actionable, cycle] = await Promise.all([
         _gatherContext(userId),
         gatherActionable(userId),
+        // Assistant-only: see the header of utils/cycleContext.js for why the
+        // interpretation, which a clinician reviews, does not read it.
+        gatherCycle(userId),
     ]);
 
     // `gatherContext` attaches `previous` — the last interpretation's summary and risks —
@@ -161,7 +165,7 @@ const buildPrompt = async (userId) => {
         profile.previous = null;
     }
 
-    return `${buildContext(profile)}\n\n${renderActionable(actionable)}`;
+    return `${buildContext(profile)}\n\n${renderActionable(actionable)}${renderCycle(cycle)}`;
 };
 
 /**

@@ -128,6 +128,10 @@ const recomputeMetricDay = async (userId, day) => {
         axillaryAvg: axillary.length ? mean(axillary) : null,
         axillaryMax: axillary.length ? Math.max(...axillary) : null,
         readings: temps.length,
+        // Owned by `utils/nightTemperature.js`, which reads the sleep window this rollup does
+        // not know about. Carried over so rebuilding the day's totals cannot erase it.
+        wristSleepMedian: existing?.temperature?.wristSleepMedian ?? null,
+        wristSleepReadings: existing?.temperature?.wristSleepReadings ?? 0,
     };
 
     return DailyMetrics.findOneAndUpdate(

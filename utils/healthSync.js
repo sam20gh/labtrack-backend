@@ -1013,6 +1013,19 @@ const ingestBatch = async ({
         for (const day of metricDays) await recomputeMetricDay(id, day);
     }
 
+    /**
+     * The night's temperature, for the cycle tracker. It needs both halves — the sleep window
+     * and the wrist readings inside it — which arrive in either order across syncs, so a batch
+     * carrying either recomputes the nights it could have changed. Required lazily for the
+     * reason `metricRollup` is.
+     */
+    if (tempDays.size || sleepDays.size) {
+        const { recomputeNight, affectedDays } = require('./nightTemperature');
+        for (const day of affectedDays({ tempDays: [...tempDays], sleepDays: [...sleepDays] })) {
+            await recomputeNight(id, day);
+        }
+    }
+
     return {
         counts: {
             activities: activities.length,

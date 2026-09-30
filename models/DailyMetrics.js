@@ -160,6 +160,17 @@ const TemperatureTotalsSchema = new mongoose.Schema({
     axillaryAvg: { type: Number, default: null },
     axillaryMax: { type: Number, default: null },
     readings: { type: Number, default: 0 },
+    /**
+     * The median wrist reading inside the night that ended this day — the main
+     * `SleepSession` filed under it — and how many readings it was taken from.
+     *
+     * Kept apart from `wristAvg` because the day's average mixes a cold walk, a hot shower
+     * and a night's sleep, and only the night is stable enough to show the small rise after
+     * ovulation. Filed under the wake day, as the night itself is. Written by
+     * `utils/nightTemperature.js`; null when the night had too few readings to trust.
+     */
+    wristSleepMedian: { type: Number, default: null },
+    wristSleepReadings: { type: Number, default: 0 },
 }, { _id: false });
 
 const DailyMetricsSchema = new mongoose.Schema({
