@@ -109,12 +109,22 @@ describe('a nap just outside the core window', () => {
         expect(out.summary.goal.met).toBe(1);
     });
 
-    it('a fragment touching the night is still part of the night, not a nap', () => {
+    it('a fragment within 20 minutes of the morning wake is still part of the night, not a nap', () => {
         const fragment = nap({
+            day: '2026-09-24', startedAt: '2026-09-24T07:15:00.000Z', endedAt: '2026-09-24T08:05:00.000Z', asleepMin: 50,
+        });
+        const { night: n, naps } = record.classifyDay([night, fragment], 0);
+        expect(naps).toHaveLength(0);
+        expect(n.asleepMin).toBe(403);
+    });
+
+    it('past 20 minutes after the morning wake it is a nap — once 22 minutes joined the night', () => {
+        const back = nap({
             day: '2026-09-24', startedAt: '2026-09-24T07:20:00.000Z', endedAt: '2026-09-24T08:10:00.000Z', asleepMin: 50,
         });
-        const { naps } = record.classifyDay([night, fragment], 0);
-        expect(naps).toHaveLength(0);
+        const { night: n, naps } = record.classifyDay([night, back], 0);
+        expect(n.asleepMin).toBe(353);
+        expect(naps.map((x) => x.asleepMin)).toEqual([50]);
     });
 
     it('before 06:00 is never a nap, however far from the night', () => {

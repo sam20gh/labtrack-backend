@@ -1,10 +1,16 @@
 /**
- * Join sleep that was stored in pieces.
+ * Join sleep that was stored in pieces — and split what an older rule joined.
  *
  *   node scripts/stitchSleep.js                     # dry run — prints, writes nothing
  *   node scripts/stitchSleep.js --apply
  *   node scripts/stitchSleep.js --user <id> --apply # one person
  *   node scripts/stitchSleep.js --restore <file>    # undo, from a backup this wrote
+ *   ... --tz <minutes>                              # override the person's offset
+ *
+ * Since 2026-10-01 a morning wake ends the night sooner (`utils/sleepStitch.js` rule 1b),
+ * so a nap the 30-minute rule joined to the night is split back out. That rule needs the
+ * person's local clock: it is taken from their latest push registration, and with none the
+ * morning rule is off for them, exactly as it was before.
  *
  * The J-Style bracelet reports a night as records of about two hours each, and until
  * `utils/sleepStitch.js` existed every record was stored as a night of its own — so a
@@ -24,6 +30,7 @@ const mongoose = require('mongoose');
 const connectDB = require('../config/db');
 const SleepSession = require('../models/SleepSession');
 const SleepPlan = require('../models/SleepPlan');
+const User = require('../models/userModel');
 const { joinSleep, recomputeDay } = require('../utils/healthSync');
 const { clusterSessions, STITCH_GAP_MIN } = require('../utils/sleepStitch');
 
@@ -80,19 +87,35 @@ const run = async () => {
     for (const { _id: { userId, source } } of groups) {
         const rows = await SleepSession.find({ userId, source, externalId: { $type: 'string' } })
             .sort({ startedAt: 1 }).lean();
-        const clusters = clusterSessions(rows, STITCH_GAP_MIN).filter((c) => c.length > 1);
-        if (!clusters.length) continue;
+
+        // The morning rule (`sleepStitch` rule 1b) needs the person's clock. The phone sends
+        // its offset with every push registration; the latest one is the best there is.
+        const user = await User.findById(userId).select('pushTokens.tzOffset').lean();
+        const offsets = (user?.pushTokens || []).map((t) => t.tzOffset).filter(Number.isFinite);
+        const tzOffset = valueOf('--tz') !== null ? Number(valueOf('--tz')) : (offsets.at(-1) ?? null);
+
+        // Every stored piece, regrouped by today's rule, against how the rows group them now.
+        const pieces = rows.flatMap((r) => (r.parts?.length ? r.parts : [r]).map((p) => ({ ...p, row: r })));
+        const clusters = clusterSessions(pieces, STITCH_GAP_MIN, { tzOffset });
+        const joins = clusters.filter((c) => new Set(c.map((p) => String(p.row._id))).size > 1);
+        const rowsSplit = rows.filter((r) => new Set(
+            clusters.filter((c) => c.some((p) => p.row === r)),
+        ).size > 1);
+        if (!joins.length && !rowsSplit.length) continue;
 
         affectedGroups += 1;
-        joinable += clusters.reduce((n, c) => n + c.length, 0);
-        console.log(`\n👤 ${userId} ${source}: ${clusters.length} sleep(s) stored in pieces`);
-        for (const c of clusters) {
-            const asleep = c.reduce((n, r) => n + (r.asleepMin || 0), 0);
-            const longest = Math.max(...c.map((r) => r.asleepMin || 0));
-            console.log(
-                `   ${c[0].day}  ${hhmm(c[0].startedAt)}→${hhmm(c[c.length - 1].endedAt)} UTC  `
-                + `${c.length} rows · shown as ${longest}m, actually ${asleep}m asleep`
-            );
+        joinable += joins.length + rowsSplit.length;
+        console.log(`\n👤 ${userId} ${source} (tzOffset ${tzOffset ?? 'unknown — morning rule off'}):`);
+        for (const c of joins) {
+            const ids = new Set(c.map((p) => String(p.row._id)));
+            const asleep = c.reduce((n, p) => n + (p.asleepMin || 0), 0);
+            console.log(`   join   ${c[0].row.day}  ${hhmm(c[0].startedAt)}→${hhmm(c[c.length - 1].endedAt)} UTC  `
+                + `${ids.size} rows → one sleep of ${asleep}m`);
+        }
+        for (const r of rowsSplit) {
+            const parts = clusters.filter((c) => c.some((p) => p.row === r))
+                .map((c) => `${hhmm(c[0].startedAt)}→${hhmm(c[c.length - 1].endedAt)} ${c.reduce((n, p) => n + (p.asleepMin || 0), 0)}m`);
+            console.log(`   split  ${r.day}  ${r.asleepMin}m → ${parts.join(' + ')} UTC`);
         }
 
         if (!apply) continue;
@@ -107,14 +130,14 @@ const run = async () => {
 
         const plan = await SleepPlan.findOne({ userId }).select('goalMinutes').lean();
         const days = await joinSleep(userId, [], {
-            source, tzOffset: 0, goalMinutes: plan?.goalMinutes, window: { from, to },
+            source, tzOffset: tzOffset ?? undefined, goalMinutes: plan?.goalMinutes, window: { from, to },
         });
         for (const day of days) await recomputeDay(userId, day);
         const after = await SleepSession.countDocuments({ userId, source, externalId: { $type: 'string' } });
         console.log(`   ✅ ${rows.length} rows → ${after}; ${days.size} day(s) recomputed`);
     }
 
-    console.log(`\n${affectedGroups} person/source group(s), ${joinable} row(s) in pieces.`);
+    console.log(`\n${affectedGroups} person/source group(s), ${joinable} sleep(s) to join or split.`);
     if (!apply) {
         console.log('Dry run — nothing written. Re-run with --apply.');
         return;

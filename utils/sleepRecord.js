@@ -15,9 +15,9 @@
  *    call the second half of a split night a nap. So a nap is a session of at most
  *    `NAP_MAX_MIN` that either *starts* inside `NAP_WINDOW` (local 09:00–20:00), or starts
  *    inside the wider `NAP_WINDOW_SEPARATED` (06:00–22:00) **and** is at least
- *    `NAP_GAP_MIN` clear of the night. The second rule is what files a 08:42 sleep after a
- *    night that ended at 06:58 as the nap it was — under the first rule alone it was
- *    silently discarded as a "fragment". A 05:30 fragment after a disturbed night is still
+ *    `NAP_GAP_MIN` (20 minutes, the morning stitch limit) clear of the night. The second
+ *    rule is what files a 08:42 sleep after a night that ended at 06:58 as the nap it was —
+ *    under the first rule alone it was silently discarded as a "fragment". A 05:30 fragment after a disturbed night is still
  *    not one, and neither is anything that touches the night; a day sleep after a night
  *    shift is longer than three hours and is not one either. It is still that person's main
  *    sleep.
@@ -42,7 +42,7 @@
  *    on top and is not part of the sum, because time awake in bed is not sleep.
  */
 const { meanClock, clockSpread, localMinutes, stageBreakdown, comparePeriods } = require('./sleepInsight');
-const { clusterSessions, mergeSessions, STITCH_GAP_MIN } = require('./sleepStitch');
+const { clusterSessions, mergeSessions, STITCH_GAP_MIN, MORNING_GAP_MIN } = require('./sleepStitch');
 const { scoreNight } = require('./sleepScore');
 
 const finite = (v) => Number.isFinite(v);
@@ -61,8 +61,13 @@ const NAP_WINDOW = { fromMin: 9 * 60, toMin: 20 * 60 };
  * nap two hours after waking, or an evening doze before bed. Before 06:00 is still the night.
  */
 const NAP_WINDOW_SEPARATED = { fromMin: 6 * 60, toMin: 22 * 60 };
-/** Awake time between a session and the night that makes it a separate sleep, not a fragment. */
-const NAP_GAP_MIN = 60;
+/**
+ * Awake time between a session and the night that makes it a separate sleep, not a fragment.
+ * The morning stitch limit, so the two rules cannot disagree: a sleep the stitch keeps apart
+ * is a nap here, never a fragment dropped from both the night and the naps. It was 60, and a
+ * nap 25 minutes after a 07:01 wake was split from the night and then thrown away.
+ */
+const NAP_GAP_MIN = MORNING_GAP_MIN;
 
 /** Calendar days each range spans. `all` is from the first recorded session. */
 const RECORD_RANGES = { '1d': 1, '1w': 7, '1m': 30, '1y': 364, all: null };
@@ -94,8 +99,8 @@ const gapBetween = (a, b) => {
  * alone is returned as it is. A joined one is rescored, because each piece was scored as if
  * it were a whole night.
  */
-const joinPieces = (sessions = [], goalMinutes = null) =>
-    clusterSessions(sessions, STITCH_GAP_MIN).map((cluster) => {
+const joinPieces = (sessions = [], goalMinutes = null, tzOffset = null) =>
+    clusterSessions(sessions, STITCH_GAP_MIN, { tzOffset }).map((cluster) => {
         if (cluster.length === 1) return cluster[0];
         const longest = cluster.reduce((a, b) => (asleepOf(b) > asleepOf(a) ? b : a));
         const last = cluster.reduce((a, b) => (new Date(b.endedAt) > new Date(a.endedAt) ? b : a));
@@ -121,7 +126,7 @@ const joinPieces = (sessions = [], goalMinutes = null) =>
 const classifyDay = (sessions = [], tzOffset = 0, { goalMinutes = null } = {}) => {
     const naps = [];
     const rest = [];
-    for (const s of joinPieces(sessions, goalMinutes)) (isNap(s, tzOffset) ? naps : rest).push(s);
+    for (const s of joinPieces(sessions, goalMinutes, tzOffset)) (isNap(s, tzOffset) ? naps : rest).push(s);
     const night = rest.slice().sort((a, b) => (b.asleepMin || 0) - (a.asleepMin || 0))[0] || null;
     if (night) {
         for (const s of rest) {

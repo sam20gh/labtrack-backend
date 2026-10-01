@@ -20,7 +20,9 @@ const mongoose = require('mongoose');
 const SleepSession = require('../models/SleepSession');
 const DailyMetrics = require('../models/DailyMetrics');
 const { ingestBatch, joinSleep } = require('../utils/healthSync');
-const { clusterSessions, mergeSessions, STITCH_GAP_MIN } = require('../utils/sleepStitch');
+const {
+    clusterSessions, mergeSessions, STITCH_GAP_MIN, MORNING_GAP_MIN,
+} = require('../utils/sleepStitch');
 const record = require('../utils/sleepRecord');
 const insight = require('../utils/sleepInsight');
 
@@ -255,6 +257,86 @@ describe('the record screen joins what ingest could not', () => {
     it('rescores the joined night rather than keeping a piece’s score', () => {
         const { night } = record.classifyDay(rows, TZ, { goalMinutes: 360 });
         expect(night.score).toBeGreaterThan(60);
+    });
+});
+
+/**
+ * 2026-10-01, UTC+4: a night that ended 07:01, 25 minutes up, and a nap 07:26–08:44. The
+ * overnight rule joined them into one 00:28–08:44 night, so the record showed no nap. The
+ * blocks are those rows; the nap is at its corrected time (see `utils/clockFault.js`).
+ */
+describe('a morning wake ends the night', () => {
+    // 9 minutes between the first two blocks, at 01:59 local: the bracelet's own seam.
+    const G1 = block('jstyle:sleep:G1', '2026-09-30T20:28:04Z', [['light', 87], ['awake', 4]]);
+    const G2 = block('jstyle:sleep:G2', '2026-09-30T22:08:01Z', [['light', 117], ['awake', 3]]);
+    const G3 = block('jstyle:sleep:G3', '2026-10-01T00:08:01Z', [['light', 120]]);
+    const G4 = block('jstyle:sleep:G4', '2026-10-01T02:08:00Z', [['light', 53]]);
+    const NAP = block('jstyle:sleep:N', '2026-10-01T03:26:39Z', [['awake', 4], ['light', 74]]);
+    const MORNING = [G1, G2, G3, G4, NAP];
+
+    const at = (hhmmLocal, plusMin = 0) => {
+        const [h, m] = hhmmLocal.split(':').map(Number);
+        return new Date(Date.UTC(2026, 9, 1, h - 4, m + plusMin)).toISOString();
+    };
+    const piece = (from, minutes) => ({ startedAt: at(from), endedAt: at(from, minutes), asleepMin: minutes });
+
+    it(`splits past ${MORNING_GAP_MIN} minutes after a morning wake, and keeps the bracelet's seams`, () => {
+        const clusters = clusterSessions(MORNING, STITCH_GAP_MIN, { tzOffset: TZ });
+        expect(clusters.map((c) => c.map((p) => p.externalId))).toEqual([
+            [G1, G2, G3, G4].map((b) => b.externalId),
+            [NAP.externalId],
+        ]);
+    });
+
+    it('still joins a 25-minute gap in the small hours — getting up at 3am is not a morning', () => {
+        expect(clusterSessions([piece('00:00', 180), piece('03:25', 60)], STITCH_GAP_MIN, { tzOffset: TZ })).toHaveLength(1);
+    });
+
+    it('still joins after a short night — there was no night to end', () => {
+        expect(clusterSessions([piece('05:00', 120), piece('07:25', 60)], STITCH_GAP_MIN, { tzOffset: TZ })).toHaveLength(1);
+    });
+
+    it(`joins a morning gap of exactly ${MORNING_GAP_MIN} minutes, and not one more`, () => {
+        const night = piece('03:00', 240); // ends 07:00
+        expect(clusterSessions([night, piece('07:20', 30)], STITCH_GAP_MIN, { tzOffset: TZ })).toHaveLength(1);
+        expect(clusterSessions([night, piece('07:21', 30)], STITCH_GAP_MIN, { tzOffset: TZ })).toHaveLength(2);
+    });
+
+    it('applies only when the caller knows the timezone, as before', () => {
+        expect(clusterSessions(MORNING)).toHaveLength(1);
+    });
+
+    it('is stored as a night and a nap', async () => {
+        const id = userId();
+        await sync(id, MORNING);
+        const rows = await stored(id);
+        expect(rows.map((r) => [r.day, r.asleepMin])).toEqual([['2026-10-01', 377], ['2026-10-01', 74]]);
+        const day = await DailyMetrics.findOne({ userId: id, day: '2026-10-01' }).lean();
+        expect(day.sleep.asleepMin).toBe(377);
+    });
+
+    it('splits a night the old rule joined, on the repair call', async () => {
+        const id = userId();
+        // Without a timezone the morning rule cannot apply — which is how it was stored.
+        await ingestBatch({ userId: id, platform: 'jstyle_bracelet', sleep: MORNING, goalMinutes: 360 });
+        expect((await stored(id)).map((r) => r.asleepMin)).toEqual([451]);
+
+        await joinSleep(id, [], {
+            source: 'jstyle_bracelet',
+            tzOffset: TZ,
+            window: { from: new Date('2026-09-30T00:00:00Z'), to: new Date('2026-10-02T00:00:00Z') },
+        });
+        expect((await stored(id)).map((r) => r.asleepMin)).toEqual([377, 74]);
+    });
+
+    it('is a nap on the record, not a fragment, and counts toward the day', () => {
+        const rows = MORNING.map((b) => ({
+            _id: new mongoose.Types.ObjectId(), ...b, day: '2026-10-01', stages: mergeSessions([b]).stages,
+        }));
+        const { night, naps } = record.classifyDay(rows, TZ, { goalMinutes: 420 });
+        expect(night.asleepMin).toBe(377);
+        expect(naps.map((n) => n.asleepMin)).toEqual([74]);
+        expect(record.dayTotal({ night, naps }).totalMin).toBe(451);
     });
 });
 

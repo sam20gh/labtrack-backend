@@ -507,7 +507,7 @@ const joinSleep = async (userId, candidates = [], { source, tzOffset, goalMinute
      * day is the wake day of the whole sleep — a block that ended at 23:50 belongs to the
      * night it started, not to the evening.
      */
-    const merged = clusterSessions(kept, STITCH_GAP_MIN).map((cluster) => {
+    const merged = clusterSessions(kept, STITCH_GAP_MIN, { tzOffset: Number(tzOffset) }).map((cluster) => {
         const figures = mergeSessions(cluster);
         const first = cluster[0];
         // Every piece already carries its own wake day; the sleep's is the last one's.
