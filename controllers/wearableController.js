@@ -6,6 +6,7 @@ const DailyMetrics = require('../models/DailyMetrics');
 const SleepPlan = require('../models/SleepPlan');
 const { ingestBatch, ACCEPTED_HR_CONTEXTS } = require('../utils/healthSync');
 const { recordReadings } = require('../utils/vitalAlertCentre');
+const { prepareBraceletBatch } = require('../utils/clockFault');
 const scoreController = require('./scoreController');
 const achievementController = require('./achievementController');
 
@@ -83,16 +84,20 @@ exports.getStatus = async (req, res) => {
 exports.sync = async (req, res) => {
     try {
         const userId = req.user.id;
+        const raw = req.body || {};
         const {
             platform, tzOffset, cursor, permissions, devices,
+            // The cycle import. Only a phone that switched it on sends these.
+            cycle = [], cycleWindow = null, nightTemperature = [],
+        } = raw;
+        // `let`: a bracelet batch is replaced by its clock-corrected copy below.
+        let {
             activities = [], sleep = [], heart = [], days = [],
             // Bracelet-only families. Defaulted rather than required, because every
             // HealthKit and Health Connect batch is posted without them and must keep
             // working unchanged.
             spo2 = [], temperature = [], bloodPressure = [], ecg = [],
-            // The cycle import. Only a phone that switched it on sends these.
-            cycle = [], cycleWindow = null, nightTemperature = [],
-        } = req.body || {};
+        } = raw;
 
         if (!['apple_health', 'health_connect', 'aggregator', 'jstyle_bracelet'].includes(platform)) {
             return res.status(400).json({ message: 'Unknown platform' });
@@ -119,6 +124,20 @@ exports.sync = async (req, res) => {
                 maxEcgSamplesPerBatch: MAX_ECG_SAMPLES_PER_BATCH,
             });
         }
+
+        /**
+         * A bracelet stamps every record from its own clock, and that clock has been seen to
+         * go back hours after a sync — which files a morning nap as the evening before. The
+         * phone reports the clock as it found it; `utils/clockFault.js` moves or sets aside
+         * whatever was stamped while it was wrong, here and on every later re-send. Every
+         * family below, including the vitals sent to `recordReadings`, is the corrected one.
+         * A phone-store batch passes through untouched.
+         */
+        const { body: corrected, report: clock } = await prepareBraceletBatch(userId, raw);
+        ({
+            activities = [], sleep = [], heart = [], days = [],
+            spo2 = [], temperature = [], bloodPressure = [], ecg = [],
+        } = corrected);
 
         // The sleep goal shapes every night's score, so it has to be read before the nights
         // are written rather than backfilled afterwards.
@@ -218,6 +237,9 @@ exports.sync = async (req, res) => {
             // Named so a client author sees it: raw continuous readings are dropped on
             // purpose, and silently swallowing them would look like data loss.
             rejectedHeartSamples: result.rejectedHeartSamples,
+            // Present only when the bracelet's clock was wrong now or before. Counts, never
+            // rows — the phone has nothing to do with them but log them.
+            ...(clock ? { clock } : {}),
         });
     } catch (err) {
         console.error('❌ Sync failed:', err);
