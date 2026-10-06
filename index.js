@@ -126,6 +126,7 @@ app.use('/api/test-results', testResultRoutes);
 app.use('/api/deepseek', deepseekRoutes);
 app.use('/api/professionals', professionalRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/launch-signups', require('./routes/launchSignupRoutes'));
 app.use('/api/images', imageRoutes);
 app.use('/api/plans', planRoutes);
 app.use('/api/products', productRoutes);

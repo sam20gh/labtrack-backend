@@ -18,6 +18,7 @@
     "dotenv": "^16.4.7",
     "expo-server-sdk": "^3.15.0",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.7.1",
     "form-data": "^4.0.2",
     "jose": "^6.2.10",
     "jsonwebtoken": "^9.0.2",
