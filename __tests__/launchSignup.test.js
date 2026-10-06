@@ -50,7 +50,7 @@ test('honeypot submissions write nothing', async () => {
 
 test('storage failure never returns a successful signup or exposes email', async () => {
     const spy = jest.spyOn(LaunchSignup, 'updateOne').mockRejectedValueOnce(new Error('database unavailable'));
-    const logger = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const logger = jest.spyOn(console, 'error').mockImplementation(() => { });
     try {
         expect((await signup({ email: 'failure@example.com', consent: true })).status).toBe(503);
         expect(logger).toHaveBeenCalledWith('Launch signup could not be saved');
