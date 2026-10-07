@@ -3,7 +3,8 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const PlanItem = require('../models/PlanItem');
 const { advanceRecurringItem } = require('../utils/planGeneratorV2');
-const { notifyUser } = require('../jobs/reminderJob');
+const { publish } = require('../utils/notificationCentre');
+const C = require('../utils/orderComponents');
 
 /**
  * POST /api/orders — place a home-collection order.
@@ -41,6 +42,9 @@ exports.createOrder = async (req, res) => {
                 price: product.price,
                 quantity,
                 planItemId: item.planItemId,
+                // What this line ships, each on its own timeline. Empty for a product that
+                // predates `includes`, whose order moves on the order-level status as before.
+                components: C.componentsFor(product),
             });
         }
 
@@ -53,6 +57,7 @@ exports.createOrder = async (req, res) => {
 
         const order = await Order.create({
             userId: req.auth.userId,
+            source: 'app',
             items: lineItems,
             subtotal,
             total: subtotal,
@@ -177,7 +182,12 @@ exports.listAllOrders = async (req, res) => {
                 // No match must return nothing, not everything: an unmatched filter that
                 // silently drops itself would show the whole book of orders as if it were
                 // the search result.
-                filter.userId = { $in: matches.map((m) => m._id) };
+                // A website purchase nobody has claimed yet has no user to match, only the
+                // email it was bought with — and that is exactly the one support is asked about.
+                filter.$or = [
+                    { userId: { $in: matches.map((m) => m._id) } },
+                    { guestEmail: new RegExp(safe, 'i') },
+                ];
             }
         }
 
@@ -202,6 +212,9 @@ exports.listAllOrders = async (req, res) => {
                 summary: (o.items || []).map((i) => i.name).join(', '),
                 paymentStatus: o.payment?.status || 'unpaid',
                 trackingReference: o.trackingReference || null,
+                source: o.source || 'app',
+                guestEmail: o.userId ? null : o.guestEmail || null,
+                components: (o.items || []).flatMap((i) => (i.components || []).map((c) => ({ kind: c.kind, status: c.status }))),
                 createdAt: o.createdAt,
                 customer: o.userId
                     ? {
@@ -322,6 +335,16 @@ exports.updateOrderStatus = async (req, res) => {
             return res.status(409).json({ message: `This order is already ${status}` });
         }
 
+        // A package moves one parcel at a time. Marking the whole order `kit_sent` would say
+        // the DNA kit left when only the bracelet did. Cancelling or refunding is still a
+        // decision about the whole order, and stays here.
+        const tracked = order.items.some((i) => (i.components || []).length);
+        if (tracked && !['cancelled', 'refunded', 'placed'].includes(status)) {
+            return res.status(409).json({
+                message: 'This order ships several items. Update each one from its own row.',
+            });
+        }
+
         const legal = LEGAL_TRANSITIONS[order.status] || [];
         if (!legal.includes(status)) {
             return res.status(409).json({
@@ -336,22 +359,9 @@ exports.updateOrderStatus = async (req, res) => {
         if (dnaReportId) order.dnaReportId = dnaReportId;
         await order.save();
 
-        // Tell the person their kit moved. Fire-and-forget: a push failure must not fail
-        // the fulfilment transition itself.
-        const ANNOUNCE = {
-            kit_sent: { title: 'Your kit is on its way', body: 'Your collection kit has been dispatched.', key: 'orderUpdates' },
-            sample_received: { title: 'Sample received', body: 'The laboratory has your sample and is processing it.', key: 'orderUpdates' },
-            resulted: { title: 'Your results are ready', body: 'Your new results are in your record. Tap to see them.', key: 'resultsReady' },
-        };
-        const announcement = ANNOUNCE[status];
-        if (announcement) {
-            notifyUser(order.userId, {
-                title: announcement.title,
-                body: announcement.body,
-                data: { type: 'order', orderId: String(order._id), route: '/order-details' },
-                preferenceKey: announcement.key,
-            }).catch((e) => console.warn('⚠️ Order notification failed:', e.message));
-        }
+        // Tell the person their kit moved — a card in the centre, and a push unless they
+        // turned order updates off. Never awaited: a notification must not fail fulfilment.
+        announce(order, null, status);
 
         if (status === 'resulted') {
             const planItemIds = order.items.map((i) => i.planItemId).filter(Boolean);
@@ -373,3 +383,175 @@ exports.updateOrderStatus = async (req, res) => {
         res.status(400).json({ message: 'Error updating order', error: error.message });
     }
 };
+
+/**
+ * The words for each move, per thing that moved. `null` kind is a whole order with no
+ * components — the shape every order had before packages.
+ */
+const WORDING = {
+    kit_sent: (label) => ({ title: `Your ${label} kit is on its way`, body: 'It has been dispatched. Follow the instructions in the box when it arrives.' }),
+    sample_received: (label) => ({ title: 'Sample received', body: `The laboratory has your ${label} sample and will start on it shortly.` }),
+    processing: (label) => ({ title: `Your ${label} sample is being analysed`, body: 'We will let you know the moment your results are in.' }),
+    resulted: (label) => ({
+        title: `Your ${label} results are in`,
+        body: label === 'test'
+            ? 'They are in your record. Tap to see them.'
+            : 'They are in your record. We are updating your analysis with them now.',
+    }),
+    dispatched: () => ({ title: 'Your bracelet is on its way', body: 'Pair it from the app when it arrives — it takes about a minute.' }),
+    delivered: () => ({ title: 'Your bracelet has arrived', body: 'Pair it now and it starts learning your sleep and heart rate tonight.' }),
+};
+
+const LABEL = { blood: 'blood test', dna: 'DNA', bracelet: 'bracelet', null: 'test' };
+
+/** Where a card about each move opens. A bracelet that has arrived opens the pairing screen. */
+const ROUTE = { delivered: '/bracelet', resulted: '/results' };
+
+const announce = (order, component, status) => {
+    if (!order.userId) return; // a website order nobody has claimed yet has nobody to tell
+    const words = WORDING[status]?.(LABEL[component?.kind ?? null]);
+    if (!words) return;
+    publish(String(order.userId), {
+        category: status === 'resulted' ? 'results' : 'order',
+        title: words.title,
+        body: words.body,
+        route: ROUTE[status] || `/order-details?orderId=${order._id}`,
+        data: { type: 'order', orderId: String(order._id) },
+        // One card per parcel per stage, however many times fulfilment re-sends it.
+        dedupeKey: `order:${order._id}:${component?._id || 'all'}:${status}`,
+        source: 'orders',
+    });
+};
+
+/** Which result id a kit must be resulted with, and the collection it must belong to. */
+const RESULT_REFS = {
+    blood: [{ field: 'testResultId', model: () => require('../models/testResultModel'), owner: 'patient.user_id' }],
+    dna: [
+        { field: 'dnaReportId', model: () => require('../models/DnaReport'), owner: 'userId' },
+        { field: 'genotypeFileId', model: () => require('../models/GenotypeFile'), owner: 'userId' },
+    ],
+};
+
+/**
+ * A kit came back: re-read everything with the new result in it, then say so.
+ *
+ * Not awaited by the request. The model call takes seconds, and the regeneration guard may
+ * refuse it (too soon after the last one) — in which case the person still has the "results
+ * are in" card and can ask for the analysis themselves, which is what they could always do.
+ * The "full analysis" card is only published when a new analysis was actually written.
+ */
+const reinterpret = (order, component) => {
+    const { requestGeneration } = require('./interpretationController');
+    requestGeneration({
+        userId: order.userId,
+        dnaReportId: component.dnaReportId || component.genotypeFileId || undefined,
+        testResultId: component.testResultId || undefined,
+    }).then((outcome) => {
+        if (outcome?.status !== 201) {
+            console.log(`ℹ️ No new analysis after ${component.kind} result (${outcome?.status}): ${outcome?.body?.message || ''}`);
+            return;
+        }
+        publish(String(order.userId), {
+            category: 'insight',
+            title: component.kind === 'dna'
+                ? 'Your full analysis is ready'
+                : 'Your analysis has been updated',
+            body: component.kind === 'dna'
+                ? 'Your DNA is now part of the picture. See what changed in your plan.'
+                : 'Your new blood results are now part of it. See what changed.',
+            route: '/journey/update',
+            dedupeKey: `analysis:${order._id}:${component._id}`,
+            source: 'orders',
+        });
+    }).catch((e) => console.error('❌ Re-analysis after result failed:', e.message));
+};
+
+/**
+ * PATCH /api/orders/:id/items/:itemId/components/:kind — move one parcel on (admin only).
+ *
+ * Body: { status, note?, trackingReference?, testResultId? | dnaReportId? | genotypeFileId? }
+ *
+ * One stage at a time, forwards only — the same rule the order-level table enforces, for
+ * the same reason: `resulted` has side effects that cannot be run twice. The order's own
+ * status is then re-derived from all of its components.
+ */
+exports.updateComponentStatus = async (req, res) => {
+    try {
+        const { status, note, trackingReference } = req.body;
+        const order = await Order.findById(req.params.id);
+        if (!order) return res.status(404).json({ message: 'Order not found' });
+
+        if (['pending_payment', 'cancelled', 'refunded'].includes(order.status)) {
+            return res.status(409).json({ message: `An order that is ${order.status} cannot be fulfilled` });
+        }
+
+        const item = order.items.id(req.params.itemId);
+        const component = item?.components?.find((c) => c.kind === req.params.kind);
+        if (!component) return res.status(404).json({ message: 'That item does not ship one of those' });
+
+        const expected = C.nextStage(component.kind, component.status);
+        if (status !== expected) {
+            return res.status(409).json({
+                message: expected
+                    ? `This ${LABEL[component.kind]} is ${C.STAGE_LABEL[component.status].toLowerCase()} — the next step is "${C.STAGE_LABEL[expected]}".`
+                    : `This ${LABEL[component.kind]} is finished and cannot change.`,
+                expected,
+            });
+        }
+
+        if (status === 'resulted') {
+            if (!order.userId) {
+                return res.status(409).json({
+                    message: 'Nobody has claimed this order in the app yet, so there is no record to attach a result to.',
+                });
+            }
+            const refs = RESULT_REFS[component.kind] || [];
+            const given = refs.filter((r) => req.body[r.field]);
+            if (given.length !== 1) {
+                return res.status(400).json({
+                    message: `Attach the result: one of ${refs.map((r) => r.field).join(' or ')}.`,
+                });
+            }
+            const ref = given[0];
+            const exists = await ref.model().exists({ _id: req.body[ref.field], [ref.owner]: order.userId });
+            if (!exists) {
+                return res.status(400).json({ message: 'That result does not belong to this customer.' });
+            }
+            component[ref.field] = req.body[ref.field];
+        }
+
+        component.status = status;
+        component.statusHistory.push({ status, at: new Date(), note });
+        if (trackingReference) component.trackingReference = String(trackingReference).slice(0, 80);
+
+        const rolled = C.rollupStatus(order.items.flatMap((i) => i.components || []));
+        const finished = rolled === 'resulted' && order.status !== 'resulted';
+        if (rolled && rolled !== order.status) order.transitionTo(rolled, `Rolled up from ${component.kind}`);
+        await order.save();
+
+        announce(order, component, status);
+        if (status === 'resulted') reinterpret(order, component);
+
+        // The whole order has come back: close the plan items it was bought for, as the
+        // order-level path does.
+        if (finished) {
+            const planItemIds = order.items.map((i) => i.planItemId).filter(Boolean);
+            if (planItemIds.length) {
+                await PlanItem.updateMany(
+                    { _id: { $in: planItemIds } },
+                    { $set: { status: 'completed', completedAt: new Date() } },
+                    { runValidators: true }
+                );
+                const completed = await PlanItem.find({ _id: { $in: planItemIds } });
+                for (const done of completed) await advanceRecurringItem(done);
+            }
+        }
+
+        res.json({ message: `${C.KIND_META[component.kind].label}: ${C.STAGE_LABEL[status]}`, order });
+    } catch (error) {
+        console.error('❌ Component update failed:', error);
+        res.status(400).json({ message: 'Error updating order', error: error.message });
+    }
+};
+
+exports._internal = { LEGAL_TRANSITIONS, announce };

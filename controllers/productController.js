@@ -1,4 +1,5 @@
 const Product = require('../models/Product');
+const { normaliseIncludes } = require('../utils/orderComponents');
 
 /**
  * How many pictures one product may carry.
@@ -70,12 +71,46 @@ const imagePatch = (body, existing = []) => {
 /** The fields a client may set. Anything else in the body is ignored, not stored. */
 const EDITABLE = ['name', 'sku', 'description', 'type', 'price'];
 
+const text = (v, max) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : undefined);
+
+/**
+ * A package's storefront copy, cleaned. Bullets are capped in number and length because the
+ * website and the app both lay them out as a fixed card, and a ninth bullet or a paragraph in
+ * one pushes the price off the card on a phone.
+ */
+const packagePatch = (pkg) => {
+    if (!pkg || typeof pkg !== 'object') return undefined;
+    return {
+        tier: text(pkg.tier, 40),
+        tagline: text(pkg.tagline, 140),
+        highlights: (Array.isArray(pkg.highlights) ? pkg.highlights : [])
+            .map((h) => text(h, 120))
+            .filter(Boolean)
+            .slice(0, 8),
+        rank: Number.isFinite(Number(pkg.rank)) ? Number(pkg.rank) : 0,
+        featured: pkg.featured === true,
+    };
+};
+
 const scalarPatch = (body) => {
     const patch = {};
     for (const key of EDITABLE) {
         if (body[key] !== undefined) patch[key] = body[key];
     }
+    // What the product ships — what its order line will track. Unknown kinds are dropped.
+    if (body.includes !== undefined) patch.includes = normaliseIncludes(body.includes);
+    if (body.package !== undefined) patch.package = packagePatch(body.package);
     return patch;
+};
+
+/** One featured package at a time: the storefronts mark exactly one as the default choice. */
+const keepOneFeatured = async (product) => {
+    if (product?.type === 'package' && product.package?.featured) {
+        await Product.updateMany(
+            { _id: { $ne: product._id }, 'package.featured': true },
+            { $set: { 'package.featured': false } }
+        );
+    }
 };
 
 // Add new product
@@ -85,6 +120,7 @@ exports.addProduct = async (req, res) => {
         const pictures = imagePatch(req.body) || { images: [], image: null };
 
         const product = await Product.create({ ...patch, ...pictures });
+        await keepOneFeatured(product);
         res.status(201).json(product);
     } catch (error) {
         res.status(400).json({ error: error.message });
@@ -124,6 +160,7 @@ exports.updateProduct = async (req, res) => {
             patch,
             { new: true, runValidators: true }
         );
+        await keepOneFeatured(product);
         res.json(product);
     } catch (error) {
         res.status(400).json({ error: error.message });
@@ -141,4 +178,4 @@ exports.deleteProduct = async (req, res) => {
 };
 
 // Exported for the tests, which assert the sanitising rules directly.
-exports._internal = { MAX_IMAGES, normaliseImages, imagePatch, isStoredUrl };
+exports._internal = { MAX_IMAGES, normaliseImages, imagePatch, isStoredUrl, packagePatch, scalarPatch };

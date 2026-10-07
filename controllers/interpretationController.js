@@ -480,6 +480,44 @@ const runGeneration = async ({ userId, dnaReportId, testResultId }) => {
 };
 
 /**
+ * One generation per person at a time, shared by the route and by server-side triggers.
+ *
+ * Joining a run already in flight returns that run's outcome rather than starting another —
+ * the reason this map exists (see the comment in `generateInterpretation`). No await between
+ * the check and the set, so two callers cannot both miss it.
+ */
+const generateOnce = async ({ userId, dnaReportId, testResultId }) => {
+    const key = String(userId);
+    const running = generationsInFlight.get(key);
+    if (running) return { outcome: await running, joined: true };
+
+    const run = runGeneration({ userId, dnaReportId, testResultId });
+    generationsInFlight.set(key, run);
+    try {
+        return { outcome: await run, joined: false };
+    } finally {
+        if (generationsInFlight.get(key) === run) generationsInFlight.delete(key);
+    }
+};
+
+/**
+ * Regenerate because new data arrived, with nobody waiting on a response — a laboratory
+ * result attached to an order by fulfilment. Same guard rails as the route: the
+ * regeneration guard, the one-run-per-person rule, and the 503 when no model key is set.
+ * Never throws; resolves to the outcome so the caller can decide what to tell the person.
+ */
+const requestGeneration = async ({ userId, dnaReportId, testResultId }) => {
+    try {
+        if (!isConfigured()) return { status: 503, body: { message: 'AI interpretation is unavailable' } };
+        const { outcome } = await generateOnce({ userId, dnaReportId, testResultId });
+        return outcome;
+    } catch (error) {
+        console.error('❌ Background interpretation failed:', error.message);
+        return { status: 500, body: { message: error.message } };
+    }
+};
+
+/**
  * POST /api/interpretation/generate
  *
  * Cached by source: an interpretation is expensive and deterministic enough that
@@ -522,20 +560,8 @@ exports.generateInterpretation = async (req, res) => {
         // copies of the plan worded slightly differently. A request that arrives mid-run
         // waits for that run and is given its result. No await between the check and the
         // set, so two requests cannot both miss it.
-        const key = String(userId);
-        const running = generationsInFlight.get(key);
-        if (running) {
-            const outcome = await running;
-            return send(res, outcome, { joined: true });
-        }
-
-        const run = runGeneration({ userId, dnaReportId, testResultId });
-        generationsInFlight.set(key, run);
-        try {
-            return send(res, await run);
-        } finally {
-            if (generationsInFlight.get(key) === run) generationsInFlight.delete(key);
-        }
+        const { outcome, joined } = await generateOnce({ userId, dnaReportId, testResultId });
+        return send(res, outcome, joined ? { joined: true } : undefined);
     } catch (error) {
         console.error('❌ Interpretation error:', error);
         res.status(500).json({ message: 'Could not generate interpretation', error: error.message });
@@ -726,6 +752,7 @@ exports.getStatus = async (req, res) => {
 
 // Exported for tests: the series capping and previous-interpretation parsing here are
 // what make the prompt's history usable, and they are worth asserting on directly.
+exports.requestGeneration = requestGeneration;
 exports._gatherContext = gatherContext;
 exports._gatherNutrition = gatherNutrition;
 exports._gatherMedications = gatherMedications;

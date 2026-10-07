@@ -201,6 +201,13 @@ exports.handleWebhook = async (req, res) => {
             case 'payment_intent.payment_failed':
                 await markOrderFailed(event.data.object);
                 break;
+            // A website purchase (Stripe Checkout). Carries the delivery address, which the
+            // payment intent does not — so this is handled even when the intent got here first.
+            // Required lazily: the checkout controller requires this file for `markOrderPaid`.
+            case 'checkout.session.completed':
+            case 'checkout.session.async_payment_succeeded':
+                await require('./checkoutController').applyCheckoutSession(event.data.object);
+                break;
             default:
                 break;
         }

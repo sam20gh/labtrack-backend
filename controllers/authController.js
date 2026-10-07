@@ -2,6 +2,7 @@ const Professional = require('../models/Professional');
 const User = require('../models/userModel');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const { isVerifiedEmail, claimByEmail } = require('../utils/claimOrders');
 
 // Professional Login
 exports.loginProfessional = async (req, res) => {
@@ -62,9 +63,15 @@ exports.syncSupabaseUser = async (req, res) => {
             return res.status(400).json({ message: 'Supabase identity has no email address' });
         }
 
+        // A package bought on the website before this account existed is held against the
+        // buyer's email. Claimed on every sign-in, not only the first, because the website
+        // purchase can just as well come after the account — see `utils/claimOrders.js`.
+        const claim = (u) => (isVerifiedEmail(claims) ? claimByEmail(u._id, email) : Promise.resolve(0));
+
         let user = await User.findOne({ supabaseId }).select('-password');
         if (user) {
-            return res.status(200).json({ message: 'Already linked', linked: 'existing', user });
+            const claimedOrders = await claim(user);
+            return res.status(200).json({ message: 'Already linked', linked: 'existing', user, claimedOrders });
         }
 
         // Adopt a legacy account with the same email rather than creating a duplicate.
@@ -80,7 +87,8 @@ exports.syncSupabaseUser = async (req, res) => {
         ).select('-password');
         if (user) {
             console.log('🔗 Linked Supabase identity to existing account:', email);
-            return res.status(200).json({ message: 'Account linked', linked: 'by-email', user });
+            const claimedOrders = await claim(user);
+            return res.status(200).json({ message: 'Account linked', linked: 'by-email', user, claimedOrders });
         }
 
         // Google sign-in supplies these; email sign-up does not
@@ -100,7 +108,8 @@ exports.syncSupabaseUser = async (req, res) => {
         delete user_.password;
 
         console.log('✨ Provisioned Predyqt account for Supabase user:', email);
-        return res.status(201).json({ message: 'Account created', linked: 'created', user: user_ });
+        const claimedOrders = await claim(created);
+        return res.status(201).json({ message: 'Account created', linked: 'created', user: user_, claimedOrders });
     } catch (error) {
         // Unique-index race: another concurrent sync won — re-read and return that.
         if (error.code === 11000) {

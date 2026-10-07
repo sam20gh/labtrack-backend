@@ -15,6 +15,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
 const { verifySupabaseToken, roleFromClaims, aalFromClaims } = require('../config/supabase');
+const { isVerifiedEmail } = require('../utils/claimOrders');
 
 /**
  * Read at call time rather than module load.
@@ -68,6 +69,9 @@ const resolveAuth = async (req) => {
             userId: user ? String(user._id) : null,
             supabaseId: claims.sub,
             email: claims.email,
+            // Whether the identity provider vouched for that address. Claiming a website
+            // order by email reads this — see `utils/claimOrders.js`.
+            emailVerified: isVerifiedEmail(claims),
             role: roleFromClaims(claims),
             // How this session proved identity — 'aal2' means a second factor was completed.
             // See `requireMfa` below.
@@ -83,6 +87,7 @@ const resolveAuth = async (req) => {
                 userId: payload.id ? String(payload.id) : null,
                 supabaseId: null,
                 email: payload.email || null,
+                emailVerified: false,
                 role: payload.role || 'user',
                 // A legacy token predates MFA entirely and can never carry a second factor.
                 aal: null,

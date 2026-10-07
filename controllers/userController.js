@@ -169,6 +169,9 @@ exports.getUserById = async (req, res) => {
 exports.updateUser = async (req, res) => {
     try {
         const updates = req.body;
+        // Server-owned: the journey's choices go through /api/onboarding, which validates
+        // them. Spread from a profile form, a stale client could un-skip or dismiss for good.
+        delete updates.onboarding;
 
         if (updates.password) {
             updates.password = await bcrypt.hash(updates.password, 10);

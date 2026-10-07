@@ -160,6 +160,28 @@ const UserSchema = new mongoose.Schema({
      * the only thing that reads it, so that is a one-line change.
      */
     proMember: { type: Boolean, default: false },
+
+    /**
+     * The first-run journey — only what a person *chose*, never what they did.
+     *
+     * Whether the profile is filled in, a package ordered, a bracelet paired or a result
+     * uploaded is read off the rows those actions write, every time (`utils/onboardingState.js`).
+     * A stored "step 3 done" flag drifts the first time somebody does step 3 from somewhere
+     * other than the journey. What cannot be derived is a decision: that they saw the welcome,
+     * that they would rather not order a kit yet, that they are finished with the card.
+     *
+     * Written only through `/api/onboarding`; `updateUser` strips it from a profile body.
+     */
+    onboarding: {
+        welcomedAt: { type: Date },
+        skipped: {
+            profile: { type: Date },
+            package: { type: Date },
+            results: { type: Date },
+            device: { type: Date },
+        },
+        dismissedAt: { type: Date },
+    },
     dob: { type: String, default: '' },
     gender: { type: String, enum: ['Male', 'Female', 'Other', null], default: null },
     height: { type: Number, default: null },

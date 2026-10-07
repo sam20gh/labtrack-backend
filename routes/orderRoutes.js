@@ -25,5 +25,7 @@ router.post('/:id/cancel', c.cancelOrder);
 
 // Fulfilment. Transition legality is enforced in the controller, not here.
 router.patch('/:id/status', requireRole('admin'), c.updateOrderStatus);
+// A package ships several parcels on several timelines — each moves on its own.
+router.patch('/:id/items/:itemId/components/:kind', requireRole('admin'), c.updateComponentStatus);
 
 module.exports = router;

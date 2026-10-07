@@ -135,6 +135,8 @@ app.use('/api/dna-reports', dnaReportRoutes);
 app.use('/api/genotypes', genotypeRoutes);
 app.use('/api/plan-items', planItemRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/onboarding', require('./routes/onboardingRoutes'));
+app.use('/api/checkout', require('./routes/checkoutRoutes'));
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/payments', paymentRoutes);
