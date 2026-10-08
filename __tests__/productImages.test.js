@@ -145,7 +145,7 @@ describe('updating a product', () => {
 
         expect(updated.name).toBe('Renamed');
         expect(String(updated._id)).toBe(String(created._id));
-        expect(updated.toObject().proMember).toBeUndefined();
+        expect(updated.proMember).toBeUndefined();
     });
 
     it('answers 404 for a product that does not exist', async () => {

@@ -1,14 +1,17 @@
 const Order = require('../models/Order');
 const PlanItem = require('../models/PlanItem');
 const User = require('../models/userModel');
-const { getStripe, isConfigured, isTestMode, toMinorUnits, CURRENCY, WEBHOOK_SECRETS } = require('../config/stripe');
+const { BASE, currencyList } = require('../utils/currency');
+const { getStripe, isConfigured, isTestMode, toMinorUnits, stripeCurrency, WEBHOOK_SECRETS } = require('../config/stripe');
 
 /** GET /api/payments/status — lets the client decide whether to show a payment step. */
 exports.getPaymentStatus = async (req, res) => {
     res.json({
         available: isConfigured(),
         testMode: isTestMode(),
-        currency: CURRENCY,
+        // The base; each order is charged in its own `currency`.
+        currency: stripeCurrency(BASE),
+        currencies: currencyList(),
         publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || null,
     });
 };
@@ -59,7 +62,11 @@ exports.createPaymentIntent = async (req, res) => {
         if (order.payment?.reference) {
             try {
                 const existing = await stripe.paymentIntents.retrieve(order.payment.reference);
-                if (['requires_payment_method', 'requires_confirmation', 'requires_action'].includes(existing.status)) {
+                // Only an intent for exactly this amount in exactly this currency: one created
+                // under the old account-wide currency must not be reused for a re-priced order.
+                if (['requires_payment_method', 'requires_confirmation', 'requires_action'].includes(existing.status)
+                    && existing.currency === stripeCurrency(order.currency)
+                    && existing.amount === toMinorUnits(order.total)) {
                     intent = existing;
                 }
             } catch {
@@ -70,7 +77,9 @@ exports.createPaymentIntent = async (req, res) => {
         if (!intent) {
             intent = await stripe.paymentIntents.create({
                 amount: toMinorUnits(order.total),
-                currency: CURRENCY,
+                // The order's own currency, fixed when it was priced. Never the base: an AED
+                // total charged as pounds is nearly five times the price.
+                currency: stripeCurrency(order.currency),
                 customer: customerId,
                 automatic_payment_methods: { enabled: true },
                 // The webhook is the source of truth, and it only receives metadata
@@ -95,7 +104,7 @@ exports.createPaymentIntent = async (req, res) => {
             customerId,
             publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
             amount: order.total,
-            currency: CURRENCY,
+            currency: stripeCurrency(order.currency),
             testMode: isTestMode(),
         });
     } catch (error) {

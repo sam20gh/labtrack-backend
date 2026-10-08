@@ -25,7 +25,7 @@ jest.mock('../config/stripe', () => ({
     isConfigured: () => true,
     isTestMode: () => true,
     toMinorUnits: (a) => Math.round(Number(a) * 100),
-    CURRENCY: 'gbp',
+    stripeCurrency: (c) => String(c || 'GBP').toLowerCase(),
     WEBHOOK_SECRETS: [],
 }));
 

@@ -19,6 +19,8 @@ const PlanItem = require('../models/PlanItem');
 const Product = require('../models/Product');
 const Professional = require('../models/Professional');
 const Interpretation = require('../models/Interpretation');
+const ExchangeRates = require('../models/ExchangeRates');
+const { CODES, CURRENCIES, pricingFor } = require('./currency');
 const { presentToPatient } = require('../config/clinicalPolicy');
 const { buildContext } = require('./interpretationEngine');
 const { _gatherContext } = require('../controllers/interpretationController');
@@ -60,15 +62,19 @@ const isoDay = (d) => {
  * be cached separately — see `buildPrompt`.
  */
 const gatherActionable = async (userId) => {
-    const [planItems, professionals, products, interpretation] = await Promise.all([
+    const [planItems, professionals, products, interpretation, { rates }] = await Promise.all([
         PlanItem.find({ userId, status: { $nin: ['completed', 'dismissed'] } })
             .sort({ dueDate: 1 }).limit(CATALOGUE_LIMIT).lean(),
         Professional.find().select('firstname lastname speciality hourly_rate country description').limit(CATALOGUE_LIMIT).lean(),
-        Product.find().select('name type price description').limit(CATALOGUE_LIMIT).lean(),
+        Product.find().select('name type price prices description').limit(CATALOGUE_LIMIT).lean(),
         Interpretation.findOne({ userId }).sort({ generatedAt: -1 }).lean(),
+        ExchangeRates.current(),
     ]);
 
-    return { planItems, professionals, products, interpretation };
+    // Priced here, through the same table the basket and Stripe use, so the assistant cannot
+    // quote a figure the checkout would not charge.
+    const priced = products.map((p) => ({ ...p, pricing: pricingFor(p, rates) }));
+    return { planItems, professionals, products: priced, interpretation };
 };
 
 /**
@@ -113,8 +119,13 @@ const renderActionable = ({ planItems, professionals, products, interpretation }
     if (!products.length) {
         lines.push('The catalogue is empty.');
     } else {
+        lines.push('Each is priced in GBP, AED, SAR and EUR. Quote the currency the person uses; if you do not know it, quote GBP.');
         for (const p of products) {
-            lines.push(`  ${p.name}${p.type ? ` (${p.type})` : ''} — £${p.price}${p.description ? ` — ${p.description}` : ''}`);
+            const money = CODES
+                .map((code) => p.pricing?.[code] ? `${CURRENCIES[code].symbol}${CURRENCIES[code].symbol.length > 1 ? ' ' : ''}${p.pricing[code].amount}` : null)
+                .filter(Boolean)
+                .join(' · ') || `£${p.price}`;
+            lines.push(`  ${p.name}${p.type ? ` (${p.type})` : ''} — ${money}${p.description ? ` — ${p.description}` : ''}`);
         }
     }
 

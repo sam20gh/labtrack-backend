@@ -25,8 +25,12 @@ const WEBHOOK_SECRETS = (process.env.STRIPE_WEBHOOK_SECRET || '')
     .map((s) => s.trim())
     .filter(Boolean);
 
-/** Zero-decimal currencies aside, Stripe amounts are in the smallest unit. */
-const CURRENCY = (process.env.STRIPE_CURRENCY || 'gbp').toLowerCase();
+/**
+ * There is no account-wide currency any more: every order carries its own (`Order.currency`),
+ * chosen by the buyer from `utils/currency.js`, and Stripe is charged in that. The old
+ * `STRIPE_CURRENCY` variable is ignored.
+ */
+const stripeCurrency = (code) => String(code || 'GBP').toLowerCase();
 
 let client = null;
 
@@ -39,7 +43,8 @@ const getStripe = () => {
 };
 
 /**
- * Convert a decimal amount to Stripe's smallest currency unit.
+ * Convert a decimal amount to Stripe's smallest currency unit. All four currencies sold
+ * (GBP, AED, SAR, EUR) are two-decimal in Stripe, so ×100 holds for each.
  * `Math.round` matters: 718.98 * 100 is 71897.99999999999 in floating point, and Stripe
  * rejects non-integer amounts.
  */
@@ -48,4 +53,4 @@ const toMinorUnits = (amount) => Math.round(Number(amount) * 100);
 /** True when running against test keys — surfaced to the client so the UI can say so. */
 const isTestMode = () => Boolean(SECRET_KEY && SECRET_KEY.startsWith('sk_test_'));
 
-module.exports = { getStripe, isConfigured, isTestMode, toMinorUnits, CURRENCY, WEBHOOK_SECRETS };
+module.exports = { getStripe, isConfigured, isTestMode, toMinorUnits, stripeCurrency, WEBHOOK_SECRETS };

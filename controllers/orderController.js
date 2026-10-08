@@ -5,17 +5,31 @@ const PlanItem = require('../models/PlanItem');
 const { advanceRecurringItem } = require('../utils/planGeneratorV2');
 const { publish } = require('../utils/notificationCentre');
 const C = require('../utils/orderComponents');
+const ExchangeRates = require('../models/ExchangeRates');
+const { BASE, normaliseCurrency, priceFor } = require('../utils/currency');
 
 /**
- * POST /api/orders — place a home-collection order.
+ * POST /api/orders { items, currency? } — place a home-collection order.
  * Prices come from the catalogue, never from the request body: a client-supplied price is
- * a client-controlled price.
+ * a client-controlled price. The client chooses only the *currency*, and every line is
+ * priced in it by `utils/currency.priceFor`. No currency means GBP, which is what every
+ * client sent before there was a choice.
  */
 exports.createOrder = async (req, res) => {
     try {
         const { items, shippingAddress } = req.body;
         if (!Array.isArray(items) || !items.length) {
             return res.status(400).json({ message: 'items must be a non-empty array' });
+        }
+
+        const sentCurrency = req.body.currency;
+        const orderCurrency = sentCurrency === undefined || sentCurrency === null || sentCurrency === ''
+            ? BASE
+            : normaliseCurrency(sentCurrency);
+        // Refused rather than defaulted: charging GBP to somebody who chose AED is the one
+        // outcome worse than an error.
+        if (!orderCurrency) {
+            return res.status(400).json({ message: `We do not sell in ${String(sentCurrency).slice(0, 8)}.` });
         }
 
         // Validate ids before querying: an unparseable id would otherwise surface as a
@@ -26,7 +40,10 @@ exports.createOrder = async (req, res) => {
             return res.status(400).json({ message: `Invalid product id: ${invalid[0]}` });
         }
 
-        const products = await Product.find({ _id: { $in: productIds } }).lean();
+        const [products, { rates }] = await Promise.all([
+            Product.find({ _id: { $in: productIds } }).lean(),
+            ExchangeRates.current(),
+        ]);
         const byId = new Map(products.map((p) => [String(p._id), p]));
 
         const lineItems = [];
@@ -39,7 +56,7 @@ exports.createOrder = async (req, res) => {
             lineItems.push({
                 productId: product._id,
                 name: product.name,
-                price: product.price,
+                price: priceFor(product, orderCurrency, rates).amount,
                 quantity,
                 planItemId: item.planItemId,
                 // What this line ships, each on its own timeline. Empty for a product that
@@ -48,7 +65,8 @@ exports.createOrder = async (req, res) => {
             });
         }
 
-        const subtotal = lineItems.reduce((sum, l) => sum + l.price * l.quantity, 0);
+        // Rounded to the minor unit: 3 × 19.99 is 59.97000000000001 in floating point.
+        const subtotal = Math.round(lineItems.reduce((sum, l) => sum + l.price * l.quantity, 0) * 100) / 100;
 
         // With Stripe configured the order waits for payment; without it, orders are
         // placed unpaid so the flow still works in environments with no payment provider.
@@ -59,6 +77,7 @@ exports.createOrder = async (req, res) => {
             userId: req.auth.userId,
             source: 'app',
             items: lineItems,
+            currency: orderCurrency,
             subtotal,
             total: subtotal,
             status: initialStatus,

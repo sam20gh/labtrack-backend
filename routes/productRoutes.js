@@ -8,6 +8,9 @@ const { authenticateToken, requireRole } = require('../middleware/authMiddleware
 // screenings against, so an edit here silently changes which plan items can ever resolve
 // to something orderable.
 router.get('/', authenticateToken, productController.getProducts);
+// Before `/:id`, or "currencies" is read as a product id.
+router.get('/currencies', authenticateToken, productController.getCurrencies);
+router.put('/currencies', authenticateToken, requireRole('admin'), productController.updateRates);
 router.get('/:id', authenticateToken, productController.getProduct);
 
 router.post('/', authenticateToken, requireRole('admin'), productController.addProduct);

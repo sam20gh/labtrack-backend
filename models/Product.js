@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { KINDS } = require('../utils/orderComponents');
+const { OTHER_CODES } = require('../utils/currency');
 
 /**
  * The orderable catalogue.
@@ -24,7 +25,15 @@ const ProductSchema = new mongoose.Schema({
     /** The gallery, cover first. Sanitised and capped by the controller. */
     images: { type: [String], default: [] },
     type: { type: String },
-    price: { type: Number, required: true },
+    /** The base price, in GBP. Every other currency is priced from it or set below. */
+    price: { type: Number, required: true, min: 0 },
+
+    /**
+     * An explicit price per non-base currency, or null to convert from `price` at the stored
+     * rate. See `utils/currency.js` — `priceFor` is the only thing that reads this, and a set
+     * figure always wins over a conversion.
+     */
+    prices: Object.fromEntries(OTHER_CODES.map((code) => [code, { type: Number, min: 0, default: null }])),
 
     /**
      * What this product physically ships, and therefore what its order line tracks.
