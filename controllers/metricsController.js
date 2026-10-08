@@ -345,6 +345,7 @@ exports.getOverview = async (req, res) => {
                 bloodPressureCard(newest, series, byDay, range),
                 heartRateCard(newest, series),
                 hrvCard(newest, series, byDay, baselineRange),
+                stressCard(newest, series, byDay, baselineRange),
                 spo2Card(newest, series, target),
                 temperatureCard(newest, series, byDay, range),
                 sleepCard(newest, series),
@@ -510,6 +511,65 @@ const hrvCard = (newest, series, byDay, baselineRange) => {
         baseline,
         status,
         series: series((r) => round(r?.heart?.hrvMs)),
+        loggable: false,
+    };
+};
+
+/**
+ * A stress score this close to the baseline reads as "near your usual". A fraction alone is
+ * too tight at the bottom of the scale — 15% of a usual 12 is under two points, which is
+ * noise — so it never narrows below `STRESS_USUAL_MIN_POINTS`.
+ */
+const STRESS_USUAL_BAND = 0.15;
+const STRESS_USUAL_MIN_POINTS = 5;
+
+/**
+ * Stress — the bracelet's own score, against the person's own baseline.
+ *
+ * The vendor works it out from the HRV measurement it arrives with and does not publish the
+ * scale, so there is nothing honest to compare one day with except the person's other days.
+ * It is HRV's card in a friendlier voice, and it follows HRV's rules for the same reasons:
+ * the latest day is compared with the median of the previous `HRV_BASELINE_DAYS`, nothing is
+ * claimed until `HRV_BASELINE_MIN_DAYS` days exist, and there is no verdict and no colour.
+ *
+ * Three things it deliberately is not. **Not a score pillar**: `mind` is the one pillar where
+ * self-report is the measurement, and under the score's rule that observed data replaces
+ * reported data, a vendor's number would silently override how somebody says they feel — and
+ * HRV would be counted twice. **Not a vital alert**: nobody acts on one day of it. **Not
+ * banded**: a "high stress" label would be a meaning nobody has documented.
+ */
+const stressCard = (newest, series, byDay, baselineRange) => {
+    const latest = newest((r) => (r?.stress?.readings ? r.stress.avg : null));
+
+    const history = baselineRange
+        .filter((d) => d !== latest.day)
+        .map((d) => {
+            const s = byDay.get(d)?.stress;
+            return s?.readings ? s.avg : null;
+        })
+        .filter((v) => Number.isFinite(v));
+    const baseline = history.length >= HRV_BASELINE_MIN_DAYS ? Math.round(median(history)) : null;
+
+    let status;
+    if (latest.value == null) status = 'Connect a bracelet';
+    else if (baseline == null) status = `Learning your usual · ${history.length} of ${HRV_BASELINE_MIN_DAYS} days`;
+    else {
+        const band = Math.max(baseline * STRESS_USUAL_BAND, STRESS_USUAL_MIN_POINTS);
+        const delta = latest.value - baseline;
+        status = delta > band ? `Higher than your usual ${baseline}`
+            : delta < -band ? `Lower than your usual ${baseline}`
+                : `Near your usual ${baseline}`;
+    }
+
+    return {
+        key: 'stress',
+        label: 'Stress',
+        unit: '',
+        value: latest.value,
+        at: latest.day,
+        baseline,
+        status,
+        series: series((r) => (r?.stress?.readings ? r.stress.avg : null)),
         loggable: false,
     };
 };
@@ -786,6 +846,29 @@ const DEVICE_HISTORY = {
         };
     },
 
+    stress: async ({ userId, range, byDay }) => {
+        const series = range.map((day) => {
+            const s = byDay.get(day)?.stress;
+            return s?.readings
+                ? { day, value: s.avg, min: s.min ?? null, max: s.max ?? null }
+                : { day, value: null };
+        });
+        const logs = await MetricLog.find({ userId, kind: 'stress', day: { $gte: range[0] } })
+            .sort({ measuredAt: -1 }).limit(ENTRY_LIMIT + 1).lean();
+        // The same rule as the card: the latest day is not part of its own baseline.
+        const earlier = series.filter((p) => p.value != null).slice(0, -1).map((p) => p.value);
+        const baseline = earlier.length >= HRV_BASELINE_MIN_DAYS ? Math.round(median(earlier)) : null;
+        return {
+            label: 'Stress',
+            unit: '',
+            series,
+            entries: logs.map((l) => ({
+                id: String(l._id), day: l.day, at: l.measuredAt, value: l.stress, unit: '', label: null, detail: null,
+            })),
+            note: `${baseline != null ? `Your usual is about ${baseline}. ` : ''}This is your bracelet's own score, worked out from the same measurement as your heart rate variability. Its maker does not publish the scale, so it is only ever compared with your own days. It is not a diagnosis.`,
+        };
+    },
+
     spo2: async ({ userId, range, byDay }) => {
         const target = await VitalTarget.findOne({ userId }).select('spo2Scale').lean();
         const series = range.map((day) => {
@@ -968,5 +1051,6 @@ exports._resolveDay = resolveDay;
 exports._heartRateCard = heartRateCard;
 exports._spo2Card = spo2Card;
 exports._hrvCard = hrvCard;
+exports._stressCard = stressCard;
 exports._temperatureCard = temperatureCard;
 exports._DEVICE_HISTORY_KINDS = Object.keys(DEVICE_HISTORY);

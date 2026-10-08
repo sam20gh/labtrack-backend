@@ -50,6 +50,7 @@ const recomputeMetricDay = async (userId, day) => {
     const pressures = logs.filter((l) => l.kind === 'blood_pressure');
     const oxygen = logs.filter((l) => l.kind === 'spo2' && Number.isFinite(l.spo2));
     const temps = logs.filter((l) => l.kind === 'temperature' && Number.isFinite(l.celsius));
+    const stresses = logs.filter((l) => l.kind === 'stress' && Number.isFinite(l.stress));
 
     // ── body ────────────────────────────────────────────────────────────────
     // The *latest* weigh-in of the day wins rather than the mean. A clothed and an unclothed
@@ -136,6 +137,21 @@ const recomputeMetricDay = async (userId, day) => {
         wristSleepReportedSource: existing?.temperature?.wristSleepReportedSource ?? null,
     };
 
+    // ── stress ──────────────────────────────────────────────────────────────
+    //
+    // The bracelet's own score, averaged and nothing more. `max` is kept for the reason
+    // `min` is kept for SpO2. Whole numbers, because the vendor reports whole numbers and a
+    // decimal would claim a precision its scale never had.
+    const stressValues = stresses.map((l) => l.stress);
+    const stressTotals = stressValues.length
+        ? {
+            avg: Math.round(stressValues.reduce((a, b) => a + b, 0) / stressValues.length),
+            min: Math.min(...stressValues),
+            max: Math.max(...stressValues),
+            readings: stressValues.length,
+        }
+        : { avg: null, min: null, max: null, readings: 0 };
+
     return DailyMetrics.findOneAndUpdate(
         { userId, day },
         {
@@ -145,6 +161,7 @@ const recomputeMetricDay = async (userId, day) => {
                 bloodPressure,
                 spo2: spo2Totals,
                 temperature: temperatureTotals,
+                stress: stressTotals,
                 recomputedAt: new Date(),
             },
         },

@@ -26,7 +26,7 @@ const MetricLogSchema = new mongoose.Schema({
     kind: {
         type: String,
         required: true,
-        enum: ['weight', 'water', 'blood_pressure', 'spo2', 'temperature'],
+        enum: ['weight', 'water', 'blood_pressure', 'spo2', 'temperature', 'stress'],
     },
 
     /** Local calendar day, `YYYY-MM-DD`, written from the client's `tzOffset`. */
@@ -84,6 +84,17 @@ const MetricLogSchema = new mongoose.Schema({
      * anything that reads the number alone.
      */
     site: { type: String, enum: ['wrist', 'axillary', null], default: null },
+
+    // ── stress ──────────────────────────────────────────────────────────────
+    /**
+     * The bracelet's own stress score, as it reported it.
+     *
+     * Worked out by the vendor from the HRV measurement it arrived with, on a scale the
+     * vendor does not publish (1–100 in everything seen so far). Stored, never recomputed or
+     * banded here — a band would be a claim about what the number means that nobody has
+     * documented. It is not a score pillar and not a vital alert; see `stressCard`.
+     */
+    stress: { type: Number, default: null },
 
     /**
      * How a reading was obtained, where that changes what it means.

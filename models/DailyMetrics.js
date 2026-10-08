@@ -147,6 +147,19 @@ const Spo2TotalsSchema = new mongoose.Schema({
 }, { _id: false });
 
 /**
+ * A day's stress scores from the bracelet.
+ *
+ * `max` is kept beside the mean for the reason SpO2 keeps `min`: a tense hour is an event,
+ * and a day's average folds it into the calm ones around it.
+ */
+const StressTotalsSchema = new mongoose.Schema({
+    avg: { type: Number, default: null },
+    min: { type: Number, default: null },
+    max: { type: Number, default: null },
+    readings: { type: Number, default: 0 },
+}, { _id: false });
+
+/**
  * A day's temperature readings, kept apart by site.
  *
  * Two sets of figures rather than one, because a wrist reading and an axillary reading are
@@ -196,6 +209,7 @@ const DailyMetricsSchema = new mongoose.Schema({
     bloodPressure: { type: BloodPressureTotalsSchema, default: () => ({}) },
     spo2: { type: Spo2TotalsSchema, default: () => ({}) },
     temperature: { type: TemperatureTotalsSchema, default: () => ({}) },
+    stress: { type: StressTotalsSchema, default: () => ({}) },
 
     /**
      * Whole-day figures the health store reports directly (steps, resting energy) rather

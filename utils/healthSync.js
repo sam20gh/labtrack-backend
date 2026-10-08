@@ -989,6 +989,38 @@ const ingestBloodPressure = async (userId, rows = [], { source, tzOffset }) => {
 };
 
 /**
+ * The bracelet's stress score, one row per HRV measurement it came with.
+ *
+ * Stored as reported. The phone already dropped failed measurements and values off the
+ * scale (`mapping.toStress`); the same bounds are checked again here because this endpoint
+ * is what the record trusts, and an out-of-range row is dropped rather than rejected for the
+ * reason every ingest in this file gives — one bad read must not cost a batch.
+ */
+const ingestStress = async (userId, rows = [], { source, tzOffset }) => {
+    const ops = [];
+    const days = new Set();
+
+    for (const row of rows) {
+        const measuredAt = new Date(row?.measuredAt);
+        if (Number.isNaN(measuredAt.getTime()) || !row?.externalId) continue;
+
+        const stress = Number(row.score);
+        if (!Number.isFinite(stress) || stress < 1 || stress > 100) continue;
+
+        const day = resolveDay(row.day, measuredAt, tzOffset);
+        days.add(day);
+
+        ops.push(upsertOp({
+            filter: { userId, kind: 'stress', externalId: row.externalId },
+            set: { day, measuredAt, stress: Math.round(stress), source },
+        }));
+    }
+
+    if (ops.length) await MetricLog.bulkWrite(ops, { ordered: false });
+    return days;
+};
+
+/**
  * ECG and PPG recordings.
  *
  * Every derived figure is stored **as the device reported it**. Nothing here recomputes a
@@ -1038,7 +1070,7 @@ const ingestEcg = async (userId, rows = [], { tzOffset }) => {
 
 const ingestBatch = async ({
     userId, platform, tzOffset, activities = [], sleep = [], heart = [], days = [], goalMinutes,
-    spo2 = [], temperature = [], bloodPressure = [], ecg = [],
+    spo2 = [], temperature = [], bloodPressure = [], ecg = [], stress = [],
     cycle = [], cycleWindow = null, nightTemperature = [],
 }) => {
     const source = platform === 'aggregator' ? 'aggregator' : platform;
@@ -1059,6 +1091,7 @@ const ingestBatch = async ({
     const tempDays = await ingestTemperature(id, temperature, { source: metricSource, tzOffset });
     const bpDays = await ingestBloodPressure(id, bloodPressure, { source: metricSource, tzOffset });
     const ecgDays = await ingestEcg(id, ecg, { tzOffset });
+    const stressDays = await ingestStress(id, stress, { source: metricSource, tzOffset });
 
     // The cycle tracker's two phone-store families. Sent only by a phone that switched the
     // cycle import on (`lib/health/cycleImport.ts`); every other batch omits both.
@@ -1069,7 +1102,7 @@ const ingestBatch = async ({
 
     for (const set of [
         activityDays, sleepDays, heartDays, summaryDays,
-        spo2Days, tempDays, bpDays, ecgDays,
+        spo2Days, tempDays, bpDays, ecgDays, stressDays,
     ]) {
         for (const d of set) touched.add(d);
     }
@@ -1095,7 +1128,7 @@ const ingestBatch = async ({
      * require here would make the cycle real the moment `metricRollup` ever needs anything
      * back from this file.
      */
-    const metricDays = new Set([...spo2Days, ...tempDays, ...bpDays]);
+    const metricDays = new Set([...spo2Days, ...tempDays, ...bpDays, ...stressDays]);
     if (metricDays.size) {
         const { recomputeMetricDay } = require('./metricRollup');
         for (const day of metricDays) await recomputeMetricDay(id, day);
@@ -1124,6 +1157,7 @@ const ingestBatch = async ({
             temperature: temperature.length,
             bloodPressure: bloodPressure.length,
             ecg: ecg.length,
+            stress: stress.length,
             cycle: cycle.length,
             nightTemperature: nightTemperature.length,
         },
@@ -1141,6 +1175,7 @@ module.exports = {
     ingestTemperature,
     ingestBloodPressure,
     ingestEcg,
+    ingestStress,
     ingestCycle,
     ingestNightTemperature,
     recomputeDay,

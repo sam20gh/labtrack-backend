@@ -297,6 +297,9 @@ const UserSchema = new mongoose.Schema({
         restingBpm: { type: Number, default: null },
         /** Median HRV in ms, where the device reports it. */
         hrvMs: { type: Number, default: null },
+        /** Median of the bracelet's daily stress averages, and how many days it is over. */
+        stressScore: { type: Number, default: null },
+        stressDays: { type: Number, default: 0 },
 
         /** Mean minutes asleep a night, and the mean nightly sleep score. */
         sleepMinutes: { type: Number, default: null },

@@ -235,6 +235,13 @@ const buildContext = ({ user, dnaReports = [], biomarkers = [], trends = {}, ser
             facts.push(`Resting heart rate ${observed.restingBpm} bpm`
                 + (observed.hrvMs != null ? `, HRV ${observed.hrvMs} ms.` : '.'));
         }
+        if (observed.stressScore != null) {
+            // Named as the device's figure on an unpublished scale, so the model treats it as
+            // context beside HRV rather than as a measurement with a meaning of its own.
+            facts.push(`Their bracelet's own stress score (derived from HRV; the vendor publishes `
+                + `no scale) has a median of ${observed.stressScore} over ${observed.stressDays} days. `
+                + `It is not their self-reported stress.`);
+        }
         if (observed.weightKg != null) {
             facts.push(`Most recent measured weight ${observed.weightKg} kg`
                 + (observed.weightAt ? ` (${isoDay(observed.weightAt)}).` : '.'));

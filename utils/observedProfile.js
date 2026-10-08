@@ -153,6 +153,8 @@ const derive = (gathered, { latestWeight } = {}) => {
 
     const restings = dailyMetrics.map((m) => m.heart?.restingBpm).filter(Number.isFinite);
     const hrvs = dailyMetrics.map((m) => m.heart?.hrvMs).filter(Number.isFinite);
+    const stresses = dailyMetrics
+        .filter((m) => m.stress?.readings > 0).map((m) => m.stress.avg).filter(Number.isFinite);
     const asleep = dailyMetrics.map((m) => m.sleep?.asleepMin).filter(Number.isFinite);
     const sleepScores = dailyMetrics.map((m) => m.sleep?.score).filter(Number.isFinite);
     const steps = activitySeries.map((p) => p.steps).filter(Number.isFinite);
@@ -190,6 +192,10 @@ const derive = (gathered, { latestWeight } = {}) => {
 
         restingBpm: round(median(restings)),
         hrvMs: round(median(hrvs)),
+        // The bracelet's own score, median of its daily averages. Context for the assistant
+        // only: the `mind` pillar never reads it — see `metricsController.stressCard`.
+        stressScore: round(median(stresses)),
+        stressDays: stresses.length,
 
         sleepMinutes: round(mean(asleep)),
         sleepScore: round(mean(sleepScores)),

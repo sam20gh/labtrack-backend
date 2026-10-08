@@ -46,7 +46,7 @@ const history = async (kind, days = 30) => {
 describe('device-fed metric history', () => {
     it('serves every device-fed card on the list', () => {
         expect(metrics._DEVICE_HISTORY_KINDS.sort()).toEqual(
-            ['heart-rate', 'hrv', 'sleep', 'spo2', 'steps', 'temperature'],
+            ['heart-rate', 'hrv', 'sleep', 'spo2', 'steps', 'stress', 'temperature'],
         );
     });
 

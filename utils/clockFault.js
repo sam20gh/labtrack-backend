@@ -74,6 +74,7 @@ const INSTANT_FAMILIES = {
     temperature: 'measuredAt',
     bloodPressure: 'measuredAt',
     ecg: 'measuredAt',
+    stress: 'measuredAt',
 };
 
 const time = (value) => {
