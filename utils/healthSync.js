@@ -1021,6 +1021,91 @@ const ingestStress = async (userId, rows = [], { source, tzOffset }) => {
 };
 
 /**
+ * A bracelet's continuous heart rate, one entry per vendor record — see `models/HeartStream.js`.
+ *
+ * Each row is a local day and its records: `{ day, blocks: { [startMs]: [n, sum, min, max] } }`.
+ * Every key is `$set` on its own, so a record re-sent is the same write and a day posted in
+ * pieces accumulates. The day's spread is then rebuilt from every key the day holds and
+ * written as the device's spread — after `ingestDaySummaries`, so it wins over the per-day
+ * figure the phone still sends for an older server.
+ *
+ * A malformed key or tuple is skipped rather than rejected, for the reason every ingest in this
+ * file gives. Readings outside 25–250 bpm are a sensor fault, not a heart.
+ */
+const STREAM_BPM = { min: 25, max: 250 };
+const STREAM_MAX_KEYS_PER_DAY = 5000;
+
+const streamTuple = (value) => {
+    if (!Array.isArray(value) || value.length !== 4) return null;
+    const [n, sum, min, max] = value.map(Number);
+    if (![n, sum, min, max].every(Number.isFinite)) return null;
+    if (n < 1 || n > 60 || min > max) return null;
+    if (min < STREAM_BPM.min || max > STREAM_BPM.max) return null;
+    const mean = sum / n;
+    if (mean < min || mean > max) return null;
+    return [Math.round(n), Math.round(sum), Math.round(min), Math.round(max)];
+};
+
+const spreadOf = (blocks = {}) => {
+    let n = 0; let sum = 0; let min = Infinity; let max = -Infinity;
+    for (const tuple of Object.values(blocks)) {
+        const t = streamTuple(tuple);
+        if (!t) continue;
+        n += t[0]; sum += t[1];
+        if (t[2] < min) min = t[2];
+        if (t[3] > max) max = t[3];
+    }
+    return n ? { minBpm: min, maxBpm: max, avgBpm: Math.round(sum / n), readings: n } : null;
+};
+
+const ingestHeartStream = async (userId, rows = []) => {
+    const HeartStream = require('../models/HeartStream');
+    const days = new Set();
+
+    for (const row of rows) {
+        if (!isDayString(row?.day) || !row.blocks || typeof row.blocks !== 'object') continue;
+        const set = {};
+        let keys = 0;
+        for (const [key, value] of Object.entries(row.blocks)) {
+            if (keys >= STREAM_MAX_KEYS_PER_DAY) break;
+            if (!/^\d{10,14}$/.test(key)) continue;
+            const tuple = streamTuple(value);
+            if (!tuple) continue;
+            set[`blocks.${key}`] = tuple;
+            keys += 1;
+        }
+        if (!keys) continue;
+
+        await HeartStream.updateOne(
+            { userId, day: row.day },
+            { $set: set, $setOnInsert: { userId, day: row.day } },
+            { upsert: true },
+        );
+        days.add(row.day);
+    }
+
+    for (const day of days) {
+        const doc = await HeartStream.findOne({ userId, day }).select('blocks').lean();
+        const spread = spreadOf(doc?.blocks);
+        if (!spread) continue;
+        await DailyMetrics.updateOne(
+            { userId, day },
+            {
+                $set: {
+                    'heart.minBpm': spread.minBpm,
+                    'heart.maxBpm': spread.maxBpm,
+                    'heart.avgBpm': spread.avgBpm,
+                    'heart.spreadSource': 'device',
+                },
+                $setOnInsert: { userId, day },
+            },
+            { upsert: true },
+        );
+    }
+    return days;
+};
+
+/**
  * ECG and PPG recordings.
  *
  * Every derived figure is stored **as the device reported it**. Nothing here recomputes a
@@ -1070,7 +1155,7 @@ const ingestEcg = async (userId, rows = [], { tzOffset }) => {
 
 const ingestBatch = async ({
     userId, platform, tzOffset, activities = [], sleep = [], heart = [], days = [], goalMinutes,
-    spo2 = [], temperature = [], bloodPressure = [], ecg = [], stress = [],
+    spo2 = [], temperature = [], bloodPressure = [], ecg = [], stress = [], heartStream = [],
     cycle = [], cycleWindow = null, nightTemperature = [],
 }) => {
     const source = platform === 'aggregator' ? 'aggregator' : platform;
@@ -1084,6 +1169,9 @@ const ingestBatch = async ({
     const sleepDays = await ingestSleep(id, sleep, { source, tzOffset, goalMinutes });
     const { days: heartDays, rejected } = await ingestHeart(id, heart, { source, tzOffset });
     const summaryDays = await ingestDaySummaries(id, days);
+    // After the day summaries, so a spread rebuilt from the stored records wins over the
+    // per-day figure a phone also sends for servers that predate the stream.
+    const streamDays = await ingestHeartStream(id, heartStream);
 
     // Bracelet-only families. Absent from every HealthKit and Health Connect batch, which
     // is why they default to empty rather than being required.
@@ -1101,7 +1189,7 @@ const ingestBatch = async ({
     await ingestNightTemperature(id, nightTemperature, { source });
 
     for (const set of [
-        activityDays, sleepDays, heartDays, summaryDays,
+        activityDays, sleepDays, heartDays, summaryDays, streamDays,
         spo2Days, tempDays, bpDays, ecgDays, stressDays,
     ]) {
         for (const d of set) touched.add(d);
@@ -1158,6 +1246,9 @@ const ingestBatch = async ({
             bloodPressure: bloodPressure.length,
             ecg: ecg.length,
             stress: stress.length,
+            // Its presence, not only its value, is what tells a phone this server stores the
+            // stream and that the band may be freed of it — see `acknowledgeSynced`.
+            heartStream: heartStream.length,
             cycle: cycle.length,
             nightTemperature: nightTemperature.length,
         },
@@ -1176,6 +1267,8 @@ module.exports = {
     ingestBloodPressure,
     ingestEcg,
     ingestStress,
+    ingestHeartStream,
+    spreadOf,
     ingestCycle,
     ingestNightTemperature,
     recomputeDay,

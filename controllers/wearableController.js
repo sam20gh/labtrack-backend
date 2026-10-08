@@ -96,7 +96,7 @@ exports.sync = async (req, res) => {
             // Bracelet-only families. Defaulted rather than required, because every
             // HealthKit and Health Connect batch is posted without them and must keep
             // working unchanged.
-            spo2 = [], temperature = [], bloodPressure = [], ecg = [], stress = [],
+            spo2 = [], temperature = [], bloodPressure = [], ecg = [], stress = [], heartStream = [],
         } = raw;
 
         if (!['apple_health', 'health_connect', 'aggregator', 'jstyle_bracelet'].includes(platform)) {
@@ -105,7 +105,7 @@ exports.sync = async (req, res) => {
 
         const total = activities.length + sleep.length + heart.length + days.length
             + spo2.length + temperature.length + bloodPressure.length + ecg.length
-            + stress.length + cycle.length + nightTemperature.length;
+            + stress.length + heartStream.length + cycle.length + nightTemperature.length;
         if (total > MAX_ROWS_PER_BATCH) {
             return res.status(413).json({
                 message: `Batch too large: ${total} rows. Page at ${MAX_ROWS_PER_BATCH}.`,
@@ -136,7 +136,7 @@ exports.sync = async (req, res) => {
         const { body: corrected, report: clock } = await prepareBraceletBatch(userId, raw);
         ({
             activities = [], sleep = [], heart = [], days = [],
-            spo2 = [], temperature = [], bloodPressure = [], ecg = [], stress = [],
+            spo2 = [], temperature = [], bloodPressure = [], ecg = [], stress = [], heartStream = [],
         } = corrected);
 
         // The sleep goal shapes every night's score, so it has to be read before the nights
@@ -156,6 +156,7 @@ exports.sync = async (req, res) => {
             bloodPressure,
             ecg,
             stress,
+            heartStream,
             cycle,
             cycleWindow,
             nightTemperature,
@@ -220,7 +221,7 @@ exports.sync = async (req, res) => {
             `a=${result.counts.activities} s=${result.counts.sleep} ` +
             `h=${result.counts.heart} d=${result.counts.days} ` +
             `o=${result.counts.spo2} t=${result.counts.temperature} ` +
-            `bp=${result.counts.bloodPressure} e=${result.counts.ecg} st=${result.counts.stress} ` +
+            `bp=${result.counts.bloodPressure} e=${result.counts.ecg} st=${result.counts.stress} hs=${result.counts.heartStream} ` +
             `→ ${result.days.length} days`
         );
 

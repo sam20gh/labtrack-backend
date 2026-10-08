@@ -257,9 +257,12 @@ const applyFaults = (body, faults = [], { phoneAt = Date.now(), freshIndex = -1 
         out[family] = kept;
     }
 
-    if (Array.isArray(body.days)) {
-        const frozen = new Set(prepared.flatMap((f) => f.frozenDays || []));
-        out.days = body.days.filter((d) => {
+    // Day-keyed families. The continuous heart stream is filed by day like the day totals, so
+    // a frozen day keeps out both.
+    const frozen = new Set(prepared.flatMap((f) => f.frozenDays || []));
+    for (const family of ['days', 'heartStream']) {
+        if (!Array.isArray(body[family])) continue;
+        out[family] = body[family].filter((d) => {
             if (!frozen.has(d?.day)) return true;
             report.daysDropped += 1;
             return false;
