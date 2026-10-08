@@ -329,6 +329,14 @@ exports.getPatientContext = async (req, res) => {
             resource: 'patient_context',
         });
 
+        // The bracelet's stress score against the patient's own usual, and how they said they
+        // felt. Read after the access is logged like everything else here; the identifiers in
+        // the log are unchanged, since this is part of the same record.
+        const stress = await require('./metricsController').stressSummary(userId).catch((err) => {
+            console.error('❌ stress summary for patient context failed:', err);
+            return null;
+        });
+
         res.json({
             patient,
             interpretations,
@@ -336,6 +344,7 @@ exports.getPatientContext = async (req, res) => {
             biomarkers,
             vitalAlerts: vitalAlerts.map(vitalAlertView).sort(worklistOrder),
             vitalTargets: vitalTargetView(vitalTarget),
+            stress,
         });
     } catch (error) {
         console.error('❌ Could not load patient context:', error);

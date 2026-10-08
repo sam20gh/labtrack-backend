@@ -24,4 +24,8 @@ router.post('/blood-pressure', c.logBloodPressure);
 
 router.delete('/logs/:id', c.deleteLog);
 
+// How somebody says they feel, beside the bracelet's stress score. Not read by the score.
+router.post('/stress/check-ins', c.logStressCheckIn);
+router.delete('/stress/check-ins/:id', c.deleteStressCheckIn);
+
 module.exports = router;

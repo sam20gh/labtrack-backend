@@ -138,7 +138,8 @@ describe('the stress card', () => {
         await seed([[0, 52], ...Array.from({ length: 20 }, (_, i) => [i + 1, i % 2 ? 38 : 42])]);
         const stress = await card();
         expect(stress.baseline).toBe(40);
-        expect(stress.status).toBe('Higher than your usual 40');
+        expect(stress.status).toBe('More stressed than usual · usual 40');
+        expect(stress).toMatchObject({ level: 'above', statusColour: '#EF4444' });
         expect(stress.status).not.toMatch(/high stress|low stress|normal/i);
         expect(stress.series).toHaveLength(7);
     });
@@ -146,9 +147,9 @@ describe('the stress card', () => {
     it('never narrows "near" below five points at the bottom of the scale', async () => {
         await seed([[0, 14], ...Array.from({ length: 10 }, (_, i) => [i + 1, 10])]);
         // 15% of 10 is 1.5; 14 is within the five-point floor.
-        expect((await card()).status).toBe('Near your usual 10');
+        expect(await card()).toMatchObject({ status: 'About your usual · usual 10', level: 'usual', statusColour: null });
         await DailyMetrics.updateOne({ userId, day: localDay(0) }, { $set: { 'stress.avg': 4 } });
-        expect((await card()).status).toBe('Lower than your usual 10');
+        expect(await card()).toMatchObject({ status: 'Calmer than usual · usual 10', level: 'below', statusColour: '#10B981' });
     });
 
     it('sits beside HRV on the list', async () => {

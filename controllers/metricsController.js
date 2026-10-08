@@ -27,6 +27,8 @@ const VitalTarget = require('../models/VitalTarget');
 const { SPO2_SCALES } = require('../utils/vitalAlerts');
 const HeartRateSample = require('../models/HeartRateSample');
 const SleepSession = require('../models/SleepSession');
+const StressCheckIn = require('../models/StressCheckIn');
+const stressLevel = require('../utils/stressLevel');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -516,27 +518,20 @@ const hrvCard = (newest, series, byDay, baselineRange) => {
 };
 
 /**
- * A stress score this close to the baseline reads as "near your usual". A fraction alone is
- * too tight at the bottom of the scale — 15% of a usual 12 is under two points, which is
- * noise — so it never narrows below `STRESS_USUAL_MIN_POINTS`.
- */
-const STRESS_USUAL_BAND = 0.15;
-const STRESS_USUAL_MIN_POINTS = 5;
-
-/**
  * Stress — the bracelet's own score, against the person's own baseline.
  *
  * The vendor works it out from the HRV measurement it arrives with and does not publish the
  * scale, so there is nothing honest to compare one day with except the person's other days.
- * It is HRV's card in a friendlier voice, and it follows HRV's rules for the same reasons:
- * the latest day is compared with the median of the previous `HRV_BASELINE_DAYS`, nothing is
- * claimed until `HRV_BASELINE_MIN_DAYS` days exist, and there is no verdict and no colour.
+ * It follows HRV's rules for the same reasons — the latest day against the median of the 28
+ * before it, nothing claimed until five exist — and since 2026-10-08 it is coloured: green
+ * calmer than usual, red more stressed than usual, uncoloured near it. The colour and its
+ * wording come from `utils/stressLevel.js` and are always relative to the person's own usual.
  *
  * Three things it deliberately is not. **Not a score pillar**: `mind` is the one pillar where
  * self-report is the measurement, and under the score's rule that observed data replaces
  * reported data, a vendor's number would silently override how somebody says they feel — and
  * HRV would be counted twice. **Not a vital alert**: nobody acts on one day of it. **Not
- * banded**: a "high stress" label would be a meaning nobody has documented.
+ * banded on a fixed scale**: "80 is stressed" would be a meaning nobody has documented.
  */
 const stressCard = (newest, series, byDay, baselineRange) => {
     const latest = newest((r) => (r?.stress?.readings ? r.stress.avg : null));
@@ -548,18 +543,13 @@ const stressCard = (newest, series, byDay, baselineRange) => {
             return s?.readings ? s.avg : null;
         })
         .filter((v) => Number.isFinite(v));
-    const baseline = history.length >= HRV_BASELINE_MIN_DAYS ? Math.round(median(history)) : null;
+    const baseline = stressLevel.baselineOf(history);
+    const level = stressLevel.levelFor(latest.value, baseline);
 
     let status;
     if (latest.value == null) status = 'Connect a bracelet';
-    else if (baseline == null) status = `Learning your usual · ${history.length} of ${HRV_BASELINE_MIN_DAYS} days`;
-    else {
-        const band = Math.max(baseline * STRESS_USUAL_BAND, STRESS_USUAL_MIN_POINTS);
-        const delta = latest.value - baseline;
-        status = delta > band ? `Higher than your usual ${baseline}`
-            : delta < -band ? `Lower than your usual ${baseline}`
-                : `Near your usual ${baseline}`;
-    }
+    else if (!level) status = `Learning your usual · ${history.length} of ${stressLevel.MIN_DAYS} days`;
+    else status = `${level.label} · usual ${baseline}`;
 
     return {
         key: 'stress',
@@ -569,6 +559,9 @@ const stressCard = (newest, series, byDay, baselineRange) => {
         at: latest.day,
         baseline,
         status,
+        // Green calmer, red more stressed, nothing near usual — `utils/stressLevel.js`.
+        level: level?.key ?? null,
+        statusColour: level?.colour ?? null,
         series: series((r) => (r?.stress?.readings ? r.stress.avg : null)),
         loggable: false,
     };
@@ -853,19 +846,46 @@ const DEVICE_HISTORY = {
                 ? { day, value: s.avg, min: s.min ?? null, max: s.max ?? null }
                 : { day, value: null };
         });
-        const logs = await MetricLog.find({ userId, kind: 'stress', day: { $gte: range[0] } })
-            .sort({ measuredAt: -1 }).limit(ENTRY_LIMIT + 1).lean();
-        // The same rule as the card: the latest day is not part of its own baseline.
-        const earlier = series.filter((p) => p.value != null).slice(0, -1).map((p) => p.value);
-        const baseline = earlier.length >= HRV_BASELINE_MIN_DAYS ? Math.round(median(earlier)) : null;
+        const latestDay = [...series].reverse().find((p) => p.value != null)?.day ?? null;
+        // The usual is read over the 28 days before the latest, whatever window is drawn — the
+        // same figure the card uses, so a one-week chart cannot colour a day differently.
+        const baseline = latestDay ? await stressBaselineBefore(userId, latestDay) : null;
+
+        const [logs, today, checkIns] = await Promise.all([
+            MetricLog.find({ userId, kind: 'stress', day: { $gte: range[0] } })
+                .sort({ measuredAt: -1 }).limit(ENTRY_LIMIT + 1).lean(),
+            latestDay
+                ? MetricLog.find({ userId, kind: 'stress', day: latestDay }).sort({ measuredAt: 1 }).lean()
+                : [],
+            StressCheckIn.find({ userId, day: { $gte: range[0] } }).sort({ at: -1 }).limit(100).lean(),
+        ]);
+        const latestLevel = latestDay ? stressLevel.levelFor(byDay.get(latestDay)?.stress?.avg, baseline) : null;
+
         return {
             label: 'Stress',
             unit: '',
             series,
-            entries: logs.map((l) => ({
-                id: String(l._id), day: l.day, at: l.measuredAt, value: l.stress, unit: '', label: null, detail: null,
-            })),
-            note: `${baseline != null ? `Your usual is about ${baseline}. ` : ''}This is your bracelet's own score, worked out from the same measurement as your heart rate variability. Its maker does not publish the scale, so it is only ever compared with your own days. It is not a diagnosis.`,
+            entries: logs.map((l) => {
+                const level = stressLevel.levelFor(l.stress, baseline);
+                return {
+                    id: String(l._id), day: l.day, at: l.measuredAt, value: l.stress, unit: '',
+                    label: level?.short ?? null, colour: level?.colour ?? null, detail: null,
+                };
+            }),
+            note: `${baseline != null ? `Your usual is about ${baseline}. ` : ''}This is your bracelet's own score, worked out from the same measurement as your heart rate variability. Its maker does not publish the scale, so green and red only ever mean calmer or more stressed than your own usual — never a level anyone else would call stressed. It is not a diagnosis.`,
+            extra: {
+                baseline,
+                level: latestLevel ? { key: latestLevel.key, label: latestLevel.label, colour: latestLevel.colour } : null,
+                intraday: latestDay ? {
+                    day: latestDay,
+                    readings: today.map((l) => ({
+                        at: l.measuredAt, value: l.stress, level: stressLevel.levelFor(l.stress, baseline)?.key ?? null,
+                    })),
+                } : null,
+                checkIns: checkIns.map(checkInView),
+                feelings: stressLevel.FEELINGS,
+                levels: Object.values(stressLevel.LEVELS),
+            },
         };
     },
 
@@ -991,6 +1011,116 @@ const deviceHistory = async (slug, load, userId, range, days) => {
         stats: seriesStats(out.series),
         summary: null,
         note: out.note,
+        // Whatever a kind adds beyond the shared shape — stress's usual, its day and check-ins.
+        ...(out.extra || {}),
+    };
+};
+
+/* ------------------------------------------------------------------ *
+ * Stress — the usual, check-ins, and the clinician's summary
+ * ------------------------------------------------------------------ */
+
+const shiftDay = (day, days) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
+
+/** The usual: the median of the daily averages in the 28 days before `day`. */
+const stressBaselineBefore = async (userId, day) => {
+    const rows = await DailyMetrics.find({
+        userId, day: { $gte: shiftDay(day, -stressLevel.BASELINE_DAYS), $lt: day }, 'stress.readings': { $gt: 0 },
+    }).select('stress.avg').lean();
+    return stressLevel.baselineOf(rows.map((r) => r.stress.avg));
+};
+
+const checkInView = (c) => ({
+    id: String(c._id),
+    at: c.at,
+    day: c.day,
+    feeling: c.feeling,
+    feelingLabel: stressLevel.feelingFor(c.feeling)?.label ?? null,
+    deviceScore: c.deviceScore ?? null,
+    deviceAt: c.deviceAt ?? null,
+    note: c.note ?? null,
+});
+
+/** A bracelet reading this close to a check-in is shown beside it; further is a different moment. */
+const CHECK_IN_NEAREST_MINUTES = 45;
+
+/**
+ * `POST /api/metrics/stress/check-ins` — `{ feeling: 1–5, note?, tzOffset }`.
+ *
+ * Stores how the person says they feel with the bracelet's nearest reading beside it, as it
+ * stood at the time. Not read by the score, and nothing about it is an alert.
+ */
+exports.logStressCheckIn = async (req, res) => {
+    try {
+        const userId = req.auth.userId;
+        const feeling = stressLevel.feelingFor(req.body?.feeling);
+        if (!feeling) return res.status(400).json({ message: 'Pick how you feel, from calm to overwhelmed' });
+
+        const at = new Date();
+        const note = typeof req.body?.note === 'string' && req.body.note.trim()
+            ? req.body.note.trim().slice(0, 280)
+            : null;
+        const window = CHECK_IN_NEAREST_MINUTES * 60000;
+        const near = await MetricLog.find({
+            userId, kind: 'stress', measuredAt: { $gte: new Date(at - window), $lte: new Date(at.getTime() + window) },
+        }).select('stress measuredAt').lean();
+        const nearest = near.sort((a, b) => Math.abs(a.measuredAt - at) - Math.abs(b.measuredAt - at))[0] ?? null;
+
+        const checkIn = await StressCheckIn.create({
+            userId,
+            at,
+            day: resolveDay(req.body?.day, at, req.body?.tzOffset),
+            feeling: feeling.value,
+            deviceScore: nearest?.stress ?? null,
+            deviceAt: nearest?.measuredAt ?? null,
+            note,
+        });
+        console.log(`🧘 Stress check-in u=${userId} feeling=${feeling.key}${nearest ? ` device=${nearest.stress}` : ''}`);
+        res.status(201).json({ checkIn: checkInView(checkIn) });
+    } catch (err) {
+        console.error('❌ logStressCheckIn failed:', err);
+        res.status(500).json({ message: 'Could not save your check-in' });
+    }
+};
+
+/** `DELETE /api/metrics/stress/check-ins/:id` — somebody else's answers 404. */
+exports.deleteStressCheckIn = async (req, res) => {
+    try {
+        const removed = await StressCheckIn.findOneAndDelete({ _id: req.params.id, userId: req.auth.userId });
+        if (!removed) return res.status(404).json({ message: 'That check-in no longer exists' });
+        res.json({ message: 'Check-in removed' });
+    } catch (err) {
+        console.error('❌ deleteStressCheckIn failed:', err);
+        res.status(500).json({ message: 'Could not remove that check-in' });
+    }
+};
+
+/**
+ * Stress for the clinician's patient record: the last 28 days, the usual, the latest day's
+ * level and the recent check-ins. Read through `requireReviewScope` like the rest of the record.
+ */
+exports.stressSummary = async (userId, { days = 28 } = {}) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const from = shiftDay(today, -(days - 1));
+    const [rows, checkIns] = await Promise.all([
+        DailyMetrics.find({ userId, day: { $gte: from }, 'stress.readings': { $gt: 0 } })
+            .select('day stress').sort({ day: 1 }).lean(),
+        StressCheckIn.find({ userId, day: { $gte: shiftDay(today, -13) } }).sort({ at: -1 }).limit(30).lean(),
+    ]);
+    if (!rows.length && !checkIns.length) return null;
+
+    const latest = rows[rows.length - 1] ?? null;
+    const baseline = latest ? await stressBaselineBefore(userId, latest.day) : null;
+    const level = latest ? stressLevel.levelFor(latest.stress.avg, baseline) : null;
+    return {
+        days: rows.map((r) => ({
+            day: r.day, avg: r.stress.avg, min: r.stress.min, max: r.stress.max, readings: r.stress.readings,
+            level: stressLevel.levelFor(r.stress.avg, baseline)?.key ?? null,
+        })),
+        latest: latest ? { day: latest.day, avg: latest.stress.avg } : null,
+        baseline,
+        level: level ? { key: level.key, label: level.label } : null,
+        checkIns: checkIns.map(checkInView),
     };
 };
 
