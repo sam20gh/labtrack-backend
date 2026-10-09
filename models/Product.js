@@ -46,6 +46,13 @@ const ProductSchema = new mongoose.Schema({
     includes: { type: [{ type: String, enum: KINDS }], default: [] },
 
     /**
+     * Whether a blood test in this product needs the person to fast first. Read when a
+     * collection visit is booked, and said in the booking and the reminder — a technician who
+     * arrives to somebody who has just had breakfast has made a wasted trip.
+     */
+    requiresFasting: { type: Boolean, default: false },
+
+    /**
      * Present on a package — a product with `type: 'package'` — and nowhere else.
      *
      * The three packages are sold on the website and in the app from the same rows, so the

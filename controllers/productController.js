@@ -137,6 +137,7 @@ const scalarPatch = (body, existing = null) => {
     // What the product ships — what its order line will track. Unknown kinds are dropped.
     if (body.includes !== undefined) patch.includes = normaliseIncludes(body.includes);
     if (body.package !== undefined) patch.package = packagePatch(body.package);
+    if (body.requiresFasting !== undefined) patch.requiresFasting = body.requiresFasting === true;
     const prices = pricesPatch(body.prices, existing?.prices);
     if (prices) patch.prices = prices;
     return patch;

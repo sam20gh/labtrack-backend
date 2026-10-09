@@ -5,6 +5,9 @@ const C = require('../utils/orderComponents');
 const { newClaimCode } = require('../utils/claimOrders');
 const ExchangeRates = require('../models/ExchangeRates');
 const { BASE, CURRENCIES, normaliseCurrency, priceFor, pricingFor, currencyList } = require('../utils/currency');
+const Market = require('../models/Market');
+const { marketCodeForCurrency } = require('../utils/markets');
+const collection = require('../utils/collectionCentre');
 const { getStripe, isConfigured, isTestMode, toMinorUnits, stripeCurrency } = require('../config/stripe');
 const { markOrderPaid } = require('./paymentController');
 
@@ -21,6 +24,9 @@ const { markOrderPaid } = require('./paymentController');
  * The app buys through the existing basket and PaymentSheet, as a signed-in person, and reads
  * the same `GET /packages`.
  */
+
+/** How long a website checkout page stays payable when it holds a visit. Below `HOLD_MINUTES`. */
+const SESSION_MINUTES = 31;
 
 const SITE_URL = () => (process.env.PUBLIC_SITE_URL || process.env.PORTAL_URL || 'http://localhost:3000').replace(/\/+$/, '');
 
@@ -94,7 +100,7 @@ exports.listPackages = async (req, res) => {
 };
 
 /** Create the order, retrying the claim code on the (vanishingly rare) collision. */
-const createGuestOrder = async ({ product, email, currency, price }) => {
+const createGuestOrder = async ({ product, email, currency, price, method = 'post', market, fee = 0 }) => {
     const now = new Date();
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -107,11 +113,12 @@ const createGuestOrder = async ({ product, email, currency, price }) => {
                     name: product.name,
                     price,
                     quantity: 1,
-                    components: C.componentsFor(product, now),
+                    components: C.componentsFor(product, now, method),
                 }],
                 currency,
+                fulfilment: { method, market, fee },
                 subtotal: price,
-                total: price,
+                total: Math.round((price + fee) * 100) / 100,
                 status: 'pending_payment',
                 statusHistory: [{ status: 'pending_payment', at: now, note: 'Website checkout started' }],
             });
@@ -156,9 +163,53 @@ exports.createSession = async (req, res) => {
         }).lean();
         if (!product) return res.status(404).json({ message: 'That package is not available.' });
 
-        const { rates } = await ExchangeRates.current();
+        const [{ rates }, market] = await Promise.all([
+            ExchangeRates.current(),
+            Market.resolve(marketCodeForCurrency(currency)),
+        ]);
         const { amount } = priceFor(product, currency, rates);
-        const order = await createGuestOrder({ product, email: normalised, currency, price: amount });
+
+        // Post or a technician visit — see `createOrder`, which applies the same rules.
+        const f = req.body.fulfilment || {};
+        // No choice sent means post where post is offered: every client that predates the
+        // choice — the website before it, and app builds an update cannot reach — knows only
+        // post and sends nothing. The market's default decides what the new screens preselect.
+        const method = f.method || (market.fulfilment.post ? 'post' : market.fulfilment.default);
+        const offered = method === 'post' ? market.fulfilment.post : method === 'home_collection' && market.fulfilment.homeCollection;
+        if (!offered) return res.status(400).json({ message: `${method === 'home_collection' ? 'Home collection' : 'Delivery by post'} is not available in ${market.name}.` });
+        let visitDetails = null;
+        if (method === 'home_collection') {
+            // The website cannot "book later": the buyer has no app yet to book in.
+            if (!f.slotStart) return res.status(400).json({ message: 'Choose a time for your visit.' });
+            const details = collection.cleanVisitDetails(f, market);
+            if (!details.ok) return res.status(400).json({ message: details.errors[0], errors: details.errors });
+            visitDetails = details.value;
+        }
+        const fee = method === 'home_collection' ? market.visits.price : 0;
+
+        const order = await createGuestOrder({
+            product, email: normalised, currency, price: amount, method, market: market.code, fee,
+        });
+
+        let visit = null;
+        if (visitDetails) {
+            const held = await collection.holdForOrder({ order, market, start: f.slotStart, details: visitDetails });
+            if (!held.ok) {
+                await Order.deleteOne({ _id: order._id });
+                return res.status(held.status).json({ message: held.message, reason: held.reason });
+            }
+            visit = held.visit;
+            await Order.updateOne({ _id: order._id }, {
+                $set: {
+                    shippingAddress: {
+                        line1: visitDetails.address.building,
+                        line2: [visitDetails.address.street, visitDetails.address.area].filter(Boolean).join(', '),
+                        city: visitDetails.address.city,
+                        country: visitDetails.address.country,
+                    },
+                },
+            });
+        }
 
         const site = SITE_URL();
         const session = await getStripe().checkout.sessions.create({
@@ -175,9 +226,24 @@ exports.createSession = async (req, res) => {
                         ...(product.image && /^https:\/\//.test(product.image) ? { images: [product.image] } : {}),
                     },
                 },
-            }],
-            // Where this currency's prices apply. See `CURRENCIES[].shipTo`.
-            shipping_address_collection: { allowed_countries: CURRENCIES[currency].shipTo },
+            },
+            // A priced visit is a line of its own, so the receipt shows what it cost. A free one
+            // is not sent: a zero line on a payment page reads as a mistake.
+            ...(visit && fee > 0 ? [{
+                quantity: 1,
+                price_data: {
+                    currency: stripeCurrency(currency),
+                    unit_amount: toMinorUnits(fee),
+                    product_data: { name: 'Home sample collection', description: collection.visitView(visit).label },
+                },
+            }] : [])],
+            // Posted kits need a delivery address and Stripe collects it, limited to where this
+            // currency's prices apply (`CURRENCIES[].shipTo`). A visit's address was taken on
+            // our own page, in the shape a technician needs, so Stripe is not asked again.
+            ...(visit ? {} : { shipping_address_collection: { allowed_countries: CURRENCIES[currency].shipTo } }),
+            // Stripe's shortest session (30 min, plus a minute's margin). The hold outlives it,
+            // so a payment completed at the last second still finds its slot waiting.
+            ...(visit ? { expires_at: Math.floor(Date.now() / 1000) + SESSION_MINUTES * 60 } : {}),
             // The webhook only sees metadata. Both carry the order, so whichever event arrives
             // first — the session or the payment intent — can settle it.
             metadata: { orderId: String(order._id), source: 'web' },
@@ -248,6 +314,14 @@ const maskEmail = (email) => {
  * else. If the webhook has not landed yet, Stripe is asked directly, so the page does not say
  * "payment pending" to somebody who has just paid.
  */
+/** What the thank-you page says about a visit: when, roughly where, and whether it is confirmed. */
+const visitSummary = async (visitId) => {
+    const visit = await require('../models/CollectionVisit').findById(visitId).lean();
+    if (!visit) return null;
+    const view = collection.visitView(visit);
+    return { label: view.label, status: view.status, area: [visit.address?.area, visit.address?.city].filter(Boolean).join(', ') };
+};
+
 exports.getSession = async (req, res) => {
     try {
         const sessionId = String(req.params.sessionId || '');
@@ -270,6 +344,8 @@ exports.getSession = async (req, res) => {
             // Only once paid: an unpaid order's code claims an order that will never ship.
             claimCode: paid ? order.claimCode : null,
             claimed: Boolean(order.userId),
+            // The technician visit booked with it, in the market's own clock.
+            visit: order.fulfilment?.visitId ? await visitSummary(order.fulfilment.visitId) : null,
             appLinks: appLinks(),
         });
     } catch (error) {

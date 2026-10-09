@@ -120,6 +120,8 @@ require('./jobs/sleepReminderJob').scheduleSleepReminders();
 require('./jobs/hydrationNudgeJob').scheduleHydrationNudges();
 // Period reminders at 09:00 local, only for people who switched the cycle tracker on.
 require('./jobs/cycleReminderJob').scheduleCycleReminders();
+// Home-collection holds that were never paid for, and the reminder before each visit.
+require('./jobs/collectionJob').scheduleCollectionSweep();
 
 app.use('/api/users', userRoutes);
 app.use('/api/test-results', testResultRoutes);
@@ -137,6 +139,8 @@ app.use('/api/plan-items', planItemRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/onboarding', require('./routes/onboardingRoutes'));
 app.use('/api/checkout', require('./routes/checkoutRoutes'));
+app.use('/api/collection', require('./routes/collectionRoutes'));
+app.use('/api/markets', require('./routes/marketRoutes'));
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/payments', paymentRoutes);

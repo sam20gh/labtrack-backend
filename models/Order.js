@@ -17,6 +17,8 @@ const { KINDS, COMPONENT_STATUSES } = require('../utils/orderComponents');
  */
 const ComponentSchema = new mongoose.Schema({
     kind: { type: String, enum: KINDS, required: true },
+    /** How it reaches the lab — decides its stages. See `utils/orderComponents.stagesFor`. */
+    method: { type: String, enum: ['post', 'home_collection'], default: 'post' },
     status: { type: String, enum: COMPONENT_STATUSES, default: 'placed' },
     statusHistory: [{
         status: { type: String },
@@ -72,6 +74,18 @@ const OrderSchema = new mongoose.Schema({
     },
 
     currency: { type: String, default: 'GBP' },
+
+    /**
+     * How the order is fulfilled, in which market, and — for a technician visit — the visit
+     * and its price. `fee` is in the order's currency and is already inside `total`.
+     * Absent on every order placed before markets existed, which all went by post.
+     */
+    fulfilment: {
+        method: { type: String, enum: ['post', 'home_collection'], default: 'post' },
+        market: { type: String },
+        fee: { type: Number, default: 0, min: 0 },
+        visitId: { type: mongoose.Schema.Types.ObjectId, ref: 'CollectionVisit' },
+    },
     subtotal: { type: Number, required: true, min: 0 },
     total: { type: Number, required: true, min: 0 },
 

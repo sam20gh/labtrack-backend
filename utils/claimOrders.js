@@ -60,10 +60,12 @@ const isVerifiedEmail = (claims) => {
 const claimByEmail = async (userId, email) => {
     try {
         if (!userId || !email) return 0;
-        const result = await Order.updateMany(
-            { userId: null, guestEmail: String(email).trim().toLowerCase() },
-            { $set: { userId, claimedAt: new Date() } }
-        );
+        const filter = { userId: null, guestEmail: String(email).trim().toLowerCase() };
+        const ids = (await Order.find(filter).select('_id').lean()).map((o) => o._id);
+        if (!ids.length) return 0;
+        const result = await Order.updateMany({ ...filter, _id: { $in: ids } }, { $set: { userId, claimedAt: new Date() } });
+        // A collection visit booked on the website comes with its order.
+        await require('./collectionCentre').claimVisits(ids, userId);
         const n = result.modifiedCount || 0;
         if (n) console.log(`🎁 Claimed ${n} website order(s) for ${userId}`);
         return n;
@@ -89,7 +91,10 @@ const claimByCode = async (userId, rawCode) => {
         { $set: { userId, claimedAt: new Date() } },
         { new: true }
     );
-    if (order) return { ok: true, order, already: false };
+    if (order) {
+        await require('./collectionCentre').claimVisits([order._id], userId);
+        return { ok: true, order, already: false };
+    }
 
     const own = await Order.findOne({ claimCode: code, userId });
     if (own) return { ok: true, order: own, already: true };

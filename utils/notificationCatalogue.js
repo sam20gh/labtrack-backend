@@ -149,6 +149,20 @@ const CATEGORIES = {
         priority: 'normal',
     },
     /**
+     * Home sample collection visits: booked, moved, the reminder before, collected, missed.
+     * Its own category rather than `appointment`, which is a consultation with a clinician —
+     * a technician at the door is a different kind of thing to be told about. Muted with
+     * order updates, because a visit is how an order is fulfilled.
+     */
+    collection: {
+        label: 'Visits',
+        icon: 'home-outline',
+        tint: 'blue',
+        route: '/orders-history',
+        channel: 'orderUpdates',
+        priority: 'normal',
+    },
+    /**
      * Period reminders from `jobs/cycleReminderJob.js`. Its own tint rather than `rose`,
      * which is the vitals mark: a period that is due is not a reading out of range, and the
      * same colour on both would make one look like the other.

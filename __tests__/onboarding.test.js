@@ -132,11 +132,18 @@ describe('order components — the table', () => {
     });
 
     it('moves one stage at a time, forwards only, and stops at the end', () => {
-        expect(C.nextStage('dna', 'placed')).toBe('kit_sent');
-        expect(C.nextStage('dna', 'processing')).toBe('resulted');
-        expect(C.nextStage('dna', 'resulted')).toBeNull();
-        expect(C.nextStage('bracelet', 'placed')).toBe('dispatched');
-        expect(C.nextStage('bracelet', 'delivered')).toBeNull();
+        const at = (kind, status, method) => C.nextStage({ kind, status, method });
+        expect(at('dna', 'placed')).toBe('kit_sent');
+        expect(at('dna', 'processing')).toBe('resulted');
+        expect(at('dna', 'resulted')).toBeNull();
+        expect(at('bracelet', 'placed')).toBe('dispatched');
+        expect(at('bracelet', 'delivered')).toBeNull();
+        // A technician visit replaces the post: booked, then collected at the door.
+        expect(at('dna', 'placed', 'home_collection')).toBe('visit_booked');
+        expect(at('dna', 'visit_booked', 'home_collection')).toBe('collected');
+        expect(at('dna', 'collected', 'home_collection')).toBe('sample_received');
+        expect(at('bracelet', 'visit_booked', 'home_collection')).toBe('delivered');
+        expect(C.labelFor({ kind: 'bracelet', status: 'delivered', method: 'home_collection' })).toBe('Handed over');
     });
 
     it('rolls an order up to its least advanced parcel', () => {

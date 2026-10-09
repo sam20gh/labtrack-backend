@@ -31,11 +31,35 @@ const STAGES = {
     bracelet: ['placed', 'dispatched', 'delivered'],
 };
 
+/**
+ * The same parcels when a technician visits instead (`Order.fulfilment.method:
+ * 'home_collection'`). Nothing is posted: the kit is booked into a visit, the sample is
+ * collected at the door and labelled with our barcode, and the bracelet is handed over in
+ * person. From the laboratory onwards the stages are the same as by post, so everything
+ * downstream — results, re-analysis, the tracker — reads them identically.
+ *
+ * `visit_booked` and `collected` are set by the visit (`utils/collectionCentre.js`), never by
+ * the per-parcel admin endpoint: a kit marked collected without a barcode is a tube nobody
+ * can find.
+ */
+const VISIT_STAGES = {
+    blood: ['placed', 'visit_booked', 'collected', 'sample_received', 'processing', 'resulted'],
+    dna: ['placed', 'visit_booked', 'collected', 'sample_received', 'processing', 'resulted'],
+    bracelet: ['placed', 'visit_booked', 'delivered'],
+};
+
+/** Stages set only by a visit, never by hand. */
+const VISIT_OWNED = ['visit_booked', 'collected'];
+
+/** The stages one component goes through, by its kind and how its order is fulfilled. */
+const stagesFor = (component) =>
+    (component?.method === 'home_collection' ? VISIT_STAGES : STAGES)[component?.kind] || [];
+
 /** The last stage of each kind — the one that means "nothing left to wait for". */
 const DONE = { blood: 'resulted', dna: 'resulted', bracelet: 'delivered' };
 
 /** Every status a component may hold, for the schema enum. */
-const COMPONENT_STATUSES = [...new Set(Object.values(STAGES).flat())];
+const COMPONENT_STATUSES = [...new Set([...Object.values(STAGES), ...Object.values(VISIT_STAGES)].flat())];
 
 /**
  * What a person is told about each kind, for the app's tracker and the portal's queue.
@@ -65,7 +89,13 @@ const STAGE_LABEL = {
     resulted: 'Results ready',
     dispatched: 'On its way',
     delivered: 'Delivered',
+    visit_booked: 'Visit booked',
+    collected: 'Collected',
 };
+
+/** Where a visit changes what a stage is called: a bracelet is handed over, not delivered. */
+const labelFor = (component, status = component?.status) =>
+    (component?.method === 'home_collection' && status === 'delivered' ? 'Handed over' : STAGE_LABEL[status] || status);
 
 /** Keep only kinds this table knows, once each, in table order. */
 const normaliseIncludes = (values) => {
@@ -74,18 +104,18 @@ const normaliseIncludes = (values) => {
 };
 
 /** The components a newly ordered product starts with. */
-const componentsFor = (product, at = new Date()) =>
+const componentsFor = (product, at = new Date(), method = 'post') =>
     normaliseIncludes(product?.includes).map((kind) => ({
         kind,
+        method,
         status: 'placed',
         statusHistory: [{ status: 'placed', at }],
     }));
 
 /** Forward one stage at a time, like the order-level table. Nothing moves backwards. */
-const nextStage = (kind, status) => {
-    const stages = STAGES[kind];
-    if (!stages) return null;
-    const i = stages.indexOf(status);
+const nextStage = (component) => {
+    const stages = stagesFor(component);
+    const i = stages.indexOf(component?.status);
     return i >= 0 && i < stages.length - 1 ? stages[i + 1] : null;
 };
 
@@ -93,8 +123,8 @@ const isDone = (component) => component?.status === DONE[component?.kind];
 
 /** 0..1 through a component's own stages, for a progress bar. */
 const progressOf = (component) => {
-    const stages = STAGES[component?.kind];
-    if (!stages) return 0;
+    const stages = stagesFor(component);
+    if (!stages.length) return 0;
     const i = stages.indexOf(component.status);
     return i < 0 ? 0 : i / (stages.length - 1);
 };
@@ -110,13 +140,18 @@ const progressOf = (component) => {
  * Returns null when there are no components, so the caller leaves the status alone.
  */
 const ORDER_RANK = ['placed', 'kit_sent', 'sample_received', 'processing', 'resulted'];
-const AS_ORDER = { placed: 'placed', dispatched: 'kit_sent', delivered: 'resulted' };
+// A booked visit has not shipped anything yet; a collected sample is on its way to the lab,
+// which is what `kit_sent` means to the fulfilment queue.
+const AS_ORDER = {
+    placed: 'placed', dispatched: 'kit_sent', delivered: 'resulted',
+    visit_booked: 'placed', collected: 'kit_sent',
+};
 
 const rollupStatus = (components) => {
     if (!Array.isArray(components) || !components.length) return null;
     let lowest = ORDER_RANK.length - 1;
     for (const c of components) {
-        const mapped = c.kind === 'bracelet' ? AS_ORDER[c.status] : c.status;
+        const mapped = AS_ORDER[c.status] ?? c.status;
         const rank = ORDER_RANK.indexOf(mapped);
         if (rank >= 0 && rank < lowest) lowest = rank;
     }
@@ -126,6 +161,10 @@ const rollupStatus = (components) => {
 module.exports = {
     KINDS,
     STAGES,
+    VISIT_STAGES,
+    VISIT_OWNED,
+    stagesFor,
+    labelFor,
     DONE,
     COMPONENT_STATUSES,
     KIND_META,

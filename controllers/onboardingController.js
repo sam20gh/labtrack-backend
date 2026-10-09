@@ -5,6 +5,7 @@ const ConnectedSource = require('../models/ConnectedSource');
 const Interpretation = require('../models/Interpretation');
 const SleepSession = require('../models/SleepSession');
 const ActivitySession = require('../models/ActivitySession');
+const CollectionVisit = require('../models/CollectionVisit');
 const { deriveJourney, STEPS } = require('../utils/onboardingState');
 const { claimByEmail, claimByCode } = require('../utils/claimOrders');
 const { diffAnalyses } = require('../utils/analysisDiff');
@@ -17,7 +18,7 @@ const { presentToPatient } = require('../config/clinicalPolicy');
 
 /** Everything `deriveJourney` reads, in one round of parallel reads. */
 const gather = async (userId) => {
-    const [user, orders, resultsCount, sources, analysis, nights, activities] = await Promise.all([
+    const [user, orders, resultsCount, sources, analysis, nights, activities, visits] = await Promise.all([
         User.findById(userId).select('dob gender height weight firstName healthAssessment onboarding').lean(),
         Order.find({ userId }).sort({ createdAt: -1 }).limit(20).lean(),
         TestResult.countDocuments({ 'patient.user_id': userId }),
@@ -25,8 +26,12 @@ const gather = async (userId) => {
         Interpretation.findOne({ userId }).sort({ generatedAt: -1 }).select('generatedAt covers').lean(),
         SleepSession.countDocuments({ userId }),
         ActivitySession.countDocuments({ userId }),
+        // Live visits and any that need choosing again. Not the history: the journey is
+        // about what happens next.
+        CollectionVisit.find({ userId, status: { $in: ['held', 'booked', 'assigned', 'en_route', 'arrived', 'needs_rebooking', 'missed'] } })
+            .select('status slot timezone orderIds').lean(),
     ]);
-    return { user, orders, resultsCount, sources, analysis, learned: { nights, activities } };
+    return { user, orders, resultsCount, sources, analysis, learned: { nights, activities }, visits };
 };
 
 /**

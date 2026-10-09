@@ -7,6 +7,9 @@ const { publish } = require('../utils/notificationCentre');
 const C = require('../utils/orderComponents');
 const ExchangeRates = require('../models/ExchangeRates');
 const { BASE, normaliseCurrency, priceFor } = require('../utils/currency');
+const Market = require('../models/Market');
+const { marketCodeForCurrency } = require('../utils/markets');
+const collection = require('../utils/collectionCentre');
 
 /**
  * POST /api/orders { items, currency? } — place a home-collection order.
@@ -40,10 +43,30 @@ exports.createOrder = async (req, res) => {
             return res.status(400).json({ message: `Invalid product id: ${invalid[0]}` });
         }
 
-        const [products, { rates }] = await Promise.all([
+        const [products, { rates }, market] = await Promise.all([
             Product.find({ _id: { $in: productIds } }).lean(),
             ExchangeRates.current(),
+            Market.resolve(marketCodeForCurrency(orderCurrency)),
         ]);
+
+        // How the order reaches the lab. The market decides what is on offer; the customer
+        // chooses within it; nothing chosen means the market's default. A request for a
+        // method the market does not offer is refused, never quietly swapped.
+        const f = req.body.fulfilment || {};
+        // No choice sent means post where post is offered: every client that predates the
+        // choice — the website before it, and app builds an update cannot reach — knows only
+        // post and sends nothing. The market's default decides what the new screens preselect.
+        const method = f.method || (market.fulfilment.post ? 'post' : market.fulfilment.default);
+        const offered = method === 'post' ? market.fulfilment.post : method === 'home_collection' && market.fulfilment.homeCollection;
+        if (!offered) {
+            return res.status(400).json({ message: `${method === 'home_collection' ? 'Home collection' : 'Delivery by post'} is not available in ${market.name}.` });
+        }
+        let visitDetails = null;
+        if (method === 'home_collection' && f.slotStart) {
+            const details = collection.cleanVisitDetails(f, market);
+            if (!details.ok) return res.status(400).json({ message: details.errors[0], errors: details.errors });
+            visitDetails = details.value;
+        }
         const byId = new Map(products.map((p) => [String(p._id), p]));
 
         const lineItems = [];
@@ -61,12 +84,21 @@ exports.createOrder = async (req, res) => {
                 planItemId: item.planItemId,
                 // What this line ships, each on its own timeline. Empty for a product that
                 // predates `includes`, whose order moves on the order-level status as before.
-                components: C.componentsFor(product),
+                components: C.componentsFor(product, new Date(), method),
             });
+        }
+
+        // A visit with nothing to collect is a wasted trip: only products that ship a kit or
+        // a bracelet (`Product.includes`) can go by home collection.
+        if (method === 'home_collection' && !lineItems.some((l) => (l.components || []).length)) {
+            return res.status(400).json({ message: 'Nothing in this order can be collected at home. Choose delivery by post.' });
         }
 
         // Rounded to the minor unit: 3 × 19.99 is 59.97000000000001 in floating point.
         const subtotal = Math.round(lineItems.reduce((sum, l) => sum + l.price * l.quantity, 0) * 100) / 100;
+        // The visit's price is the market's, in the market's currency — which is the order's.
+        const fee = method === 'home_collection' ? market.visits.price : 0;
+        const total = Math.round((subtotal + fee) * 100) / 100;
 
         // With Stripe configured the order waits for payment; without it, orders are
         // placed unpaid so the flow still works in environments with no payment provider.
@@ -78,16 +110,39 @@ exports.createOrder = async (req, res) => {
             source: 'app',
             items: lineItems,
             currency: orderCurrency,
+            fulfilment: { method, market: market.code, fee },
             subtotal,
-            total: subtotal,
+            total,
             status: initialStatus,
             statusHistory: [{
                 status: initialStatus,
                 at: new Date(),
                 note: stripeConfigured() ? 'Awaiting payment' : 'Placed without payment',
             }],
-            shippingAddress,
+            // For a visit, the address the technician goes to is the delivery address.
+            shippingAddress: visitDetails
+                ? {
+                    line1: visitDetails.address.building,
+                    line2: [visitDetails.address.street, visitDetails.address.area].filter(Boolean).join(', '),
+                    city: visitDetails.address.city,
+                    country: visitDetails.address.country,
+                }
+                : shippingAddress,
         });
+
+        // Hold the visit while the customer pays. If the slot went in the seconds since they
+        // chose it, the order is withdrawn and they are asked to choose again — an unpaid
+        // order with no visit would be one more thing to clean up.
+        if (visitDetails) {
+            const held = await collection.holdForOrder({ order, market, start: f.slotStart, details: visitDetails });
+            if (!held.ok) {
+                await Order.deleteOne({ _id: order._id });
+                return res.status(held.status).json({ message: held.message, reason: held.reason });
+            }
+            order.fulfilment.visitId = held.visit._id;
+            // No payment provider: the order is placed now, so the visit is booked now.
+            if (initialStatus === 'placed') await collection.confirmForOrder(order._id);
+        }
 
         // Mark any plan items this order fulfils, so the timeline reflects it immediately
         // Link the plan items now, but only mark them `ordered` once payment is settled —
@@ -148,6 +203,7 @@ exports.cancelOrder = async (req, res) => {
 
         order.transitionTo('cancelled', req.body.reason);
         await order.save();
+        await collection.cancelForOrder(order._id, 'customer');
         res.json({ message: 'Order cancelled', order });
     } catch (error) {
         res.status(500).json({ message: 'Error cancelling order', error: error.message });
@@ -374,6 +430,7 @@ exports.updateOrderStatus = async (req, res) => {
         }
 
         order.transitionTo(status, note);
+        if (['cancelled', 'refunded'].includes(status)) await collection.cancelForOrder(order._id, 'admin');
         if (testResultId) order.testResultId = testResultId;
         if (dnaReportId) order.dnaReportId = dnaReportId;
         await order.save();
@@ -508,11 +565,21 @@ exports.updateComponentStatus = async (req, res) => {
         const component = item?.components?.find((c) => c.kind === req.params.kind);
         if (!component) return res.status(404).json({ message: 'That item does not ship one of those' });
 
-        const expected = C.nextStage(component.kind, component.status);
+        const expected = C.nextStage(component);
+        // Booking and collecting belong to the visit, which records the slot and the barcode.
+        // Marking a kit collected here would be a tube with no label and no visit behind it.
+        if (C.VISIT_OWNED.includes(expected)) {
+            return res.status(409).json({
+                message: expected === 'visit_booked'
+                    ? 'This kit is waiting for its collection visit to be booked.'
+                    : 'Record this collection on the visit, with the barcode on the tube.',
+                expected,
+            });
+        }
         if (status !== expected) {
             return res.status(409).json({
                 message: expected
-                    ? `This ${LABEL[component.kind]} is ${C.STAGE_LABEL[component.status].toLowerCase()} — the next step is "${C.STAGE_LABEL[expected]}".`
+                    ? `This ${LABEL[component.kind]} is ${C.labelFor(component).toLowerCase()} — the next step is "${C.labelFor(component, expected)}".`
                     : `This ${LABEL[component.kind]} is finished and cannot change.`,
                 expected,
             });
@@ -566,7 +633,7 @@ exports.updateComponentStatus = async (req, res) => {
             }
         }
 
-        res.json({ message: `${C.KIND_META[component.kind].label}: ${C.STAGE_LABEL[status]}`, order });
+        res.json({ message: `${C.KIND_META[component.kind].label}: ${C.labelFor(component, status)}`, order });
     } catch (error) {
         console.error('❌ Component update failed:', error);
         res.status(400).json({ message: 'Error updating order', error: error.message });

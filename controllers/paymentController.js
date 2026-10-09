@@ -148,6 +148,10 @@ const markOrderPaid = async (intent) => {
         );
     }
 
+    // A technician visit held during checkout becomes a booking now the money is in.
+    // Required lazily (collectionCentre → notificationCentre → … would load early otherwise).
+    await require('../utils/collectionCentre').confirmForOrder(order._id);
+
     console.log('💳 Order paid:', orderId);
 };
 

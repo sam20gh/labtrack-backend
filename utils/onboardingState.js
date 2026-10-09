@@ -19,6 +19,10 @@
  * pin every state without one. `controllers/onboardingController.js` gathers the rows.
  */
 const C = require('./orderComponents');
+const { describeSlot } = require('./markets');
+
+/** Visit states in which a technician is still coming. */
+const VISIT_LIVE = ['held', 'booked', 'assigned', 'en_route', 'arrived'];
 
 /** The four steps somebody is asked to take, in the order the welcome hub asks them. */
 const STEPS = ['profile', 'package', 'results', 'device'];
@@ -77,9 +81,42 @@ const shipsTests = (order) =>
     (order.items || []).some((i) =>
         !(i.components || []).length || (i.components || []).some((c) => c.kind !== 'bracelet'));
 
-const packageStep = (orders, skipped) => {
+/** Home-collection parcels on a paid order that are still waiting for a visit to be booked. */
+const awaitingVisit = (order) => (order.items || []).some((i) =>
+    (i.components || []).some((c) => c.method === 'home_collection' && c.status === 'placed'));
+
+const packageStep = (orders, skipped, visits = []) => {
     const live = orders.filter((o) => LIVE(o) && shipsTests(o));
     const paid = live.find(PAID);
+    // A visit that has to be chosen again — the slot filled while they paid, or nobody was in.
+    // Superseded once a live visit covers the same order — the person has already rebooked.
+    const shares = (a, b) => (a.orderIds || []).some((id) => (b.orderIds || []).map(String).includes(String(id)));
+    const rebook = visits.find((v) => (v.status === 'needs_rebooking' || v.status === 'missed')
+        && !visits.some((w) => VISIT_LIVE.includes(w.status) && shares(w, v)));
+    if (rebook) {
+        return {
+            key: 'package', status: 'in_progress', title: 'Your collection visit',
+            detail: rebook.status === 'missed' ? 'We missed you. Choose a new time' : 'Your time filled up. Choose a new one',
+            // A visit that needs a new time is moved; a missed one is over, so a new one is booked.
+            action: {
+                label: 'Choose a time',
+                route: rebook.status === 'missed'
+                    ? `/collection/book?orderId=${(rebook.orderIds || [])[0]}`
+                    : `/collection/${rebook._id}`,
+            },
+            orderId: paid ? String(paid._id) : undefined,
+        };
+    }
+    const unbooked = live.filter(PAID).find((o) => awaitingVisit(o)
+        && !visits.some((v) => VISIT_LIVE.includes(v.status) && (v.orderIds || []).map(String).includes(String(o._id))));
+    if (unbooked) {
+        return {
+            key: 'package', status: 'in_progress', title: 'Your collection visit',
+            detail: 'Choose when a technician should come to collect your samples',
+            action: { label: 'Book a visit', route: `/collection/book?orderId=${unbooked._id}` },
+            orderId: String(unbooked._id),
+        };
+    }
     if (paid) {
         const name = paid.items?.[0]?.name;
         return {
@@ -132,6 +169,7 @@ const braceletsOrdered = (orders) =>
         .flatMap((o) => (o.items || []).flatMap((i) => (i.components || []).filter((c) => c.kind === 'bracelet')));
 
 const deviceStep = (sources, orders, skipped) => {
+    const byVisit = braceletsOrdered(orders).some((c) => c.method === 'home_collection' && c.status !== 'delivered');
     const connected = sources.filter((s) => s.status === 'connected');
     const bracelet = connected.find((s) => s.platform === 'jstyle_bracelet');
     if (bracelet) {
@@ -162,7 +200,9 @@ const deviceStep = (sources, orders, skipped) => {
     if (inTransit) {
         return {
             key: 'device', status: 'waiting', title: 'Your bracelet',
-            detail: 'On its way. Connect your phone’s health app meanwhile',
+            detail: byVisit
+                ? 'Your technician brings it to your visit. Connect your phone’s health app meanwhile'
+                : 'On its way. Connect your phone’s health app meanwhile',
             action: { label: 'Connect health app', route: '/activity/sources' },
         };
     }
@@ -175,12 +215,29 @@ const deviceStep = (sources, orders, skipped) => {
     };
 };
 
+/**
+ * What to say under a parcel while it waits. A visit's parcels are about the visit — when it
+ * is, or that it needs booking — and, once collected, about the lab, like a posted kit.
+ */
+const waitFor = (c, visitLabel) => {
+    if (C.isDone(c)) return null;
+    if (c.method === 'home_collection') {
+        if (c.status === 'placed') return 'Book a visit and a technician will collect it.';
+        if (c.status === 'visit_booked') {
+            const when = visitLabel ? `Technician visit ${visitLabel}.` : 'Technician visit booked.';
+            return c.kind === 'bracelet' ? `${when} They will bring it with them.` : when;
+        }
+        if (c.status === 'collected') return 'Collected and on its way to the lab.';
+    }
+    return C.KIND_META[c.kind]?.wait || null;
+};
+
 /** Every component on live, paid orders, shaped for the tracker. */
-const kitsFrom = (orders) =>
+const kitsFrom = (orders, visitLabel) =>
     orders.filter((o) => LIVE(o) && PAID(o)).flatMap((o) =>
         (o.items || []).flatMap((item) =>
             (item.components || []).map((c) => {
-                const stages = C.STAGES[c.kind] || [];
+                const stages = C.stagesFor(c);
                 const at = stages.indexOf(c.status);
                 const last = (c.statusHistory || [])[c.statusHistory.length - 1];
                 return {
@@ -191,11 +248,11 @@ const kitsFrom = (orders) =>
                     label: C.KIND_META[c.kind]?.label || c.kind,
                     product: item.name,
                     status: c.status,
-                    statusLabel: C.STAGE_LABEL[c.status] || c.status,
+                    statusLabel: C.labelFor(c),
                     progress: C.progressOf(c),
                     done: C.isDone(c),
-                    wait: C.isDone(c) ? null : C.KIND_META[c.kind]?.wait || null,
-                    stages: stages.map((s, i) => ({ key: s, label: C.STAGE_LABEL[s] || s, reached: i <= at })),
+                    wait: waitFor(c, visitLabel),
+                    stages: stages.map((s, i) => ({ key: s, label: C.labelFor(c, s), reached: i <= at })),
                     updatedAt: last?.at || o.updatedAt || o.createdAt || null,
                 };
             })));
@@ -232,19 +289,33 @@ const analysisFrom = (analysis, kits) => {
  * @param {object|null} input.analysis  the newest Interpretation, or null
  * @param {object} [input.learned]      counts for the "what we know so far" line
  */
-const deriveJourney = ({ user, orders = [], resultsCount = 0, sources = [], analysis = null, learned = {} }) => {
+const deriveJourney = ({ user, orders = [], resultsCount = 0, sources = [], analysis = null, learned = {}, visits = [] }) => {
     const ob = user?.onboarding || {};
     const skipped = ob.skipped || {};
 
+    // The next visit a technician is coming to, labelled in its market's own clock.
+    const upcoming = visits
+        .filter((v) => VISIT_LIVE.includes(v.status) && v.status !== 'held')
+        .sort((a, b) => new Date(a.slot.start) - new Date(b.slot.start))[0] || null;
+    const visit = upcoming
+        ? {
+            _id: String(upcoming._id),
+            status: upcoming.status,
+            start: upcoming.slot.start,
+            label: describeSlot(new Date(upcoming.slot.start), new Date(upcoming.slot.end), upcoming.timezone),
+            route: `/collection/${upcoming._id}`,
+        }
+        : null;
+
     const steps = [
         profileStep(user, skipped.profile),
-        packageStep(orders, skipped.package),
+        packageStep(orders, skipped.package, visits),
         resultsStep(resultsCount, skipped.results),
         deviceStep(sources, orders, skipped.device),
     ];
     const byKey = Object.fromEntries(steps.map((s) => [s.key, s]));
 
-    const kits = kitsFrom(orders).sort((a, b) => (KIT_ORDER[a.kind] ?? 9) - (KIT_ORDER[b.kind] ?? 9));
+    const kits = kitsFrom(orders, visit?.label).sort((a, b) => (KIT_ORDER[a.kind] ?? 9) - (KIT_ORDER[b.kind] ?? 9));
     const inFlight = kits.filter((k) => !k.done);
     const resolved = (s) => s.status === 'done' || s.status === 'skipped' || s.status === 'waiting';
     const allResolved = steps.every(resolved);
@@ -285,6 +356,7 @@ const deriveJourney = ({ user, orders = [], resultsCount = 0, sources = [], anal
             ? { title: 'Complete your health profile', detail: 'Medications, conditions and habits', route: '/health-assessment/review' }
             : null,
         kits,
+        visit,
         analysis: analysisFrom(analysis, kits),
         learned: {
             results: resultsCount,
