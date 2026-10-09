@@ -76,8 +76,28 @@ const CollectionVisitSchema = new mongoose.Schema({
     phone: { type: String, required: true },
     accessNotes: { type: String },
 
-    /** Phase 3a: who the portal assigned, as typed. Phase 3b replaces this with a Technician. */
+    /** The technician doing the visit. */
+    technicianId: { type: mongoose.Schema.Types.ObjectId, ref: 'Technician', index: true },
+    /** Phase 3a's typed name. Kept for visits assigned before technicians existed; read-only. */
     assignee: { name: { type: String }, phone: { type: String } },
+
+    /**
+     * The visit pass. Shown to the customer as a QR code and as these characters; the
+     * technician scans or types it at the door, which proves they are at the right door with
+     * the right person before a single tube is labelled. Six characters from the claim-code
+     * alphabet (no 0/O, 1/I/L): read aloud over a doorstep, it has to survive.
+     */
+    passCode: { type: String },
+    /**
+     * How identity was checked before anything was collected: the pass was scanned, or the
+     * technician confirmed name and date of birth by hand (a customer with a flat battery).
+     * A visit cannot be recorded without one or the other.
+     */
+    identity: {
+        method: { type: String, enum: ['pass', 'manual'] },
+        at: { type: Date },
+        by: { type: String },
+    },
 
     tasks: { type: [TaskSchema], default: [] },
     /** Blood panels that need fasting — read from the products, said in every reminder. */

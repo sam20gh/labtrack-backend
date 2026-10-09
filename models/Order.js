@@ -26,6 +26,8 @@ const ComponentSchema = new mongoose.Schema({
         note: { type: String },
     }],
     trackingReference: { type: String },
+    /** A bracelet handed over at a visit: the serial on the device or its box. */
+    deviceSerial: { type: String, uppercase: true, trim: true },
     /** What the lab returned for this kit. Exactly one of these, and only on `resulted`. */
     testResultId: { type: mongoose.Schema.Types.ObjectId, ref: 'TestResult' },
     dnaReportId: { type: mongoose.Schema.Types.ObjectId, ref: 'DnaReport' },

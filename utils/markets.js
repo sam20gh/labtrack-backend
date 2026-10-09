@@ -46,6 +46,7 @@ const BLANK_VISITS = {
     openMinute: 8 * 60,
     closeMinute: 20 * 60,
     slotMinutes: 30,
+    capacityMode: 'fixed',
     capacityPerSlot: 1,
     leadHours: 24,
     bookAheadDays: 14,
@@ -74,6 +75,8 @@ const DEFAULT_MARKETS = {
             openMinute: 0,
             closeMinute: DAY_MINUTES,
             slotMinutes: 30,
+            // A fixed five until the roster is entered; then switch to 'roster' in the portal.
+            capacityMode: 'fixed',
             capacityPerSlot: 5,
             leadHours: 6,
             bookAheadDays: 14,
@@ -145,6 +148,12 @@ const cleanMarketPatch = (code, body = {}) => {
         closeMinute: pick('closeMinute', (v) => intIn(v, 15, DAY_MINUTES), 'Closing time must be within the day.'),
         slotMinutes: pick('slotMinutes', (v) => (SLOT_LENGTHS.includes(Number(v)) ? Number(v) : null), `Slot length must be one of ${SLOT_LENGTHS.join(', ')} minutes.`),
         capacityPerSlot: pick('capacityPerSlot', (v) => intIn(v, 1, 100), 'Visits per slot must be between 1 and 100.'),
+        /**
+         * `fixed` offers `capacityPerSlot` places in every slot; `roster` offers as many as there
+         * are technicians on shift (`utils/roster.capacityAt`). Roster mode with nobody rostered
+         * offers nothing, which is correct and is why it is not the default.
+         */
+        capacityMode: pick('capacityMode', (v) => (['fixed', 'roster'].includes(v) ? v : null), 'Capacity must be fixed or roster.'),
         leadHours: pick('leadHours', (v) => intIn(v, 0, 168), 'Notice must be between 0 and 168 hours.'),
         bookAheadDays: pick('bookAheadDays', (v) => intIn(v, 1, 60), 'Booking ahead must be between 1 and 60 days.'),
         rescheduleCutoffHours: pick('rescheduleCutoffHours', (v) => intIn(v, 0, 72), 'The change cut-off must be between 0 and 72 hours.'),
@@ -251,6 +260,12 @@ const localToUtc = (ymd, minutes, timeZone) => {
     return new Date(t);
 };
 
+/** Minutes after local midnight of an instant, in the timezone. */
+const partsInMinutes = (date, timeZone) => {
+    const p = partsIn(date, timeZone);
+    return p.h * 60 + p.mi;
+};
+
 /** YYYY-MM-DD of an instant on the timezone's own calendar. */
 const localDay = (date, timeZone) => {
     const p = partsIn(date, timeZone);
@@ -295,9 +310,10 @@ const describeSlot = (start, end, timeZone) =>
  * @param {object} opts
  * @param {Date}   opts.now
  * @param {Map<string, number>} [opts.taken]  slot start (ISO) → visits already holding it
+ * @param {(start: Date) => number} [opts.capacityAt]  places in a slot; defaults to the fixed figure
  * @returns {{ date, label, closed, slots: { start, end, label, remaining }[] }[]}
  */
-const slotsFor = (market, { now, taken = new Map() }) => {
+const slotsFor = (market, { now, taken = new Map(), capacityAt }) => {
     const c = market.visits;
     const tz = market.timezone;
     const earliest = now.getTime() + c.leadHours * 3600000;
@@ -318,7 +334,7 @@ const slotsFor = (market, { now, taken = new Map() }) => {
                     start: iso,
                     end: end.toISOString(),
                     label: timeLabel(start, tz),
-                    remaining: Math.max(0, c.capacityPerSlot - (taken.get(iso) || 0)),
+                    remaining: Math.max(0, (capacityAt ? capacityAt(start) : c.capacityPerSlot) - (taken.get(iso) || 0)),
                 });
             }
         }
@@ -374,6 +390,7 @@ module.exports = {
     fulfilmentOptions,
     localToUtc,
     localDay,
+    partsInMinutes,
     offsetMinutes,
     describeSlot,
     slotsFor,

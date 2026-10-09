@@ -31,6 +31,7 @@ const MarketSchema = new mongoose.Schema({
         closeMinute: { type: Number },
         slotMinutes: { type: Number },
         capacityPerSlot: { type: Number },
+        capacityMode: { type: String, enum: ['fixed', 'roster'] },
         leadHours: { type: Number },
         bookAheadDays: { type: Number },
         rescheduleCutoffHours: { type: Number },

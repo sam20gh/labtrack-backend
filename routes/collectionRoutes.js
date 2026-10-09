@@ -34,6 +34,7 @@ const admin = [authenticateToken, requireRole('admin')];
 router.get('/admin/visits', admin, c.adminDay);
 router.get('/admin/visits/:id', admin, c.adminGet);
 router.patch('/admin/visits/:id', admin, c.adminAssign);
+router.post('/admin/assign-day', admin, c.adminAutoAssign);
 router.post('/admin/visits/:id/complete', admin, c.adminComplete);
 router.post('/admin/visits/:id/missed', admin, c.adminMissed);
 router.post('/admin/visits/:id/reschedule', admin, c.adminReschedule);
@@ -44,6 +45,7 @@ router.get('/admin/specimens/:barcode', admin, c.adminSpecimen);
 router.get('/visits', authenticateToken, c.listMine);
 router.post('/visits', authenticateToken, c.bookMine);
 router.get('/visits/:id', authenticateToken, c.getMine);
+router.get('/visits/:id/pass', authenticateToken, c.getPass);
 router.post('/visits/:id/reschedule', authenticateToken, c.rescheduleMine);
 router.post('/visits/:id/cancel', authenticateToken, c.cancelMine);
 

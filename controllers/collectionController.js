@@ -6,6 +6,8 @@ const Specimen = require('../models/Specimen');
 const M = require('../utils/markets');
 const collection = require('../utils/collectionCentre');
 const { normaliseCurrency } = require('../utils/currency');
+const roster = require('../utils/roster');
+const QRCode = require('qrcode');
 
 /**
  * Home sample collection — the HTTP surface. The rules live in `utils/collectionCentre.js`;
@@ -81,7 +83,7 @@ const ownVisit = async (req, res) => {
         res.status(404).json({ message: 'Visit not found' });
         return null;
     }
-    const visit = await CollectionVisit.findOne({ _id: req.params.id, userId: req.auth.userId });
+    const visit = await CollectionVisit.findOne({ _id: req.params.id, userId: req.auth.userId }).populate('technicianId', 'name');
     if (!visit) res.status(404).json({ message: 'Visit not found' });
     return visit;
 };
@@ -92,6 +94,7 @@ exports.listMine = async (req, res) => {
         const visits = await CollectionVisit.find({ userId: req.auth.userId, status: { $ne: 'expired' } })
             .sort({ 'slot.start': -1 })
             .limit(30)
+            .populate('technicianId', 'name')
             .lean();
         const now = Date.now();
         const view = visits.map(collection.visitView);
@@ -160,6 +163,30 @@ exports.bookMine = async (req, res) => {
     }
 };
 
+/**
+ * GET /api/collection/visits/:id/pass — the visit pass: a QR code and the same six characters.
+ *
+ * Only for a visit a technician is still coming to. The QR carries the visit's id and the code
+ * (`PQV1:<visitId>:<code>`) — no name, no address, nothing a stranger could use — so the
+ * technician's scan proves both that this is the right visit and the right person's phone.
+ * The SVG is drawn here so the app needs no QR library (and no new native build).
+ */
+exports.getPass = async (req, res) => {
+    try {
+        const visit = await ownVisit(req, res);
+        if (!visit) return;
+        if (!['booked', 'assigned', 'en_route', 'arrived'].includes(visit.status) || !visit.passCode) {
+            return res.status(409).json({ message: 'This visit has no pass to show.' });
+        }
+        const payload = `PQV1:${visit._id}:${visit.passCode}`;
+        const svg = await QRCode.toString(payload, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+        res.set('Cache-Control', 'no-store');
+        res.json({ code: `${visit.passCode.slice(0, 3)} ${visit.passCode.slice(3)}`, svg, checked: Boolean(visit.identity?.method) });
+    } catch (error) {
+        res.status(500).json({ message: 'Could not load your visit pass', error: error.message });
+    }
+};
+
 /** POST /api/collection/visits/:id/reschedule { slotStart } */
 exports.rescheduleMine = async (req, res) => {
     try {
@@ -193,7 +220,13 @@ const adminVisitView = (visit) => ({
     customer: visit.userId && typeof visit.userId === 'object' && visit.userId.email
         ? { _id: String(visit.userId._id), name: [visit.userId.firstName, visit.userId.lastName].filter(Boolean).join(' '), email: visit.userId.email }
         : null,
-    assignee: visit.assignee?.name ? { name: visit.assignee.name, phone: visit.assignee.phone || null } : null,
+    technician: visit.technicianId && typeof visit.technicianId === 'object' && visit.technicianId.name
+        ? { _id: String(visit.technicianId._id), name: visit.technicianId.name }
+        : null,
+    assignee: visit.technicianId && typeof visit.technicianId === 'object' && visit.technicianId.name
+        ? { name: visit.technicianId.name, phone: visit.technicianId.phone || null }
+        : visit.assignee?.name ? { name: visit.assignee.name, phone: visit.assignee.phone || null } : null,
+    identity: visit.identity?.method ? { method: visit.identity.method, at: visit.identity.at } : null,
     tasks: (visit.tasks || []).map((t) => ({
         _id: String(t._id), kind: t.kind, status: t.status, barcode: t.barcode || null, note: t.note || null,
         orderId: String(t.orderId), itemId: String(t.itemId), componentId: String(t.componentId),
@@ -222,7 +255,8 @@ exports.adminDay = async (req, res) => {
             market: market.code,
             'slot.start': { $gte: from, $lt: to },
             status: { $ne: 'expired' },
-        }).sort({ 'slot.start': 1 }).populate('userId', 'firstName lastName email').lean();
+        }).sort({ 'slot.start': 1 }).populate('userId', 'firstName lastName email').populate('technicianId', 'name phone').lean();
+        const technicians = await roster.rosterFor(market.code);
 
         // The day's slot grid in the market's clock, whatever the booking window says today.
         const c = market.visits;
@@ -234,19 +268,23 @@ exports.adminDay = async (req, res) => {
             slots.push({
                 start: iso,
                 label: M.describeSlot(start, new Date(start.getTime() + c.slotMinutes * 60000), market.timezone).split(', ').pop(),
-                capacity: c.capacityPerSlot,
+                capacity: roster.capacityAt(market, technicians, start),
                 taken: here.filter((v) => CollectionVisit.HOLDING.includes(v.status)).length,
+                // Who could take a visit here — the assign picker offers these first.
+                onShift: technicians.filter((t) => roster.onShift(t, market, start)).map((t) => String(t._id)),
                 visits: here.map(adminVisitView),
             });
         }
         res.json({
-            market: { code: market.code, name: market.name, timezone: market.timezone },
+            market: { code: market.code, name: market.name, timezone: market.timezone, capacityMode: c.capacityMode },
+            technicians: technicians.map((t) => ({ _id: String(t._id), name: t.name, areas: t.areas || [], visitsPerSlot: t.visitsPerSlot || 1 })),
             date,
             today,
             totals: {
                 visits: visits.filter((v) => !['cancelled'].includes(v.status)).length,
                 completed: visits.filter((v) => v.status === 'completed').length,
                 unassigned: visits.filter((v) => v.status === 'booked').length,
+                onShift: technicians.filter((t) => (t.shifts || []).length && slots.some((sl) => sl.onShift.includes(String(t._id)))).length,
             },
             slots,
         });
@@ -267,7 +305,7 @@ const findVisit = async (req, res) => {
 };
 
 const answerAdmin = async (res, visitId, extra = {}) => {
-    const fresh = await CollectionVisit.findById(visitId).populate('userId', 'firstName lastName email').lean();
+    const fresh = await CollectionVisit.findById(visitId).populate('userId', 'firstName lastName email').populate('technicianId', 'name phone').lean();
     res.json({ visit: adminVisitView(fresh), ...extra });
 };
 
@@ -278,7 +316,7 @@ exports.adminGet = async (req, res) => {
         if (!visit) return;
         const orders = await Order.find({ _id: { $in: visit.orderIds } })
             .select('items.name items._id items.components total currency status claimCode guestEmail').lean();
-        const fresh = await CollectionVisit.findById(visit._id).populate('userId', 'firstName lastName email').lean();
+        const fresh = await CollectionVisit.findById(visit._id).populate('userId', 'firstName lastName email').populate('technicianId', 'name phone').lean();
         res.json({
             visit: adminVisitView(fresh),
             orders: orders.map((o) => ({
@@ -291,26 +329,44 @@ exports.adminGet = async (req, res) => {
     }
 };
 
-/** PATCH /api/collection/admin/visits/:id { assignee: { name, phone } | null } */
+/**
+ * PATCH /api/collection/admin/visits/:id { technicianId | null, force? }
+ *
+ * Refused (409, with the reason) when the technician is off shift or already busy in that slot;
+ * `force` overrides both, for the administrator who knows better. See `assignTechnician`.
+ */
 exports.adminAssign = async (req, res) => {
     try {
         const visit = await findVisit(req, res);
         if (!visit) return;
-        if (!['booked', 'assigned'].includes(visit.status)) {
-            return res.status(409).json({ message: `A visit that is ${visit.status.replace('_', ' ')} cannot be assigned.` });
-        }
-        const name = typeof req.body?.assignee?.name === 'string' ? req.body.assignee.name.trim().slice(0, 80) : '';
-        if (name) {
-            visit.assignee = { name, phone: String(req.body.assignee.phone || '').trim().slice(0, 30) || undefined };
-            visit.transitionTo('assigned', `Assigned to ${name}`, 'admin');
-        } else {
-            visit.assignee = undefined;
-            visit.transitionTo('booked', 'Unassigned', 'admin');
-        }
-        await visit.save();
+        const technicianId = req.body?.technicianId || null;
+        if (technicianId && !mongoose.isValidObjectId(technicianId)) return res.status(400).json({ message: 'Unknown technician' });
+        const result = await collection.assignTechnician({ visit, technicianId, by: 'admin', force: req.body?.force === true });
+        if (!result.ok) return res.status(result.status).json({ message: result.message, reason: result.reason });
         await answerAdmin(res, visit._id);
     } catch (error) {
         res.status(500).json({ message: 'Could not assign the visit', error: error.message });
+    }
+};
+
+/**
+ * POST /api/collection/admin/assign-day { market, date }
+ *
+ * Assign every unassigned visit that day by the deterministic rule (on shift, covers the area,
+ * free in the slot, least loaded). Answers what it did and, for each visit it could not place,
+ * why — so the timetable can show the gap rather than a silent "unassigned".
+ */
+exports.adminAutoAssign = async (req, res) => {
+    try {
+        const market = await Market.resolve(String(req.body?.market || 'AE').toUpperCase());
+        if (!market) return res.status(400).json({ message: 'Unknown market' });
+        const date = String(req.body?.date || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ message: 'Choose a day.' });
+        const plan = await collection.autoAssignDay({ market, date, by: 'admin:auto' });
+        res.json({ assigned: plan.assignments.length, unassigned: plan.unassigned });
+    } catch (error) {
+        console.error('❌ Auto-assign failed:', error);
+        res.status(500).json({ message: 'Could not assign the day', error: error.message });
     }
 };
 
@@ -319,7 +375,9 @@ exports.adminComplete = async (req, res) => {
     try {
         const visit = await findVisit(req, res);
         if (!visit) return;
-        const result = await collection.completeVisit({ visit, results: req.body?.tasks, by: `admin:${req.auth.userId}` });
+        const result = await collection.completeVisit({
+            visit, results: req.body?.tasks, by: `admin:${req.auth.userId}`, identityConfirmed: req.body?.identityConfirmed === true,
+        });
         if (!result.ok) return res.status(result.status).json({ message: result.message, reason: result.reason });
         await answerAdmin(res, visit._id, { specimens: result.specimens.map((s) => s.barcode) });
     } catch (error) {

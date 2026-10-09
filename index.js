@@ -141,6 +141,8 @@ app.use('/api/onboarding', require('./routes/onboardingRoutes'));
 app.use('/api/checkout', require('./routes/checkoutRoutes'));
 app.use('/api/collection', require('./routes/collectionRoutes'));
 app.use('/api/markets', require('./routes/marketRoutes'));
+app.use('/api/technician', require('./routes/technicianRoutes').self);
+app.use('/api/technicians', require('./routes/technicianRoutes').roster);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/payments', paymentRoutes);

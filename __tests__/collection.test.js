@@ -366,18 +366,18 @@ describe('at the door', () => {
     const results = (visit, over = {}) => visit.tasks.map((t) => ({
         taskId: String(t._id),
         status: 'done',
-        barcode: t.kind === 'collect_blood' ? 'PQB-000123' : t.kind === 'collect_dna' ? 'PQD-000456' : undefined,
+        barcode: t.kind === 'collect_blood' ? 'PQB-000123' : t.kind === 'collect_dna' ? 'PQD-000456' : `SN-${String(visit._id).slice(-8)}`,
         ...(over[t.kind] || {}),
     }));
 
     it('needs every task answered, and a barcode on every collected sample', async () => {
         const user = await makeUser();
         const { visit } = await paidVisitOrder(user);
-        const partial = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { tasks: results(visit).slice(0, 1) } });
+        const partial = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { identityConfirmed: true, tasks: results(visit).slice(0, 1) } });
         expect(partial.code).toBe(400);
-        const unlabelled = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { tasks: results(visit, { collect_blood: { barcode: '' } }) } });
+        const unlabelled = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { identityConfirmed: true, tasks: results(visit, { collect_blood: { barcode: '' } }) } });
         expect(unlabelled.body.reason).toBe('barcode');
-        const twice = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { tasks: results(visit, { collect_dna: { barcode: 'PQB-000123' } }) } });
+        const twice = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { identityConfirmed: true, tasks: results(visit, { collect_dna: { barcode: 'PQB-000123' } }) } });
         expect(twice.body.reason).toBe('duplicate');
         expect(await Specimen.countDocuments()).toBe(0);
     });
@@ -385,7 +385,7 @@ describe('at the door', () => {
     it('records the samples, hands over the bracelet, and moves each parcel on', async () => {
         const user = await makeUser();
         const { order, visit } = await paidVisitOrder(user);
-        const r = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { tasks: results(visit) } });
+        const r = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { identityConfirmed: true, tasks: results(visit) } });
         expect(r.code).toBe(200);
         expect(r.body.specimens.sort()).toEqual(['PQB-000123', 'PQD-000456']);
         expect(r.body.visit.status).toBe('completed');
@@ -404,9 +404,9 @@ describe('at the door', () => {
         const a = await makeUser();
         const b = await makeUser();
         const first = await paidVisitOrder(a);
-        await call(visits.adminComplete, { auth: ADMIN, params: { id: String(first.visit._id) }, body: { tasks: results(first.visit) } });
+        await call(visits.adminComplete, { auth: ADMIN, params: { id: String(first.visit._id) }, body: { identityConfirmed: true, tasks: results(first.visit) } });
         const second = await paidVisitOrder(b, { slotStart: await slotAfter(60) });
-        const r = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(second.visit._id) }, body: { tasks: results(second.visit) } });
+        const r = await call(visits.adminComplete, { auth: ADMIN, params: { id: String(second.visit._id) }, body: { identityConfirmed: true, tasks: results(second.visit) } });
         expect(r.code).toBe(409);
         expect(r.body.message).toMatch(/PQB-000123|already/);
     });
@@ -416,7 +416,7 @@ describe('at the door', () => {
         const { order, visit } = await paidVisitOrder(user);
         await call(visits.adminComplete, {
             auth: ADMIN, params: { id: String(visit._id) },
-            body: { tasks: results(visit, { collect_blood: { status: 'not_done', note: 'Could not find a vein', barcode: undefined } }) },
+            body: { identityConfirmed: true, tasks: results(visit, { collect_blood: { status: 'not_done', note: 'Could not find a vein', barcode: undefined } }) },
         });
         const by = Object.fromEntries((await Order.findById(order._id)).items[0].components.map((c) => [c.kind, c.status]));
         expect(by.blood).toBe('placed');
@@ -448,7 +448,7 @@ describe('at the door', () => {
     it('a lab scan of the barcode moves the kit to the lab, once', async () => {
         const user = await makeUser();
         const { order, visit } = await paidVisitOrder(user);
-        await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { tasks: results(visit) } });
+        await call(visits.adminComplete, { auth: ADMIN, params: { id: String(visit._id) }, body: { identityConfirmed: true, tasks: results(visit) } });
         const r = await call(visits.adminReceive, { auth: ADMIN, body: { barcode: ' pqd-000456 ' } });
         expect(r.code).toBe(200);
         expect(r.body.specimen.status).toBe('received');
@@ -530,8 +530,12 @@ describe('the portal', () => {
         expect(slot.visits[0].customer.email).toBe(user.email);
         expect(body.totals.unassigned).toBe(1);
 
-        const assigned = await call(visits.adminAssign, { auth: ADMIN, params: { id: String(visit._id) }, body: { assignee: { name: 'Omar' } } });
-        expect(assigned.body.visit).toMatchObject({ status: 'assigned', assignee: { name: 'Omar' } });
+        const omar = await require('../models/Technician').create({
+            name: 'Omar Haddad', email: 'omar@example.ae', market: 'AE',
+            shifts: [0, 1, 2, 3, 4, 5, 6].map((day) => ({ day, startMinute: 0, endMinute: 1440 })),
+        });
+        const assigned = await call(visits.adminAssign, { auth: ADMIN, params: { id: String(visit._id) }, body: { technicianId: String(omar._id) } });
+        expect(assigned.body.visit).toMatchObject({ status: 'assigned', technician: { name: 'Omar Haddad' } });
     });
 
     it('saves a market edit over what is stored, and refuses a broken one', async () => {

@@ -32,6 +32,8 @@ const Specimen = require('../models/Specimen');
 const C = require('./orderComponents');
 const M = require('./markets');
 const { publish } = require('./notificationCentre');
+const roster = require('./roster');
+const crypto = require('crypto');
 
 /**
  * How long a slot is held while somebody pays. Longer than the website's Stripe session (31
@@ -45,6 +47,13 @@ const TASK_FOR = { blood: 'collect_blood', dna: 'collect_dna', bracelet: 'handov
 const KIND_OF = { collect_blood: 'blood', collect_dna: 'dna' };
 
 const fail = (status, message, reason) => ({ ok: false, status, message, reason });
+
+/** Six characters with no 0/O or 1/I/L — read off a phone on a doorstep, it has to survive. */
+const PASS_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+const newPassCode = () => {
+    const bytes = crypto.randomBytes(6);
+    return [...bytes].map((b) => PASS_ALPHABET[b % PASS_ALPHABET.length]).join('');
+};
 
 // ── Capacity ─────────────────────────────────────────────────────────────────
 
@@ -61,10 +70,19 @@ const fail = (status, message, reason) => ({ ok: false, status, message, reason 
 // booking in the first moments after a deploy could otherwise race the build. Awaited once.
 let indexReady = null;
 
+/** Places in one slot right now: the fixed figure, or the technicians on shift. */
+const capacityFor = async (market, start) => (market.visits.capacityMode === 'roster'
+    ? roster.capacityAt(market, await roster.rosterFor(market.code), start)
+    : market.visits.capacityPerSlot);
+
 const reserve = async (market, start) => {
     if (!indexReady) indexReady = CollectionSlot.init();
     await indexReady;
-    const filter = { market: market.code, start, count: { $lt: market.visits.capacityPerSlot } };
+    const capacity = await capacityFor(market, start);
+    // Nobody on shift: the conditional below would match `count < 0` and refuse anyway, but an
+    // upsert on an absent row would then *insert* one. Refuse before touching the collection.
+    if (capacity <= 0) return false;
+    const filter = { market: market.code, start, count: { $lt: capacity } };
     try {
         await CollectionSlot.findOneAndUpdate(filter, { $inc: { count: 1 } }, { upsert: true, new: true });
         return true;
@@ -88,7 +106,9 @@ const takenBetween = async (marketCode, from, to) => {
 const availability = async (market, now = new Date()) => {
     const horizon = new Date(now.getTime() + (market.visits.bookAheadDays + 1) * 86400000);
     const taken = await takenBetween(market.code, now, horizon);
-    return M.slotsFor(market, { now, taken });
+    if (market.visits.capacityMode !== 'roster') return M.slotsFor(market, { now, taken });
+    const technicians = await roster.rosterFor(market.code);
+    return M.slotsFor(market, { now, taken, capacityAt: (start) => roster.capacityAt(market, technicians, start) });
 };
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -187,7 +207,11 @@ const visitView = (visit) => ({
     accessNotes: visit.accessNotes || null,
     requiresFasting: Boolean(visit.requiresFasting),
     holdExpiresAt: visit.holdExpiresAt || null,
-    assignee: visit.assignee?.name ? { name: visit.assignee.name } : null,
+    // The technician's first name only: enough to recognise who is at the door.
+    assignee: visit.technicianId && typeof visit.technicianId === 'object' && visit.technicianId.name
+        ? { name: String(visit.technicianId.name).split(' ')[0] }
+        : visit.assignee?.name ? { name: visit.assignee.name } : null,
+    identityChecked: Boolean(visit.identity?.method),
     tasks: (visit.tasks || []).map((t) => ({
         _id: String(t._id), kind: t.kind, status: t.status, orderId: String(t.orderId),
     })),
@@ -234,6 +258,7 @@ const holdForOrder = async ({ order, market, start, details, now = new Date() })
             slot: { start: at, end: new Date(at.getTime() + market.visits.slotMinutes * 60000) },
             status: 'held',
             holdExpiresAt: new Date(now.getTime() + HOLD_MINUTES * 60000),
+            passCode: newPassCode(),
             ...details,
             tasks: tasksFor([order]),
             requiresFasting: await requiresFastingFor([order]),
@@ -315,6 +340,7 @@ const bookForOrders = async ({ orders, market, start, details, userId, now = new
             timezone: market.timezone,
             slot: { start: at, end: new Date(at.getTime() + market.visits.slotMinutes * 60000) },
             status: 'held',
+            passCode: newPassCode(),
             ...details,
             tasks,
             requiresFasting: await requiresFastingFor(orders),
@@ -355,6 +381,7 @@ const reschedule = async ({ visit, start, by, now = new Date() }) => {
     visit.slot = { start: at, end: new Date(at.getTime() + market.visits.slotMinutes * 60000) };
     // A technician assigned to the old time is not assigned to the new one.
     visit.assignee = undefined;
+    visit.technicianId = undefined;
     visit.remindedAt = undefined;
     visit.transitionTo('booked', `Moved from ${old.toISOString()}`, by);
     await visit.save();
@@ -428,15 +455,27 @@ const normaliseBarcode = (value) => {
     return /^[A-Z0-9-]{6,32}$/.test(code) ? code : null;
 };
 
+/** A bracelet's serial or MAC address, as printed on the device or its box. */
+const normaliseSerial = (value) => {
+    if (typeof value !== 'string') return null;
+    const code = value.trim().toUpperCase().replace(/\s+/g, '');
+    return /^[A-Z0-9:-]{6,32}$/.test(code) ? code : null;
+};
+
 /**
  * Record a visit: each task `done` or `not_done`, a collected sample with its barcode.
  *
  * Everything is checked before anything is written, so a mistyped barcode on the third tube
  * does not leave the first two recorded and the visit half-finished.
  */
-const completeVisit = async ({ visit, results, by, now = new Date() }) => {
+const completeVisit = async ({ visit, results, by, identityConfirmed = false, now = new Date() }) => {
     if (!['booked', 'assigned', 'en_route', 'arrived'].includes(visit.status)) {
         return fail(409, `A visit that is ${visit.status.replace('_', ' ')} cannot be completed.`, 'state');
+    }
+    // Before a single tube is labelled: is this the person the visit is for? The pass, or a
+    // name and date-of-birth check the technician confirms — never neither.
+    if (!visit.identity?.method && identityConfirmed !== true) {
+        return fail(400, 'Confirm who you collected from: scan their visit pass, or check their name and date of birth.', 'identity');
     }
     const byTask = new Map((Array.isArray(results) ? results : []).map((r) => [String(r?.taskId), r]));
     const plan = [];
@@ -446,9 +485,13 @@ const completeVisit = async ({ visit, results, by, now = new Date() }) => {
             return fail(400, 'Record every item on the visit as done or not done.', 'incomplete');
         }
         const collecting = task.kind !== 'handover_bracelet';
-        const barcode = r.barcode ? normaliseBarcode(r.barcode) : null;
+        const barcode = r.barcode ? (collecting ? normaliseBarcode(r.barcode) : normaliseSerial(r.barcode)) : null;
         if (r.status === 'done' && collecting && !barcode) {
             return fail(400, 'Each collected sample needs the barcode from its label (6–32 letters and digits).', 'barcode');
+        }
+        // The serial is what links this bracelet to this person — the app pairs it by it.
+        if (r.status === 'done' && !collecting && !barcode) {
+            return fail(400, 'A handed-over bracelet needs the serial from the device or its box.', 'serial');
         }
         plan.push({ task, status: r.status, barcode, note: clean(r.note, 300) });
     }
@@ -457,6 +500,10 @@ const completeVisit = async ({ visit, results, by, now = new Date() }) => {
     if (new Set(codes).size !== codes.length) return fail(400, 'The same barcode was entered twice.', 'duplicate');
     const used = await Specimen.find({ barcode: { $in: codes } }).select('barcode').lean();
     if (used.length) return fail(409, `Barcode ${used[0].barcode} is already on another sample. Check the label.`, 'duplicate');
+    const serials = plan.filter((p) => p.status === 'done' && p.task.kind === 'handover_bracelet').map((p) => p.barcode);
+    if (serials.length && await Order.exists({ 'items.components.deviceSerial': { $in: serials } })) {
+        return fail(409, 'That bracelet serial is already recorded against another order. Check the device.', 'duplicate');
+    }
 
     const market = await Market.resolve(visit.market);
     const orders = await Order.find({ _id: { $in: visit.orderIds } });
@@ -499,8 +546,9 @@ const completeVisit = async ({ visit, results, by, now = new Date() }) => {
         if (!component) continue;
         if (p.status === 'done') {
             const to = p.task.kind === 'handover_bracelet' ? 'delivered' : 'collected';
+            if (p.task.kind === 'handover_bracelet') component.deviceSerial = p.barcode;
             component.status = to;
-            component.statusHistory.push({ status: to, at: now, note: p.barcode ? `Barcode ${p.barcode}` : 'Handed over at the visit' });
+            component.statusHistory.push({ status: to, at: now, note: p.task.kind === 'handover_bracelet' ? `Handed over, serial ${p.barcode}` : `Barcode ${p.barcode}` });
         } else {
             // Not collected this time — a failed draw, a bracelet refused. Back to waiting for a visit.
             component.status = 'placed';
@@ -512,6 +560,7 @@ const completeVisit = async ({ visit, results, by, now = new Date() }) => {
         await order.save();
     }
 
+    if (!visit.identity?.method) visit.identity = { method: 'manual', at: now, by };
     visit.transitionTo('completed', `${plan.filter((p) => p.status === 'done').length} of ${plan.length} done`, by);
     await visit.save();
 
@@ -592,6 +641,102 @@ const cancelForOrder = async (orderId, by = 'system') => {
     }
 };
 
+// ── Technicians ──────────────────────────────────────────────────────────────
+
+/**
+ * Give a visit to a technician. Refused when they are inactive, in another market, or not on
+ * shift for the slot; refused when they already have their slot's worth of visits — unless an
+ * administrator passes `force`, because the person who knows that Omar can do two in Marina is
+ * the one pressing the button.
+ */
+const assignTechnician = async ({ visit, technicianId, by, force = false }) => {
+    if (!['booked', 'assigned'].includes(visit.status)) {
+        return fail(409, `A visit that is ${visit.status.replace('_', ' ')} cannot be assigned.`, 'state');
+    }
+    if (!technicianId) {
+        visit.technicianId = undefined;
+        visit.assignee = undefined;
+        visit.transitionTo('booked', 'Unassigned', by);
+        await visit.save();
+        return { ok: true, visit };
+    }
+    const Technician = require('../models/Technician');
+    const tech = await Technician.findById(technicianId).lean();
+    if (!tech || !tech.active) return fail(404, 'No active technician with that id.', 'unknown');
+    const market = await Market.resolve(visit.market);
+    if (tech.market !== market.code) return fail(409, `${tech.name} works in another market.`, 'market');
+    if (!force) {
+        if (!roster.onShift(tech, market, visit.slot.start)) return fail(409, `${tech.name} is not on shift at that time.`, 'shift');
+        const busy = await CollectionVisit.countDocuments({
+            _id: { $ne: visit._id }, technicianId: tech._id, 'slot.start': visit.slot.start,
+            status: { $in: ['assigned', 'en_route', 'arrived'] },
+        });
+        if (busy >= (tech.visitsPerSlot || 1)) return fail(409, `${tech.name} already has a visit in that slot.`, 'busy');
+    }
+    visit.technicianId = tech._id;
+    visit.assignee = undefined;
+    visit.transitionTo('assigned', `Assigned to ${tech.name}${force ? ' (overridden)' : ''}`, by);
+    await visit.save();
+    return { ok: true, visit, technician: tech };
+};
+
+/** Assign a whole day's unassigned visits by the deterministic rule in `roster.autoAssign`. */
+const autoAssignDay = async ({ market, date, by }) => {
+    const from = M.localToUtc(date, 0, market.timezone);
+    const to = M.localToUtc(date, 24 * 60, market.timezone);
+    const [visits, technicians] = await Promise.all([
+        CollectionVisit.find({ market: market.code, 'slot.start': { $gte: from, $lt: to } }),
+        roster.rosterFor(market.code),
+    ]);
+    const plan = roster.autoAssign(market, visits.map((v) => v.toObject()), technicians);
+    const byId = new Map(technicians.map((t) => [String(t._id), t]));
+    for (const a of plan.assignments) {
+        const visit = visits.find((v) => String(v._id) === a.visitId);
+        visit.technicianId = a.technicianId;
+        visit.transitionTo('assigned', `Auto-assigned to ${byId.get(a.technicianId).name}`, by);
+        await visit.save();
+    }
+    return plan;
+};
+
+/** The technician has set off: the customer is told. */
+const startVisit = async ({ visit, by }) => {
+    if (visit.status !== 'assigned') return fail(409, `A visit that is ${visit.status.replace('_', ' ')} cannot be started.`, 'state');
+    visit.transitionTo('en_route', 'On the way', by);
+    await visit.save();
+    const tech = visit.technicianId ? await require('../models/Technician').findById(visit.technicianId).select('name').lean() : null;
+    tell(visit, 'en_route', 'Your technician is on the way',
+        `${tech ? `${tech.name.split(' ')[0]} is` : 'Your technician is'} heading to you now. Have your visit pass ready in the app.`);
+    return { ok: true, visit };
+};
+
+const arriveVisit = async ({ visit, by }) => {
+    if (!['assigned', 'en_route'].includes(visit.status)) return fail(409, `A visit that is ${visit.status.replace('_', ' ')} cannot be marked arrived.`, 'state');
+    visit.transitionTo('arrived', 'At the door', by);
+    await visit.save();
+    return { ok: true, visit };
+};
+
+/**
+ * Check the visit pass at the door. Compared in constant time; a wrong code changes nothing
+ * and says only that it did not match — it never says what the right one is.
+ */
+const verifyPass = async ({ visit, code, by, now = new Date() }) => {
+    if (!['assigned', 'en_route', 'arrived'].includes(visit.status)) {
+        return fail(409, `A visit that is ${visit.status.replace('_', ' ')} cannot be checked in.`, 'state');
+    }
+    const sent = String(code || '').toUpperCase().replace(/[\s-]/g, '');
+    const want = String(visit.passCode || '');
+    const ok = want.length > 0 && sent.length === want.length
+        && crypto.timingSafeEqual(Buffer.from(sent), Buffer.from(want));
+    if (!ok) return fail(400, 'That pass does not match this visit. Check you are at the right address.', 'mismatch');
+    visit.identity = { method: 'pass', at: now, by };
+    if (visit.status !== 'arrived') visit.transitionTo('arrived', 'Visit pass checked', by);
+    else visit.statusHistory.push({ status: 'arrived', at: now, note: 'Visit pass checked', by });
+    await visit.save();
+    return { ok: true, visit };
+};
+
 /** A claimed website order brings its visit with it. */
 const claimVisits = (orderIds, userId) =>
     CollectionVisit.updateMany({ orderIds: { $in: orderIds }, userId: null }, { $set: { userId } });
@@ -618,4 +763,11 @@ module.exports = {
     claimVisits,
     cancelForOrder,
     visitView,
+    capacityFor,
+    normaliseSerial,
+    assignTechnician,
+    autoAssignDay,
+    startVisit,
+    arriveVisit,
+    verifyPass,
 };

@@ -13,7 +13,8 @@ const User = require('../models/userModel');
 const { recordAccess } = require('../utils/accessLog');
 const { sendCsv } = require('../utils/csv');
 
-const ASSIGNABLE_ROLES = ['user', 'professional', 'admin'];
+/** `technician` visits customers for home sample collection; see `controllers/technicianController.js`. */
+const ASSIGNABLE_ROLES = ['user', 'professional', 'admin', 'technician'];
 
 /** GET /api/staff — everyone holding a portal role. */
 exports.listStaff = async (req, res, next) => {
@@ -21,7 +22,7 @@ exports.listStaff = async (req, res, next) => {
         const users = await admin.listUsers();
         const staff = users
             .map(admin.publicUser)
-            .filter((u) => u.role === 'admin' || u.role === 'professional')
+            .filter((u) => u.role === 'admin' || u.role === 'professional' || u.role === 'technician')
             .sort((a, b) => (a.email || '').localeCompare(b.email || ''));
 
         res.json({ staff, count: staff.length });
