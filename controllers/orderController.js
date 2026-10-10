@@ -620,32 +620,8 @@ exports.updateComponentStatus = async (req, res) => {
             component[ref.field] = req.body[ref.field];
         }
 
-        component.status = status;
-        component.statusHistory.push({ status, at: new Date(), note });
         if (trackingReference) component.trackingReference = String(trackingReference).slice(0, 80);
-
-        const rolled = C.rollupStatus(order.items.flatMap((i) => i.components || []));
-        const finished = rolled === 'resulted' && order.status !== 'resulted';
-        if (rolled && rolled !== order.status) order.transitionTo(rolled, `Rolled up from ${component.kind}`);
-        await order.save();
-
-        announce(order, component, status);
-        if (status === 'resulted') reinterpret(order, component);
-
-        // The whole order has come back: close the plan items it was bought for, as the
-        // order-level path does.
-        if (finished) {
-            const planItemIds = order.items.map((i) => i.planItemId).filter(Boolean);
-            if (planItemIds.length) {
-                await PlanItem.updateMany(
-                    { _id: { $in: planItemIds } },
-                    { $set: { status: 'completed', completedAt: new Date() } },
-                    { runValidators: true }
-                );
-                const completed = await PlanItem.find({ _id: { $in: planItemIds } });
-                for (const done of completed) await advanceRecurringItem(done);
-            }
-        }
+        await advanceComponent({ order, component, status, note });
 
         res.json({ message: `${C.KIND_META[component.kind].label}: ${C.labelFor(component, status)}`, order });
     } catch (error) {
@@ -654,4 +630,40 @@ exports.updateComponentStatus = async (req, res) => {
     }
 };
 
+/**
+ * Move one parcel to `status` and do everything that follows from it: the order's roll-up,
+ * the customer's card, and — on `resulted` — the re-analysis and the plan items the order was
+ * bought for. The one place this happens, whether the step came from the portal or from a
+ * laboratory's API (`controllers/labController.js`). Callers check the step is legal and attach
+ * any result id first.
+ */
+const advanceComponent = async ({ order, component, status, note, at = new Date() }) => {
+    component.status = status;
+    component.statusHistory.push({ status, at, note });
+
+    const rolled = C.rollupStatus(order.items.flatMap((i) => i.components || []));
+    const finished = rolled === 'resulted' && order.status !== 'resulted';
+    if (rolled && rolled !== order.status) order.transitionTo(rolled, `Rolled up from ${component.kind}`);
+    await order.save();
+
+    announce(order, component, status);
+    if (status === 'resulted') reinterpret(order, component);
+
+    // The whole order has come back: close the plan items it was bought for, as the
+    // order-level path does.
+    if (finished) {
+        const planItemIds = order.items.map((i) => i.planItemId).filter(Boolean);
+        if (planItemIds.length) {
+            await PlanItem.updateMany(
+                { _id: { $in: planItemIds } },
+                { $set: { status: 'completed', completedAt: new Date() } },
+                { runValidators: true }
+            );
+            const completed = await PlanItem.find({ _id: { $in: planItemIds } });
+            for (const done of completed) await advanceRecurringItem(done);
+        }
+    }
+};
+
+exports.advanceComponent = advanceComponent;
 exports._internal = { LEGAL_TRANSITIONS, announce };

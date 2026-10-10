@@ -40,6 +40,8 @@ router.post('/admin/visits/:id/missed', admin, c.adminMissed);
 router.post('/admin/visits/:id/reschedule', admin, c.adminReschedule);
 router.post('/admin/visits/:id/cancel', admin, c.adminCancel);
 router.post('/admin/specimens/receive', admin, c.adminReceive);
+router.get('/admin/manifests/:code', admin, c.adminManifest);
+router.post('/admin/manifests/:code/receive', admin, c.adminReceiveManifest);
 router.get('/admin/specimens/:barcode', admin, c.adminSpecimen);
 
 router.get('/visits', authenticateToken, c.listMine);

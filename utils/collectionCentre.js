@@ -33,7 +33,15 @@ const C = require('./orderComponents');
 const M = require('./markets');
 const { publish } = require('./notificationCentre');
 const roster = require('./roster');
+const routing = require('./routing');
 const crypto = require('crypto');
+
+/** How old a technician's last position may be before an arrival estimate is withheld. */
+const ETA_FRESH_MINUTES = 10;
+/** The "about N minutes away" push, sent once per visit when the estimate first drops under this. */
+const NEAR_MINUTES = 10;
+/** A phone fix this vague is not used to pin a door. */
+const PIN_ACCURACY_M = 100;
 
 /**
  * How long a slot is held while somebody pays. Longer than the website's Stripe session (31
@@ -212,11 +220,21 @@ const visitView = (visit) => ({
         ? { name: String(visit.technicianId.name).split(' ')[0] }
         : visit.assignee?.name ? { name: visit.assignee.name } : null,
     identityChecked: Boolean(visit.identity?.method),
+    // Minutes, never a position: the customer is told how long, not where the technician is.
+    eta: etaOf(visit),
     tasks: (visit.tasks || []).map((t) => ({
         _id: String(t._id), kind: t.kind, status: t.status, orderId: String(t.orderId),
     })),
     orderIds: (visit.orderIds || []).map(String),
 });
+
+/** The current arrival estimate, or null when there is none worth showing. */
+function etaOf(visit, now = new Date()) {
+    const t = visit.tracking;
+    if (visit.status !== 'en_route' || !t?.at || !Number.isFinite(t.etaMinutes)) return null;
+    if (now - new Date(t.at) > ETA_FRESH_MINUTES * 60000) return null;
+    return { minutes: t.etaMinutes, updatedAt: t.at };
+}
 
 // ── Notifications ────────────────────────────────────────────────────────────
 
@@ -402,6 +420,7 @@ const cancel = async ({ visit, by, now = new Date(), note, notify = true }) => {
     }
     const held = visit.status !== 'needs_rebooking';
     visit.cancelledBy = by;
+    visit.tracking = undefined;
     visit.transitionTo('cancelled', note, by);
     await visit.save();
     if (held) await release(visit.market, new Date(visit.slot.start));
@@ -561,6 +580,7 @@ const completeVisit = async ({ visit, results, by, identityConfirmed = false, no
     }
 
     if (!visit.identity?.method) visit.identity = { method: 'manual', at: now, by };
+    visit.tracking = undefined;
     visit.transitionTo('completed', `${plan.filter((p) => p.status === 'done').length} of ${plan.length} done`, by);
     await visit.save();
 
@@ -582,6 +602,7 @@ const markMissed = async ({ visit, by, note }) => {
     if (!['booked', 'assigned', 'en_route', 'arrived'].includes(visit.status)) {
         return fail(409, `A visit that is ${visit.status.replace('_', ' ')} cannot be marked missed.`, 'state');
     }
+    visit.tracking = undefined;
     visit.transitionTo('missed', note, by);
     await visit.save();
     await moveComponents(visit, ['visit_booked'], 'placed', 'Collection visit missed');
@@ -595,8 +616,8 @@ const receiveSpecimen = async ({ barcode, by, now = new Date() }) => {
     if (!code) return fail(400, 'That does not look like one of our barcodes.', 'invalid');
     const specimen = await Specimen.findOne({ barcode: code });
     if (!specimen) return fail(404, `No sample is registered under ${code}.`, 'unknown');
-    if (specimen.status !== 'collected') {
-        return fail(409, `Sample ${code} is already ${specimen.status}.`, 'state');
+    if (!['collected', 'in_transit'].includes(specimen.status)) {
+        return fail(409, `Sample ${code} is already ${specimen.status.replace('_', ' ')}.`, 'state');
     }
     specimen.status = 'received';
     specimen.events.push({ type: 'received', at: now, by });
@@ -710,10 +731,62 @@ const startVisit = async ({ visit, by }) => {
     return { ok: true, visit };
 };
 
-const arriveVisit = async ({ visit, by }) => {
+/**
+ * Pin the door from the technician's phone, once, if nobody has: the next visit to this
+ * address can then be routed. A vague fix (indoors, a basement) is not used — a pin 300 m off
+ * sends the next technician to the wrong tower.
+ */
+const learnDoor = (visit, fix) => {
+    if (!fix || routing.has(visit.address)) return;
+    const lat = Number(fix.lat);
+    const lng = Number(fix.lng);
+    const accuracy = Number(fix.accuracy);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return;
+    if (!Number.isFinite(accuracy) || accuracy > PIN_ACCURACY_M) return;
+    visit.address.lat = lat;
+    visit.address.lng = lng;
+    visit.address.coordSource = 'technician';
+};
+
+const arriveVisit = async ({ visit, by, fix }) => {
     if (!['assigned', 'en_route'].includes(visit.status)) return fail(409, `A visit that is ${visit.status.replace('_', ' ')} cannot be marked arrived.`, 'state');
+    learnDoor(visit, fix);
+    // At the door: the position is no longer needed, and is not kept.
+    visit.tracking = undefined;
     visit.transitionTo('arrived', 'At the door', by);
     await visit.save();
+    return { ok: true, visit };
+};
+
+/**
+ * Where the technician is, while on the way. Turned into minutes against the door when the
+ * door is pinned; the customer is told once when it first drops under ten. Refused in any
+ * other state, so a phone that keeps reporting after arrival writes nothing.
+ */
+const updateLocation = async ({ visit, fix, now = new Date() }) => {
+    if (visit.status !== 'en_route') return fail(409, 'Location is only shared on the way to a visit.', 'state');
+    const lat = Number(fix?.lat);
+    const lng = Number(fix?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+        return fail(400, 'A location needs a latitude and longitude.', 'invalid');
+    }
+    const at = fix.at && !Number.isNaN(new Date(fix.at).getTime()) ? new Date(fix.at) : now;
+    // A queued fix older than the one held is history, not news.
+    if (visit.tracking?.at && at < new Date(visit.tracking.at)) return { ok: true, visit };
+    const eta = routing.etaMinutes({ lat, lng }, visit.address);
+    const nearAnnounced = Boolean(visit.tracking?.nearAnnounced);
+    visit.tracking = {
+        lat, lng,
+        accuracy: Number.isFinite(Number(fix.accuracy)) ? Number(fix.accuracy) : undefined,
+        at,
+        etaMinutes: eta ?? undefined,
+        nearAnnounced: nearAnnounced || (eta !== null && eta <= NEAR_MINUTES),
+    };
+    await visit.save();
+    if (!nearAnnounced && eta !== null && eta <= NEAR_MINUTES) {
+        tell(visit, 'near', 'Your technician is nearly there',
+            `About ${eta} minute${eta === 1 ? '' : 's'} away. Have your visit pass ready in the app.`);
+    }
     return { ok: true, visit };
 };
 
@@ -721,7 +794,7 @@ const arriveVisit = async ({ visit, by }) => {
  * Check the visit pass at the door. Compared in constant time; a wrong code changes nothing
  * and says only that it did not match — it never says what the right one is.
  */
-const verifyPass = async ({ visit, code, by, now = new Date() }) => {
+const verifyPass = async ({ visit, code, by, fix, now = new Date() }) => {
     if (!['assigned', 'en_route', 'arrived'].includes(visit.status)) {
         return fail(409, `A visit that is ${visit.status.replace('_', ' ')} cannot be checked in.`, 'state');
     }
@@ -731,10 +804,81 @@ const verifyPass = async ({ visit, code, by, now = new Date() }) => {
         && crypto.timingSafeEqual(Buffer.from(sent), Buffer.from(want));
     if (!ok) return fail(400, 'That pass does not match this visit. Check you are at the right address.', 'mismatch');
     visit.identity = { method: 'pass', at: now, by };
+    learnDoor(visit, fix);
+    visit.tracking = undefined;
     if (visit.status !== 'arrived') visit.transitionTo('arrived', 'Visit pass checked', by);
     else visit.statusHistory.push({ status: 'arrived', at: now, note: 'Visit pass checked', by });
     await visit.save();
     return { ok: true, visit };
+};
+
+// ── Hand-over to the laboratory ──────────────────────────────────────────────
+
+const MANIFEST_ALPHABET = PASS_ALPHABET;
+const newManifestCode = () => `PQM-${[...crypto.randomBytes(6)].map((b) => MANIFEST_ALPHABET[b % MANIFEST_ALPHABET.length]).join('')}`;
+
+/**
+ * Put a bag of tubes on its way to a laboratory. Every barcode must be a tube *this
+ * technician* collected, not yet handed over, destined for *this* laboratory — a blood tube in
+ * the DNA bag is refused here rather than discovered at the wrong bench.
+ */
+const handOver = async ({ technician, lab, barcodes, by, now = new Date() }) => {
+    const SampleManifest = require('../models/SampleManifest');
+    const labCode = String(lab || '').trim().toUpperCase();
+    if (!labCode) return fail(400, 'Choose the laboratory this bag is going to.', 'lab');
+    const codes = [...new Set((Array.isArray(barcodes) ? barcodes : []).map(normaliseBarcode))];
+    if (!codes.length || codes.includes(null)) return fail(400, 'Scan every tube going into the bag.', 'barcode');
+
+    const specimens = await Specimen.find({ barcode: { $in: codes } });
+    const found = new Map(specimens.map((sp) => [sp.barcode, sp]));
+    const visitIds = specimens.map((sp) => sp.visitId).filter(Boolean);
+    const mine = new Set((await CollectionVisit.find({ _id: { $in: visitIds }, technicianId: technician._id }).select('_id').lean()).map((v) => String(v._id)));
+    for (const code of codes) {
+        const sp = found.get(code);
+        if (!sp || !mine.has(String(sp.visitId))) return fail(404, `${code} is not a sample you collected.`, 'unknown');
+        if (sp.status !== 'collected') return fail(409, `${code} is already ${sp.status.replace('_', ' ')}.`, 'state');
+        if (sp.lab && sp.lab !== labCode) return fail(409, `${code} goes to ${sp.lab}, not ${labCode}. Bag it separately.`, 'lab');
+    }
+
+    let manifest = null;
+    for (let i = 0; i < 3 && !manifest; i++) {
+        try {
+            manifest = await SampleManifest.create({
+                code: newManifestCode(), technicianId: technician._id, market: technician.market, lab: labCode,
+                specimenIds: specimens.map((sp) => sp._id), barcodes: codes, handedOverAt: now,
+            });
+        } catch (error) {
+            if (error.code !== 11000) throw error;
+        }
+    }
+    await Specimen.updateMany(
+        { _id: { $in: specimens.map((sp) => sp._id) }, status: 'collected' },
+        { $set: { status: 'in_transit', manifestId: manifest._id }, $push: { events: { type: 'handed_over', at: now, by, note: manifest.code } } }
+    );
+    return { ok: true, manifest };
+};
+
+/**
+ * The bag has arrived: every tube on its manifest is received at once. A tube the bench did
+ * not find is named in `missing` and left in transit, so it stays visible as a gap.
+ */
+const receiveManifest = async ({ code, missing = [], by, now = new Date() }) => {
+    const SampleManifest = require('../models/SampleManifest');
+    const manifest = await SampleManifest.findOne({ code: String(code || '').trim().toUpperCase() });
+    if (!manifest) return fail(404, 'No bag with that code.', 'unknown');
+    if (manifest.receivedAt) return fail(409, 'That bag has already been received.', 'state');
+    const absent = new Set((Array.isArray(missing) ? missing : []).map(normaliseBarcode).filter(Boolean));
+    const received = [];
+    for (const barcode of manifest.barcodes) {
+        if (absent.has(barcode)) continue;
+        const r = await receiveSpecimen({ barcode, by, now });
+        if (r.ok) received.push(barcode);
+    }
+    manifest.receivedAt = now;
+    manifest.receivedBy = by;
+    manifest.missing = [...absent];
+    await manifest.save();
+    return { ok: true, manifest, received };
 };
 
 /** A claimed website order brings its visit with it. */
@@ -762,6 +906,10 @@ module.exports = {
     receiveSpecimen,
     claimVisits,
     cancelForOrder,
+    updateLocation,
+    handOver,
+    receiveManifest,
+    etaOf,
     visitView,
     capacityFor,
     normaliseSerial,

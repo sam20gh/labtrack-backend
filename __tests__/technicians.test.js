@@ -132,10 +132,11 @@ describe('the roster', () => {
             v('v4', '2026-10-11T05:00:00Z', 'Sharjah'),
         ];
         const plan = R.autoAssign(ae, day, techs);
+        // No coordinates anywhere: travel is unknown (null, never 0) and load decides.
         expect(plan.assignments).toEqual([
-            { visitId: 'v1', technicianId: 't1' },
-            { visitId: 'v2', technicianId: 't2' },
-            { visitId: 'v4', technicianId: 't2' },
+            { visitId: 'v1', technicianId: 't1', travelMinutes: null },
+            { visitId: 'v2', technicianId: 't2', travelMinutes: null },
+            { visitId: 'v4', technicianId: 't2', travelMinutes: null },
         ]);
         expect(plan.unassigned).toEqual([{ visitId: 'v3', reason: 'Everyone covering that area is busy in that slot' }]);
         expect(R.autoAssign(ae, day, techs)).toEqual(plan);

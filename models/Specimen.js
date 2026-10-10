@@ -28,9 +28,16 @@ const SpecimenSchema = new mongoose.Schema({
     /** The laboratory's own identifier for it, once they have registered it. */
     accession: { type: String },
 
-    status: { type: String, enum: ['collected', 'received', 'rejected', 'resulted'], default: 'collected', index: true },
+    /**
+     * `in_transit` once it is in a sealed bag on its way to the laboratory — a hand-over
+     * manifest names every tube in the bag, so a tube that never arrives is noticed per tube,
+     * not per day. See `models/SampleManifest.js`.
+     */
+    status: { type: String, enum: ['collected', 'in_transit', 'received', 'processing', 'rejected', 'resulted'], default: 'collected', index: true },
+    manifestId: { type: mongoose.Schema.Types.ObjectId, ref: 'SampleManifest' },
+    rejectedReason: { type: String },
     events: [{
-        type: { type: String, enum: ['collected', 'received', 'rejected', 'resulted'] },
+        type: { type: String, enum: ['collected', 'handed_over', 'received', 'processing', 'rejected', 'resulted'] },
         at: { type: Date, default: Date.now },
         by: { type: String },
         note: { type: String },

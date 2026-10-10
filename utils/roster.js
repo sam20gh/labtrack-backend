@@ -13,6 +13,7 @@
  * what that answer is. Route optimisation (phase 4) replaces the ordering, not the rules.
  */
 const { localDay, partsInMinutes } = require('./markets');
+const routing = require('./routing');
 
 const onTimeOff = (tech, ymd) => (tech.timeOff || []).some((t) => t.from <= ymd && ymd <= t.to);
 
@@ -55,6 +56,8 @@ const autoAssign = (market, visits, technicians) => {
     const load = new Map(technicians.map((t) => [String(t._id), 0]));
     const perSlot = new Map(); // `${techId}|${iso}` → count
     const key = (techId, start) => `${techId}|${new Date(start).toISOString()}`;
+    // Each technician's visits so far, for "where will they be coming from".
+    const rounds = new Map(technicians.map((t) => [String(t._id), []]));
 
     // What is already assigned counts against everyone.
     for (const v of visits) {
@@ -62,7 +65,23 @@ const autoAssign = (market, visits, technicians) => {
         const id = String(v.technicianId);
         if (load.has(id)) load.set(id, load.get(id) + 1);
         perSlot.set(key(id, v.slot.start), (perSlot.get(key(id, v.slot.start)) || 0) + 1);
+        rounds.get(id)?.push(v);
     }
+
+    /** The visit a technician finishes just before this one, if any. */
+    const previous = (techId, visit) => (rounds.get(techId) || [])
+        .filter((p) => new Date(p.slot.end) <= new Date(visit.slot.start))
+        .sort((a, b) => new Date(b.slot.end) - new Date(a.slot.end))[0] || null;
+
+    /**
+     * Minutes to get to this door from wherever they will be: their previous visit, or their
+     * base. Null when either end is unknown — such a candidate is ranked after every known one,
+     * never treated as zero distance.
+     */
+    const approach = (tech, visit) => {
+        const prev = previous(String(tech._id), visit);
+        return routing.travelMinutes(prev ? prev.address : tech.base, visit.address);
+    };
 
     const assignments = [];
     const unassigned = [];
@@ -76,12 +95,28 @@ const autoAssign = (market, visits, technicians) => {
         if (!area.length) { unassigned.push({ visitId: String(v._id), reason: `Nobody on shift covers ${v.address?.city}` }); continue; }
         const free = area.filter((t) => (perSlot.get(key(String(t._id), v.slot.start)) || 0) < (t.visitsPerSlot || 1));
         if (!free.length) { unassigned.push({ visitId: String(v._id), reason: 'Everyone covering that area is busy in that slot' }); continue; }
-        free.sort((a, b) => load.get(String(a._id)) - load.get(String(b._id)) || a.name.localeCompare(b.name));
-        const pick = free[0];
+        // Somebody whose previous door is too far to make this slot is not a candidate. Where
+        // that cannot be judged (no coordinates) they stay in.
+        const able = free.filter((t) => {
+            const prev = previous(String(t._id), v);
+            return !prev || routing.reachable(prev, v) !== false;
+        });
+        if (!able.length) { unassigned.push({ visitId: String(v._id), reason: 'Nobody free can get there in time from their previous visit' }); continue; }
+        // Nearest first where distance is known, then the least loaded, then by name.
+        const cost = new Map(able.map((t) => [String(t._id), approach(t, v)]));
+        able.sort((a, b) => {
+            const ca = cost.get(String(a._id));
+            const cb = cost.get(String(b._id));
+            if (ca !== null && cb !== null && ca !== cb) return ca - cb;
+            if ((ca === null) !== (cb === null)) return ca === null ? 1 : -1;
+            return load.get(String(a._id)) - load.get(String(b._id)) || a.name.localeCompare(b.name);
+        });
+        const pick = able[0];
         const id = String(pick._id);
         load.set(id, load.get(id) + 1);
         perSlot.set(key(id, v.slot.start), (perSlot.get(key(id, v.slot.start)) || 0) + 1);
-        assignments.push({ visitId: String(v._id), technicianId: id });
+        rounds.get(id).push({ ...v, technicianId: id });
+        assignments.push({ visitId: String(v._id), technicianId: id, travelMinutes: cost.get(id) });
     }
     return { assignments, unassigned };
 };

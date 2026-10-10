@@ -17,6 +17,9 @@ self.post('/visits/:id/arrive', c.arrive);
 self.post('/visits/:id/verify', c.verify);
 self.post('/visits/:id/complete', c.complete);
 self.post('/visits/:id/missed', c.missed);
+self.post('/visits/:id/location', c.location);
+self.get('/specimens', c.mySpecimens);
+self.post('/handover', c.handOver);
 
 /** `/api/technicians` — the roster, administrators only. */
 const roster = express.Router();

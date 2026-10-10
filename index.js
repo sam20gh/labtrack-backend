@@ -100,6 +100,12 @@ app.post(
     require('./controllers/paymentController').handleWebhook
 );
 
+/**
+ * The laboratories' API — signed over the raw body, so mounted before express.json() like the
+ * Stripe webhook above. See routes/labRoutes.js.
+ */
+app.use('/api/labs', require('./routes/labRoutes'));
+
 app.use(express.json({ limit: '2mb' }));
 app.use(require('./middleware/requestLogger'));
 

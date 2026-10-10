@@ -27,6 +27,15 @@ const TechnicianSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true },
     phone: { type: String, trim: true },
     market: { type: String, required: true },
+    /**
+     * Where they start the day — the depot, or home. Route-aware assignment measures a day's
+     * first visit from here. Optional: without it the first visit is ranked on load alone.
+     */
+    base: {
+        label: { type: String, trim: true },
+        lat: { type: Number, min: -90, max: 90 },
+        lng: { type: Number, min: -180, max: 180 },
+    },
     /** Service areas they cover. Empty means every area in their market. */
     areas: { type: [String], default: [] },
     /** How many visits they can take in one slot. Almost always one: they have to travel. */

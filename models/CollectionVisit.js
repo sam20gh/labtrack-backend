@@ -71,6 +71,8 @@ const CollectionVisitSchema = new mongoose.Schema({
         country: { type: String },
         lat: { type: Number },
         lng: { type: Number },
+        /** Who placed the pin: the customer, or a technician's phone at the door. */
+        coordSource: { type: String, enum: ['customer', 'technician'] },
     },
     contactName: { type: String },
     phone: { type: String, required: true },
@@ -103,6 +105,20 @@ const CollectionVisitSchema = new mongoose.Schema({
     /** Blood panels that need fasting — read from the products, said in every reminder. */
     requiresFasting: { type: Boolean, default: false },
 
+    /**
+     * Where the technician is while on the way, and how far off they are. Held **only while
+     * `en_route`** and cleared the moment they arrive: a technician's position is theirs, and
+     * the customer is shown minutes, never a dot on a map. `nearAnnounced` makes the "about ten
+     * minutes away" push happen once.
+     */
+    tracking: {
+        lat: { type: Number },
+        lng: { type: Number },
+        accuracy: { type: Number },
+        at: { type: Date },
+        etaMinutes: { type: Number },
+        nearAnnounced: { type: Boolean },
+    },
     remindedAt: { type: Date },
     cancelledBy: { type: String, enum: ['customer', 'admin', 'system'] },
     statusHistory: [{

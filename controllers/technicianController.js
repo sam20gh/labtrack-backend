@@ -6,6 +6,9 @@ const User = require('../models/userModel');
 const M = require('../utils/markets');
 const collection = require('../utils/collectionCentre');
 const { resolveTechnician } = require('../utils/roster');
+const routing = require('../utils/routing');
+const TechnicianAction = require('../models/TechnicianAction');
+const Specimen = require('../models/Specimen');
 
 /**
  * Technicians: the roster (administrators) and a technician's own working day.
@@ -73,6 +76,14 @@ const cleanTechnician = async (body, existing = null) => {
         else out.timeOff = clean.slice(0, 60);
     }
     if (body.active !== undefined) out.active = body.active === true;
+    if (body.base !== undefined) {
+        const b = body.base || {};
+        const lat = Number(b.lat);
+        const lng = Number(b.lng);
+        if (b.lat === null || b.lat === '' || b.lat === undefined) out.base = { label: text(b.label, 80) || undefined };
+        else if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) errors.push('The base needs a valid latitude and longitude.');
+        else out.base = { label: text(b.label, 80) || undefined, lat, lng };
+    }
     return errors.length ? { ok: false, errors } : { ok: true, value: out };
 };
 
@@ -87,6 +98,7 @@ const rosterView = (t) => ({
     shifts: t.shifts || [],
     timeOff: t.timeOff || [],
     active: t.active !== false,
+    base: t.base && Number.isFinite(t.base.lat) ? { label: t.base.label || null, lat: t.base.lat, lng: t.base.lng } : t.base?.label ? { label: t.base.label, lat: null, lng: null } : null,
     linked: Boolean(t.userId),
 });
 
@@ -195,7 +207,9 @@ exports.myDay = async (req, res) => {
             'slot.start': { $gte: M.localToUtc(date, 0, market.timezone), $lt: M.localToUtc(date, 24 * 60, market.timezone) },
             status: { $nin: ['cancelled', 'expired'] },
         }).sort({ 'slot.start': 1 }).populate('userId', 'firstName').lean();
-        res.json({ date, today, timezone: market.timezone, visits: visits.map(fieldView) });
+        // The day as a route: how long each leg should take, and which gaps are too tight.
+        const legs = routing.legsFor(visits, tech.base);
+        res.json({ date, today, timezone: market.timezone, visits: visits.map(fieldView), legs });
     } catch (error) {
         res.status(500).json({ message: 'Could not load your visits', error: error.message });
     }
@@ -219,14 +233,39 @@ const answer = async (res, visitId) => {
     res.json({ visit: fieldView(fresh) });
 };
 
+/**
+ * Answer once per `Idempotency-Key`. The technician app sends one with every action it queues
+ * offline; a repeat of a key already answered gets that first answer back and runs nothing. A
+ * request with no key behaves as it always did.
+ */
+const idempotent = async (req, res, techId, run) => {
+    const key = String(req.get?.('Idempotency-Key') || req.headers?.['idempotency-key'] || '').trim().slice(0, 120);
+    if (!key) return run((status, body) => res.status(status).json(body));
+    const seen = await TechnicianAction.findOne({ technicianId: techId, key }).lean();
+    if (seen) return res.status(seen.status).json(seen.body);
+    return run(async (status, body) => {
+        // Only settled outcomes are remembered: a 5xx may succeed on the next try.
+        if (status < 500) {
+            await TechnicianAction.create({ technicianId: techId, key, route: req.originalUrl || req.url, status, body })
+                .catch((e) => { if (e.code !== 11000) throw e; });
+        }
+        return res.status(status).json(body);
+    });
+};
+
+const fixFrom = (body) => (body?.location && typeof body.location === 'object' ? body.location : null);
+
 const act = (fn) => async (req, res) => {
     try {
         const found = await myVisit(req, res);
         if (!found) return;
         const by = `technician:${found.tech._id}`;
-        const result = await fn({ ...found, req, by });
-        if (!result.ok) return res.status(result.status).json({ message: result.message, reason: result.reason });
-        await answer(res, found.visit._id);
+        await idempotent(req, res, found.tech._id, async (send) => {
+            const result = await fn({ ...found, req, by });
+            if (!result.ok) return send(result.status, { message: result.message, reason: result.reason });
+            const fresh = await CollectionVisit.findById(found.visit._id).populate('userId', 'firstName').lean();
+            return send(200, { visit: fieldView(fresh) });
+        });
     } catch (error) {
         console.error('❌ Technician action failed:', error);
         res.status(500).json({ message: 'Could not update the visit', error: error.message });
@@ -245,7 +284,24 @@ exports.getVisit = async (req, res) => {
 };
 
 exports.start = act(({ visit, by }) => collection.startVisit({ visit, by }));
-exports.arrive = act(({ visit, by }) => collection.arriveVisit({ visit, by }));
+exports.arrive = act(({ visit, req, by }) => collection.arriveVisit({ visit, by, fix: fixFrom(req.body) }));
+
+/**
+ * POST /api/technician/visits/:id/location { lat, lng, accuracy?, at? }
+ * While on the way only. Turned into an arrival estimate for the customer, never shown as a
+ * position. Not idempotent-keyed: a newer fix simply replaces an older one.
+ */
+exports.location = async (req, res) => {
+    try {
+        const found = await myVisit(req, res);
+        if (!found) return;
+        const result = await collection.updateLocation({ visit: found.visit, fix: req.body || {} });
+        if (!result.ok) return res.status(result.status).json({ message: result.message, reason: result.reason });
+        res.json({ etaMinutes: found.visit.tracking?.etaMinutes ?? null });
+    } catch (error) {
+        res.status(500).json({ message: 'Could not update your location', error: error.message });
+    }
+};
 
 /**
  * POST /api/technician/visits/:id/verify { code }
@@ -259,7 +315,7 @@ exports.verify = act(({ visit, req, by }) => {
     if (parts.length === 3 && parts[0] === 'PQV1' && parts[1] !== String(visit._id)) {
         return { ok: false, status: 400, message: 'That pass is for a different visit. Check you are at the right address.', reason: 'mismatch' };
     }
-    return collection.verifyPass({ visit, code: parts.length === 3 ? parts[2] : raw, by });
+    return collection.verifyPass({ visit, code: parts.length === 3 ? parts[2] : raw, by, fix: fixFrom(req.body) });
 });
 
 /** POST /api/technician/visits/:id/complete { tasks, identityConfirmed? } */
@@ -269,5 +325,41 @@ exports.complete = act(({ visit, req, by }) => collection.completeVisit({
 
 /** POST /api/technician/visits/:id/missed { note? } */
 exports.missed = act(({ visit, req, by }) => collection.markMissed({ visit, by, note: req.body?.note }));
+
+/**
+ * GET /api/technician/specimens — tubes this technician has collected and not yet handed over,
+ * grouped by the laboratory each is going to. What goes in which bag.
+ */
+exports.mySpecimens = async (req, res) => {
+    try {
+        const tech = await me(req, res);
+        if (!tech) return;
+        const visitIds = (await CollectionVisit.find({ technicianId: tech._id }).select('_id').lean()).map((v) => v._id);
+        const tubes = await Specimen.find({ visitId: { $in: visitIds }, status: 'collected' })
+            .select('barcode kind lab createdAt').sort({ createdAt: 1 }).lean();
+        const byLab = {};
+        for (const t of tubes) (byLab[t.lab || 'UNASSIGNED'] ||= []).push({ barcode: t.barcode, kind: t.kind, collectedAt: t.createdAt });
+        res.json({ labs: Object.entries(byLab).map(([lab, list]) => ({ lab, tubes: list })) });
+    } catch (error) {
+        res.status(500).json({ message: 'Could not load your samples', error: error.message });
+    }
+};
+
+/** POST /api/technician/handover { lab, barcodes[] } — a sealed bag on its way to a laboratory. */
+exports.handOver = async (req, res) => {
+    try {
+        const tech = await me(req, res);
+        if (!tech) return;
+        await idempotent(req, res, tech._id, async (send) => {
+            const result = await collection.handOver({ technician: tech, lab: req.body?.lab, barcodes: req.body?.barcodes, by: `technician:${tech._id}` });
+            if (!result.ok) return send(result.status, { message: result.message, reason: result.reason });
+            const m = result.manifest;
+            return send(201, { manifest: { code: m.code, lab: m.lab, count: m.barcodes.length, barcodes: m.barcodes, handedOverAt: m.handedOverAt } });
+        });
+    } catch (error) {
+        console.error('❌ Hand-over failed:', error);
+        res.status(500).json({ message: 'Could not record the hand-over', error: error.message });
+    }
+};
 
 exports._internal = { cleanTechnician, fieldView };

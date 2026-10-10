@@ -441,6 +441,45 @@ exports.adminReceive = async (req, res) => {
     }
 };
 
+/**
+ * GET /api/collection/admin/manifests/:code — a bag as its manifest describes it, so the bench
+ * can scan each tube against the list before receiving it. Barcodes only: nothing about whose
+ * blood is in the tube, which the bench has no reason to see.
+ */
+exports.adminManifest = async (req, res) => {
+    try {
+        const SampleManifest = require('../models/SampleManifest');
+        const Technician = require('../models/Technician');
+        const m = await SampleManifest.findOne({ code: String(req.params.code || '').trim().toUpperCase() }).lean();
+        if (!m) return res.status(404).json({ message: 'No bag with that code.' });
+        const t = await Technician.findById(m.technicianId).select('name').lean();
+        res.json({
+            manifest: {
+                code: m.code, lab: m.lab, market: m.market, technician: t?.name ?? null,
+                handedOverAt: m.handedOverAt, receivedAt: m.receivedAt ?? null, barcodes: m.barcodes, missing: m.missing ?? [],
+            },
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Could not load the bag', error: error.message });
+    }
+};
+
+/**
+ * POST /api/collection/admin/manifests/:code/receive { missing?: [barcode] }
+ *
+ * A technician's bag has reached the bench: every tube on its manifest is received at once,
+ * except any the bench names as missing, which stay in transit and visible.
+ */
+exports.adminReceiveManifest = async (req, res) => {
+    try {
+        const result = await collection.receiveManifest({ code: req.params.code, missing: req.body?.missing, by: `admin:${req.auth.userId}` });
+        if (!result.ok) return res.status(result.status).json({ message: result.message, reason: result.reason });
+        res.json({ code: result.manifest.code, lab: result.manifest.lab, received: result.received, missing: result.manifest.missing });
+    } catch (error) {
+        res.status(500).json({ message: 'Could not receive the bag', error: error.message });
+    }
+};
+
 /** GET /api/collection/admin/specimens/:barcode — where a tube is, for support. */
 exports.adminSpecimen = async (req, res) => {
     try {
