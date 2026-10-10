@@ -286,6 +286,58 @@ describe('the technician’s report', () => {
     });
 });
 
+describe('the operations board', () => {
+    /** Move a booked visit into today, so the board (which reads today) sees it. */
+    const intoToday = async (visit, minutesFromNow = 60) => {
+        const start = new Date(Math.floor((Date.now() + minutesFromNow * 60000) / 1800000) * 1800000);
+        await CollectionVisit.updateOne({ _id: visit._id }, { $set: { 'slot.start': start, 'slot.end': new Date(start.getTime() + 1800000) } });
+    };
+
+    it('places each technician by what they are doing, and says how it knows', async () => {
+        const a = await bookedVisit({ at: MARINA });
+        const b = await bookedVisit({ at: JLT });
+        const c = await bookedVisit({ at: AIRPORT });
+        for (const x of [a, b, c]) await intoToday(x.visit);
+        const moving = await makeTech({ name: 'Amal', base: AIRPORT });
+        const finished = await makeTech({ name: 'Zed' });
+
+        await call(visits.adminAssign, { auth: ADMIN, params: { id: String(a.visit._id) }, body: { technicianId: String(moving.t._id) } });
+        await call(tech.start, { auth: moving.auth, params: { id: String(a.visit._id) } });
+        await call(tech.location, { auth: moving.auth, params: { id: String(a.visit._id) }, body: { ...JLT, accuracy: 12 } });
+
+        await call(visits.adminAssign, { auth: ADMIN, params: { id: String(b.visit._id) }, body: { technicianId: String(finished.t._id) } });
+        await call(tech.arrive, { auth: finished.auth, params: { id: String(b.visit._id) } });
+        await call(tech.complete, {
+            auth: finished.auth, params: { id: String(b.visit._id) },
+            body: { identityConfirmed: true, tasks: b.visit.tasks.map((t, i) => ({ taskId: String(t._id), status: 'done', barcode: `PQX-${String(b.visit._id).slice(-5)}${i}` })) },
+        });
+
+        const r = await call(tech.ops, { auth: ADMIN, query: { market: 'AE' } });
+        expect(r.code).toBe(200);
+        const crew = Object.fromEntries(r.body.crew.filter((x) => ['Amal', 'Zed'].includes(x.name)).map((x) => [x.name, x]));
+        expect(crew.Amal).toMatchObject({ state: 'en_route', position: { lat: JLT.lat, source: 'live', stale: false } });
+        expect(crew.Amal.current.eta.minutes).toBeGreaterThanOrEqual(1);
+        expect(crew.Amal.route[0]).toEqual({ lat: AIRPORT.lat, lng: AIRPORT.lng });
+        expect(crew.Zed).toMatchObject({ state: 'done_today', position: { source: 'last_door' }, today: { done: 1, samples: 2 } });
+        expect(crew.Zed.week.done).toBe(1);
+
+        expect(r.body.visits.find((v) => v._id === String(c.visit._id)).status).toBe('booked');
+        expect(r.body.totals.unassigned).toBeGreaterThanOrEqual(1);
+        expect(r.body.pipeline.booked).toBeGreaterThanOrEqual(2);
+        expect(r.body.specimens.withTechnicians).toBeGreaterThanOrEqual(2);
+        // A dispatcher's board, not a customer file.
+        expect(JSON.stringify(r.body)).not.toMatch(/Layla|\+971 50|passCode|email/);
+    });
+
+    it('never shows a position for a technician who has not worked today', async () => {
+        const idle = await makeTech({ name: 'Nadia' });
+        const r = await call(tech.ops, { auth: ADMIN, query: { market: 'AE' } });
+        const row = r.body.crew.find((x) => x._id === String(idle.t._id));
+        expect(row.position).toBeNull();
+        expect(['idle', 'off_shift']).toContain(row.state);
+    });
+});
+
 describe('offline retries', () => {
     it('answers a repeated key with the first answer and does not act twice', async () => {
         const { visit } = await bookedVisit();

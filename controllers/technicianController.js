@@ -423,3 +423,96 @@ exports.report = async (req, res) => {
         res.status(500).json({ message: 'Could not build the report', error: error.message });
     }
 };
+
+// ── Operations board ─────────────────────────────────────────────────────────
+
+const ORDER_WINDOW_DAYS = 90;
+const VISIT_OPEN = ['booked', 'assigned', 'en_route', 'arrived'];
+
+/**
+ * Where a market's home-collection orders are, stage by stage. Open orders only (90 days),
+ * because the question is "what is stuck", and a resulted order from March is not.
+ */
+const pipelineFor = async (market, now) => {
+    const Order = require('../models/Order');
+    const since = new Date(now.getTime() - ORDER_WINDOW_DAYS * 86400000);
+    const orders = await Order.find({
+        'fulfilment.method': 'home_collection',
+        'fulfilment.market': market.code,
+        status: { $nin: ['cancelled', 'refunded'] },
+        createdAt: { $gte: since },
+    }).select('status fulfilment.visitId').lean();
+    const visitIds = orders.map((o) => o.fulfilment?.visitId).filter(Boolean);
+    const visitStatus = new Map((await CollectionVisit.find({ _id: { $in: visitIds } }).select('status').lean())
+        .map((v) => [String(v._id), v.status]));
+    const p = { awaitingPayment: 0, toBook: 0, booked: 0, collected: 0, atLab: 0, resulted: 0 };
+    for (const o of orders) {
+        const vs = o.fulfilment?.visitId ? visitStatus.get(String(o.fulfilment.visitId)) : null;
+        // `pending_payment` is the order's own word for unpaid; `payment.status` stays 'unpaid' on
+        // orders placed before a payment provider existed, which are not waiting for anything.
+        if (o.status === 'pending_payment') p.awaitingPayment += 1;
+        else if (o.status === 'resulted') p.resulted += 1;
+        else if (['sample_received', 'processing'].includes(o.status)) p.atLab += 1;
+        else if (o.status === 'kit_sent' || vs === 'completed') p.collected += 1;
+        else if (VISIT_OPEN.includes(vs)) p.booked += 1;
+        else p.toBook += 1;
+    }
+    return { ...p, windowDays: ORDER_WINDOW_DAYS };
+};
+
+/** GET /api/technicians/ops?market=AE — the live board (`utils/fieldOps.js`). */
+exports.ops = async (req, res) => {
+    try {
+        const fieldOps = require('../utils/fieldOps');
+        const fieldReport = require('../utils/fieldReport');
+        const SampleManifest = require('../models/SampleManifest');
+        const market = await Market.resolve(String(req.query.market || 'AE').toUpperCase());
+        if (!market) return res.status(404).json({ message: 'No such market' });
+        const tz = market.timezone;
+        const now = new Date();
+        const today = M.localDay(now, tz);
+        const dayStart = M.localToUtc(today, 0, tz);
+        const dayEnd = M.localToUtc(today, 24 * 60, tz);
+        const week = fieldReport.periodFor('week', today);
+        const weekFrom = M.localToUtc(fieldReport.previousOf(week).from, 0, tz);
+        const weekTo = M.localToUtc(fieldReport.addDays(week.to, 1), 0, tz);
+        const labs = Object.values(market.labs || {}).filter(Boolean);
+        const monthAgo = new Date(now.getTime() - 30 * 86400000);
+
+        const technicians = await Technician.find({ market: market.code, active: true }).lean();
+        const techIds = technicians.map((t) => t._id);
+        const [visits, weekVisits, manifests, pipeline, specimenCounts, openBags, shortBags] = await Promise.all([
+            CollectionVisit.find({ market: market.code, 'slot.start': { $gte: dayStart, $lt: dayEnd }, status: { $nin: ['held', 'expired', 'cancelled'] } })
+                .select('slot status address technicianId tasks.kind tasks.status tracking statusHistory.status statusHistory.at').lean(),
+            CollectionVisit.find({ technicianId: { $in: techIds }, 'slot.start': { $gte: weekFrom, $lt: weekTo }, status: { $nin: ['cancelled', 'expired', 'held'] } })
+                .select('technicianId slot status tasks.kind tasks.status identity.method address.lat address.lng address.area driven statusHistory.status statusHistory.at').lean(),
+            SampleManifest.find({ technicianId: { $in: techIds }, handedOverAt: { $gte: weekFrom, $lt: weekTo } }).select('technicianId handedOverAt receivedAt barcodes missing').lean(),
+            pipelineFor(market, now),
+            labs.length ? Specimen.aggregate([{ $match: { lab: { $in: labs }, status: { $in: ['collected', 'in_transit', 'received', 'processing'] } } }, { $group: { _id: '$status', n: { $sum: 1 } } }]) : [],
+            SampleManifest.countDocuments({ market: market.code, receivedAt: null }),
+            SampleManifest.countDocuments({ market: market.code, receivedAt: { $gte: monthAgo }, 'missing.0': { $exists: true } }),
+        ]);
+
+        // Each technician's week, from the same function their own app reads.
+        const reports = {};
+        for (const t of technicians) {
+            const id = String(t._id);
+            reports[id] = fieldReport.buildReport({
+                kind: 'week', date: today, today, timezone: tz, market: market.code,
+                visits: weekVisits.filter((v) => String(v.technicianId) === id),
+                manifests: manifests.filter((m) => String(m.technicianId) === id),
+                base: t.base, localDay: M.localDay,
+            });
+        }
+        const s = Object.fromEntries(specimenCounts.map((x) => [x._id, x.n]));
+
+        res.json(fieldOps.board({
+            market, technicians, visits, week: reports, now, today,
+            pipeline,
+            specimens: { withTechnicians: s.collected || 0, inTransit: s.in_transit || 0, atLab: (s.received || 0) + (s.processing || 0) },
+            bags: { awaiting: openBags, shortLast30Days: shortBags },
+        }));
+    } catch (error) {
+        res.status(500).json({ message: 'Could not load the operations board', error: error.message });
+    }
+};

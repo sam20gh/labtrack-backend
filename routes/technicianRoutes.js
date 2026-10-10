@@ -26,6 +26,7 @@ self.get('/report', c.myReport);
 const roster = express.Router();
 roster.use(authenticateToken, requireRole('admin'));
 roster.get('/', c.list);
+roster.get('/ops', c.ops);
 roster.post('/', c.create);
 roster.put('/:id', c.update);
 roster.get('/:id/report', c.report);

@@ -906,6 +906,7 @@ const claimVisits = (orderIds, userId) =>
 
 module.exports = {
     HOLD_MINUTES,
+    ETA_FRESH_MINUTES,
     REMINDER_HOURS,
     reserve,
     release,
