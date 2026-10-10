@@ -94,4 +94,22 @@ const legsFor = (visits, base) => {
     });
 };
 
-module.exports = { ROAD_FACTOR, SPEED_KMH, PARKING_MIN, VISIT_MIN, haversineKm, travelMinutes, etaMinutes, reachable, legsFor, has };
+/**
+ * Distance actually driven between two consecutive GPS fixes on the way to a door, or 0 when
+ * the pair cannot be trusted: either fix vaguer than `FIX_ACCURACY_M`, out of order, or implying
+ * a speed no car in a city reaches (a fix that jumped across town and back). Fixes arrive every
+ * ~150 m, so the straight line between two is close to the road between them — no road factor.
+ * Only the running total is ever stored; the fixes themselves are not kept.
+ */
+const FIX_ACCURACY_M = 100;
+const MAX_SPEED_KMH = 150;
+const segmentKm = (a, b) => {
+    if (!has(a) || !has(b)) return 0;
+    if ((a.accuracy ?? 0) > FIX_ACCURACY_M || (b.accuracy ?? 0) > FIX_ACCURACY_M) return 0;
+    const hours = (new Date(b.at) - new Date(a.at)) / 3600000;
+    if (!(hours > 0)) return 0;
+    const km = haversineKm(a, b);
+    return km / hours > MAX_SPEED_KMH ? 0 : km;
+};
+
+module.exports = { FIX_ACCURACY_M, MAX_SPEED_KMH, segmentKm, ROAD_FACTOR, SPEED_KMH, PARKING_MIN, VISIT_MIN, haversineKm, travelMinutes, etaMinutes, reachable, legsFor, has };

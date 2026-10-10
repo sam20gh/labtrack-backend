@@ -20,6 +20,7 @@ self.post('/visits/:id/missed', c.missed);
 self.post('/visits/:id/location', c.location);
 self.get('/specimens', c.mySpecimens);
 self.post('/handover', c.handOver);
+self.get('/report', c.myReport);
 
 /** `/api/technicians` — the roster, administrators only. */
 const roster = express.Router();
@@ -27,5 +28,6 @@ roster.use(authenticateToken, requireRole('admin'));
 roster.get('/', c.list);
 roster.post('/', c.create);
 roster.put('/:id', c.update);
+roster.get('/:id/report', c.report);
 
 module.exports = { self, roster };

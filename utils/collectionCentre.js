@@ -736,6 +736,8 @@ const startVisit = async ({ visit, by }) => {
  * address can then be routed. A vague fix (indoors, a basement) is not used — a pin 300 m off
  * sends the next technician to the wrong tower.
  */
+const has = (p) => Boolean(p) && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng));
+
 const learnDoor = (visit, fix) => {
     if (!fix || routing.has(visit.address)) return;
     const lat = Number(fix.lat);
@@ -751,6 +753,11 @@ const learnDoor = (visit, fix) => {
 const arriveVisit = async ({ visit, by, fix }) => {
     if (!['assigned', 'en_route'].includes(visit.status)) return fail(409, `A visit that is ${visit.status.replace('_', ' ')} cannot be marked arrived.`, 'state');
     learnDoor(visit, fix);
+    // The last stretch: from the final fix on the way to the door itself.
+    // The phone's own fix at the door, or the door's pin when it sent none.
+    const door = has(fix) ? { ...fix, at: fix.at || new Date() }
+        : routing.has(visit.address) ? { lat: visit.address.lat, lng: visit.address.lng, at: new Date() } : null;
+    if (visit.tracking?.at && door) addDriven(visit, visit.tracking, door);
     // At the door: the position is no longer needed, and is not kept.
     visit.tracking = undefined;
     visit.transitionTo('arrived', 'At the door', by);
@@ -763,6 +770,16 @@ const arriveVisit = async ({ visit, by, fix }) => {
  * door is pinned; the customer is told once when it first drops under ten. Refused in any
  * other state, so a phone that keeps reporting after arrival writes nothing.
  */
+/** Add one trusted stretch to the visit's running distance. */
+const addDriven = (visit, from, to) => {
+    const km = routing.segmentKm(
+        { lat: from.lat, lng: from.lng, accuracy: from.accuracy, at: from.at },
+        { lat: Number(to.lat), lng: Number(to.lng), accuracy: to.accuracy, at: to.at },
+    );
+    if (!km) return;
+    visit.driven = { km: Math.round(((visit.driven?.km || 0) + km) * 1000) / 1000, fixes: (visit.driven?.fixes || 0) + 1 };
+};
+
 const updateLocation = async ({ visit, fix, now = new Date() }) => {
     if (visit.status !== 'en_route') return fail(409, 'Location is only shared on the way to a visit.', 'state');
     const lat = Number(fix?.lat);
@@ -775,6 +792,8 @@ const updateLocation = async ({ visit, fix, now = new Date() }) => {
     if (visit.tracking?.at && at < new Date(visit.tracking.at)) return { ok: true, visit };
     const eta = routing.etaMinutes({ lat, lng }, visit.address);
     const nearAnnounced = Boolean(visit.tracking?.nearAnnounced);
+    const accuracy = Number.isFinite(Number(fix.accuracy)) ? Number(fix.accuracy) : undefined;
+    if (visit.tracking?.at) addDriven(visit, visit.tracking, { lat, lng, accuracy, at });
     visit.tracking = {
         lat, lng,
         accuracy: Number.isFinite(Number(fix.accuracy)) ? Number(fix.accuracy) : undefined,

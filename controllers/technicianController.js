@@ -363,3 +363,63 @@ exports.handOver = async (req, res) => {
 };
 
 exports._internal = { cleanTechnician, fieldView };
+
+// ── Reports ──────────────────────────────────────────────────────────────────
+
+/**
+ * A technician's week or month (`utils/fieldReport.js`). Loads this period and the one before
+ * it in two queries, so the comparison costs nothing extra. Reads no customer details: the
+ * report needs slots, statuses, tasks, pins and the distance total, and selects only those.
+ */
+const reportFor = async (tech, query) => {
+    const fieldReport = require('../utils/fieldReport');
+    const SampleManifest = require('../models/SampleManifest');
+    const market = await Market.resolve(tech.market);
+    const tz = market.timezone;
+    const today = M.localDay(new Date(), tz);
+    const kind = query.period === 'month' ? 'month' : 'week';
+    const date = YMD.test(String(query.date || '')) ? String(query.date) : today;
+
+    const period = fieldReport.periodFor(kind, date);
+    const prev = fieldReport.previousOf(period);
+    const from = M.localToUtc(prev.from, 0, tz);
+    const to = M.localToUtc(fieldReport.addDays(period.to, 1), 0, tz);
+
+    const [visits, manifests] = await Promise.all([
+        CollectionVisit.find({
+            technicianId: tech._id,
+            'slot.start': { $gte: from, $lt: to },
+            status: { $nin: ['cancelled', 'expired', 'held'] },
+        }).select('slot status tasks.kind tasks.status identity.method address.lat address.lng address.area driven statusHistory.status statusHistory.at').lean(),
+        SampleManifest.find({ technicianId: tech._id, handedOverAt: { $gte: from, $lt: to } })
+            .select('handedOverAt receivedAt barcodes missing').lean(),
+    ]);
+
+    return fieldReport.buildReport({
+        kind, date, today, timezone: tz, market: market.code,
+        visits, manifests, base: tech.base, localDay: M.localDay,
+    });
+};
+
+/** GET /api/technician/report?period=week|month&date=YYYY-MM-DD — their own. */
+exports.myReport = async (req, res) => {
+    try {
+        const tech = await me(req, res);
+        if (!tech) return;
+        res.json(await reportFor(tech, req.query));
+    } catch (error) {
+        res.status(500).json({ message: 'Could not build your report', error: error.message });
+    }
+};
+
+/** GET /api/technicians/:id/report — the same report, for an administrator. */
+exports.report = async (req, res) => {
+    try {
+        if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Technician not found' });
+        const tech = await Technician.findById(req.params.id).lean();
+        if (!tech) return res.status(404).json({ message: 'Technician not found' });
+        res.json({ technician: { _id: String(tech._id), name: tech.name }, ...(await reportFor(tech, req.query)) });
+    } catch (error) {
+        res.status(500).json({ message: 'Could not build the report', error: error.message });
+    }
+};

@@ -239,6 +239,53 @@ describe('on the way', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe('the technician’s report', () => {
+    it('adds up the drive from fixes, ignores a jump, and reports it as measured', async () => {
+        const { visit } = await bookedVisit({ at: MARINA });
+        const { t, auth } = await makeTech({ base: AIRPORT });
+        await call(visits.adminAssign, { auth: ADMIN, params: { id: String(visit._id) }, body: { technicianId: String(t._id) } });
+        await call(tech.start, { auth, params: { id: String(visit._id) } });
+        const id = String(visit._id);
+        const ago = (s) => new Date(Date.now() - s * 1000).toISOString();
+        const MID = { lat: 25.0749, lng: 55.1410 };
+        await call(tech.location, { auth, params: { id }, body: { ...JLT, accuracy: 10, at: ago(360) } });
+        await call(tech.location, { auth, params: { id }, body: { ...MID, accuracy: 10, at: ago(240) } });
+        await call(tech.arrive, { auth, params: { id }, body: { location: { ...MARINA, accuracy: 10 } } });
+
+        const stored = await CollectionVisit.findById(id);
+        const expected = routing.haversineKm(JLT, MID) + routing.haversineKm(MID, MARINA);
+        expect(stored.driven.km).toBeCloseTo(expected, 2);
+        expect(stored.tracking?.lat).toBeUndefined();
+
+        const date = M.localDay(stored.slot.start, 'Asia/Dubai');
+        const r = await call(tech.myReport, { auth, query: { period: 'week', date } });
+        expect(r.code).toBe(200);
+        expect(r.body.unit).toBe('km');
+        expect(r.body.distance.measured).toBeCloseTo(expected, 1);
+        expect(r.body.distance.estimated).toBe(0);
+        expect(r.body.visits.toDo).toBe(1);
+        // A report reads no customer: no name, phone or street in it.
+        expect(JSON.stringify(r.body)).not.toMatch(/Layla|\+971|Tower 1/);
+
+        const admin = await call(tech.report, { auth: ADMIN, params: { id: String(t._id) }, query: { period: 'month', date } });
+        expect(admin.body.technician.name).toBe(t.name);
+        expect(admin.body.period.kind).toBe('month');
+        expect((await call(tech.report, { auth: ADMIN, params: { id: 'nope' } })).code).toBe(404);
+    });
+
+    it('drops a fix that jumped across the city', async () => {
+        const { visit } = await bookedVisit({ at: MARINA });
+        const { t, auth } = await makeTech();
+        await call(visits.adminAssign, { auth: ADMIN, params: { id: String(visit._id) }, body: { technicianId: String(t._id) } });
+        await call(tech.start, { auth, params: { id: String(visit._id) } });
+        const id = String(visit._id);
+        const ago = (s) => new Date(Date.now() - s * 1000).toISOString();
+        await call(tech.location, { auth, params: { id }, body: { ...JLT, accuracy: 10, at: ago(60) } });
+        await call(tech.location, { auth, params: { id }, body: { ...AIRPORT, accuracy: 10, at: ago(50) } });
+        expect((await CollectionVisit.findById(id)).driven?.km).toBeUndefined();
+    });
+});
+
 describe('offline retries', () => {
     it('answers a repeated key with the first answer and does not act twice', async () => {
         const { visit } = await bookedVisit();

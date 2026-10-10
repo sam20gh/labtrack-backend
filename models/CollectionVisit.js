@@ -119,6 +119,15 @@ const CollectionVisitSchema = new mongoose.Schema({
         etaMinutes: { type: Number },
         nearAnnounced: { type: Boolean },
     },
+    /**
+     * How far the technician drove to this door, added up from consecutive location fixes while
+     * on the way (`routing.segmentKm`). A total, never a path. Absent when location was not
+     * shared — the report then estimates that leg and says so.
+     */
+    driven: {
+        km: { type: Number },
+        fixes: { type: Number },
+    },
     remindedAt: { type: Date },
     cancelledBy: { type: String, enum: ['customer', 'admin', 'system'] },
     statusHistory: [{
