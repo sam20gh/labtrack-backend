@@ -8,7 +8,8 @@ const C = require('../utils/orderComponents');
 const ExchangeRates = require('../models/ExchangeRates');
 const { BASE, normaliseCurrency, priceFor } = require('../utils/currency');
 const Market = require('../models/Market');
-const { marketCodeForCurrency } = require('../utils/markets');
+const { marketCodeForCurrency, localDay } = require('../utils/markets');
+const CollectionVisit = require('../models/CollectionVisit');
 const collection = require('../utils/collectionCentre');
 
 /**
@@ -356,7 +357,20 @@ exports.getOrderForAdmin = async (req, res) => {
             .populate('userId', 'firstName lastName email')
             .lean();
         if (!order) return res.status(404).json({ message: 'Order not found' });
-        res.json({ order });
+        // The visit carries the booked time; without it the order page can say a visit is
+        // booked but not when, or whether anybody is going.
+        let visit = null;
+        if (order.fulfilment?.visitId) {
+            const v = await CollectionVisit.findById(order.fulfilment.visitId).populate('technicianId', 'name').lean();
+            if (v) {
+                visit = {
+                    ...collection.visitView(v),
+                    day: localDay(new Date(v.slot.start), v.timezone),
+                    technician: v.technicianId?.name ? { _id: String(v.technicianId._id), name: v.technicianId.name } : null,
+                };
+            }
+        }
+        res.json({ order, visit });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching order', error: error.message });
     }

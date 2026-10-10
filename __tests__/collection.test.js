@@ -538,6 +538,27 @@ describe('the portal', () => {
         expect(assigned.body.visit).toMatchObject({ status: 'assigned', technician: { name: 'Omar Haddad' } });
     });
 
+    it('reads an order with its visit: the booked time, its day, and who is going', async () => {
+        const user = await makeUser();
+        const { order, visit } = await paidVisitOrder(user);
+        const before = await call(orders.getOrderForAdmin, { auth: ADMIN, params: { id: String(order._id) } });
+        expect(before.body.visit).toMatchObject({
+            _id: String(visit._id),
+            status: 'booked',
+            day: M.localDay(visit.slot.start, 'Asia/Dubai'),
+            label: M.describeSlot(visit.slot.start, visit.slot.end, 'Asia/Dubai'),
+            technician: null,
+        });
+
+        const nadia = await require('../models/Technician').create({
+            name: 'Nadia Saleh', email: 'nadia@example.ae', market: 'AE',
+            shifts: [0, 1, 2, 3, 4, 5, 6].map((day) => ({ day, startMinute: 0, endMinute: 1440 })),
+        });
+        await call(visits.adminAssign, { auth: ADMIN, params: { id: String(visit._id) }, body: { technicianId: String(nadia._id) } });
+        const after = await call(orders.getOrderForAdmin, { auth: ADMIN, params: { id: String(order._id) } });
+        expect(after.body.visit).toMatchObject({ status: 'assigned', technician: { name: 'Nadia Saleh' } });
+    });
+
     it('saves a market edit over what is stored, and refuses a broken one', async () => {
         const admin = await makeUser();
         const auth = { userId: String(admin._id), role: 'admin' };
