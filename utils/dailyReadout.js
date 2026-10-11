@@ -26,8 +26,12 @@
  *    signals is no score at all: one number is not a readout of anything.
  * 3. **States are words, not colours.** The client draws one hue and a glyph per state. A
  *    traffic light would put `danger` on a feeling, which this app reserves for a result.
- * 4. **An urgent vital alert holds the readout.** A score can read "Recharged" on the morning
- *    a crisis blood-pressure reading is waiting to be seen; the alert wins the sentence.
+ * 4. **A fresh urgent reading holds the readout.** A score can read "Recharged" on the morning
+ *    a crisis blood-pressure reading was taken; the reading wins the sentence, named — what it
+ *    was and when — and opening the reading, never "something is in your notifications". Only
+ *    while the reading is under 24 hours old (`vitalAlerts.FRESH_HOURS`, the window the patient
+ *    is notified in): the episode stays open until a clinician reviews it, and holding the card
+ *    that long pointed somebody at a notification they had already read, for days.
  *
  * Stress is deliberately not an input: it is the bracelet's HRV said again, and including it
  * would count HRV twice (`metricsController.stressCard` makes the same call for the score).
@@ -35,6 +39,7 @@
  */
 
 const { summariseDay } = require('./nutritionInsight');
+const vitalAlerts = require('./vitalAlerts');
 
 const BASELINE_DAYS = 28;
 const MIN_DAYS = 5;
@@ -344,6 +349,36 @@ const fuelGapFor = (fuel, hour) => {
     return null;
 };
 
+/**
+ * The urgent reading that holds today's readout, or null.
+ *
+ * `open` is the newest open urgent `VitalAlert`. The reading named is the episode's latest when
+ * that is urgent, otherwise its worst (an episode can be urgent overall with a milder latest).
+ * A withdrawn reading, or one older than `FRESH_HOURS`, holds nothing. The copy is the alert's
+ * own (`vitalAlerts.copyFor`), so the card and the notification cannot say different things,
+ * and every urgent body already says when to seek care.
+ */
+const alertFor = (open, { now, tzOffset = 0, today }) => {
+    if (!open?.metric) return null;
+    const reading = open.latest?.level === 'urgent' ? open.latest : open.worst;
+    if (!reading || reading.level !== 'urgent' || reading.withdrawnAt) return null;
+    if (!vitalAlerts.isFresh(reading.measuredAt, now)) return null;
+
+    const full = { ...reading, metric: open.metric };
+    const copy = vitalAlerts.copyFor(full);
+    const local = new Date(new Date(reading.measuredAt).getTime() - tzOffset * 60000).toISOString();
+    const clock = local.slice(11, 16);
+    return {
+        metric: open.metric,
+        label: vitalAlerts.METRIC_LABEL[open.metric] ?? 'A reading',
+        value: vitalAlerts.valueLabel(full),
+        when: local.slice(0, 10) === today ? `at ${clock} today` : `at ${clock} yesterday`,
+        measuredAt: reading.measuredAt,
+        title: copy?.title ?? null,
+        body: copy?.body ?? null,
+    };
+};
+
 const capitalise = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The one heart signal furthest on the wrong side of usual, worded. */
@@ -364,8 +399,11 @@ const driverOf = (recovery) => {
  * Morning leads with the night and what it means for today; from noon it leads with the
  * day's effort. Nothing here names a condition or says how somebody feels.
  */
-const sentenceFor = ({ hour, sleep, recovery, effort, held, fuel = null }) => {
-    if (held) return 'A reading is waiting for you in your notifications. Look at it before planning a hard day.';
+const sentenceFor = ({ hour, sleep, recovery, effort, alert = null, fuel = null }) => {
+    if (alert) {
+        return `${alert.label} read ${alert.value} ${alert.when}, in the range we flag as urgent. `
+            + 'Check it before planning a hard day.';
+    }
 
     const week = `${effort.weekMinutes} of ${effort.weekTarget} this week.`;
 
@@ -460,17 +498,20 @@ const recoveryTrend = (rows, today, days = 7) => {
  * @param {string} args.today         the person's local `YYYY-MM-DD`
  * @param {number} args.hour          the person's local hour, 0–23
  * @param {number} [args.goalMinutes] `SleepPlan.goalMinutes`
- * @param {boolean} [args.urgentAlert] an urgent `VitalAlert` is open
+ * @param {object|null} [args.openAlert] the newest open urgent `VitalAlert` (`metric`, `latest`, `worst`)
+ * @param {Date}   [args.now]          the clock, for whether its reading is still fresh
+ * @param {number} [args.tzOffset]     the person's `getTimezoneOffset()`, for the reading's time
  */
 const buildReadout = ({
-    rows = [], today, hour = 8, goalMinutes = null, urgentAlert = false,
+    rows = [], today, hour = 8, goalMinutes = null, openAlert = null, now = new Date(), tzOffset = 0,
     meals = [], nutritionPlan = null, weightKg = null,
 }) => {
     const sleep = sleepFor(rows, today, goalMinutes);
     const recovery = recoveryFor(rows, today);
     const effort = effortFor(rows, today, recovery?.state);
     const fuel = fuelFor({ meals, plan: nutritionPlan, rows, today, weightKg });
-    const held = Boolean(urgentAlert);
+    const alert = alertFor(openAlert, { now, tzOffset, today });
+    const held = Boolean(alert);
 
     return {
         day: today,
@@ -481,7 +522,9 @@ const buildReadout = ({
         recovery: recovery ? { ...recovery, held } : null,
         effort,
         fuel,
-        sentence: sentenceFor({ hour, sleep, recovery, effort, held, fuel }),
+        /** The fresh urgent reading holding the readout, named; null almost always. */
+        alert,
+        sentence: sentenceFor({ hour, sleep, recovery, effort, alert, fuel }),
     };
 };
 
@@ -502,6 +545,7 @@ module.exports = {
     fuelFor,
     allowanceFor,
     lateMealFor,
+    alertFor,
     fuelGapFor,
     buildReadout,
 };

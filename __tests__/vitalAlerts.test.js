@@ -227,8 +227,8 @@ describe('the copy', () => {
     it('routes to the screen the metrics dashboard opens for that card', () => {
         expect(table.METRIC_ROUTE).toEqual({
             blood_pressure: '/metrics/blood-pressure',
-            heart_rate: '/activity',
-            spo2: '/bracelet',
+            heart_rate: '/metrics/heart-rate',
+            spo2: '/metrics/spo2',
         });
         expect(CATEGORIES[table.CATEGORY_FOR_LEVEL.urgent].priority).toBe('critical');
         expect(CATEGORIES[table.CATEGORY_FOR_LEVEL.attention].priority).toBe('normal');

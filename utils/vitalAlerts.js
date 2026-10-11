@@ -201,13 +201,16 @@ const METRIC_LABEL = {
 
 /**
  * Where tapping the patient's card goes: the same screen the metrics dashboard opens for
- * that card (`METRIC_ROUTE` in `labtrack-frontend/lib/metrics.ts`). Blood pressure has its
- * own history, SpO2 comes from the bracelet, and heart rate is charted on the activity screen.
+ * that card (`METRIC_ROUTE` in `labtrack-frontend/lib/metrics.ts`) — each metric's own history.
+ *
+ * SpO2 and heart rate used to point at `/bracelet` and `/activity`, from before every card had
+ * its own `/metrics/[kind]` screen. So "View readings" on a very-low blood oxygen card opened the
+ * bracelet's pairing screen (found 2026-10-11). The two tables must be changed together.
  */
 const METRIC_ROUTE = {
     blood_pressure: '/metrics/blood-pressure',
-    heart_rate: '/activity',
-    spo2: '/bracelet',
+    heart_rate: '/metrics/heart-rate',
+    spo2: '/metrics/spo2',
 };
 
 /**

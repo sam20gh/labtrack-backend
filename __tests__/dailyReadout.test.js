@@ -270,11 +270,50 @@ describe('the readout', () => {
         expect(r.effort.minutes).toBeNull();
     });
 
-    test('an urgent vital alert holds the sentence', () => {
+    /**
+     * 2026-10-11: an urgent SpO2 of 88% from the band at 02:01, notified and read by 06:27, and
+     * the card still said "A reading is waiting for you in your notifications" — pointing at an
+     * inbox whose Unread tab was empty, for as long as no clinician had reviewed the episode.
+     */
+    describe('a fresh urgent reading', () => {
+        const at = Date.parse(`${TODAY}T01:01:38Z`);
+        const reading = (over = {}) => ({
+            measuredAt: new Date(at), day: TODAY, level: 'urgent', rule: 'spo2.at_most_91', spo2: 88, ...over,
+        });
+        const open = (over = {}) => ({ metric: 'spo2', latest: reading(over), worst: reading(over) });
         const rows = history({ heart: { hrvMs: 62, restingBpm: 54 }, sleep: { score: 88 } });
-        const r = readout.buildReadout({ rows, today: TODAY, hour: 8, urgentAlert: true });
-        expect(r.recovery.held).toBe(true);
-        expect(r.sentence).toMatch(/notifications/);
+        const build = (openAlert, hoursLater = 6) => readout.buildReadout({
+            rows, today: TODAY, hour: 8, openAlert, tzOffset: -60, now: new Date(at + hoursLater * 3600000),
+        });
+
+        test('names the reading and when, rather than pointing at the inbox', () => {
+            const r = build(open());
+            expect(r.recovery.held).toBe(true);
+            expect(r.sentence).toBe('Blood oxygen read 88% at 02:01 today, in the range we flag as urgent. Check it before planning a hard day.');
+            expect(r.sentence).not.toMatch(/notification/i);
+        });
+
+        test("carries the alert's own advice, which says when to seek care", () => {
+            const r = build(open());
+            expect(r.alert).toMatchObject({ metric: 'spo2', value: '88%', title: 'Very low blood oxygen reading' });
+            expect(r.alert.body).toMatch(/seek emergency care now/);
+        });
+
+        test('stops holding the card after 24 hours, though the episode is still open', () => {
+            const r = build(open(), 30);
+            expect(r.alert).toBeNull();
+            expect(r.recovery.held).toBe(false);
+            expect(r.sentence).not.toMatch(/urgent/);
+        });
+
+        test('a withdrawn reading holds nothing', () => {
+            expect(build(open({ withdrawnAt: new Date(at) })).alert).toBeNull();
+        });
+
+        test('an episode whose latest reading is milder names its urgent one', () => {
+            const r = build({ metric: 'spo2', latest: reading({ level: 'attention', spo2: 93, rule: 'spo2.at_most_93' }), worst: reading() });
+            expect(r.alert.value).toBe('88%');
+        });
     });
 
     test('the morning names the signal that moved', () => {
@@ -300,8 +339,14 @@ describe('the readout', () => {
         ];
         for (const t of todays) {
             for (const hour of [6, 11, 13, 22]) {
-                for (const urgentAlert of [false, true]) {
-                    const { sentence } = readout.buildReadout({ rows: history(t), today: TODAY, hour, urgentAlert });
+                const fresh = {
+                    metric: 'spo2',
+                    latest: { measuredAt: new Date(`${TODAY}T01:00:00Z`), level: 'urgent', rule: 'spo2.at_most_91', spo2: 88 },
+                };
+                for (const openAlert of [null, fresh]) {
+                    const { sentence } = readout.buildReadout({
+                        rows: history(t), today: TODAY, hour, openAlert, now: new Date(`${TODAY}T08:00:00Z`),
+                    });
                     expect(sentence).not.toMatch(banned);
                     expect(sentence.length).toBeLessThanOrEqual(160);
                 }
