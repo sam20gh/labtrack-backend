@@ -25,6 +25,7 @@ const { presentToPatient } = require('../config/clinicalPolicy');
 const { buildContext } = require('./interpretationEngine');
 const { _gatherContext } = require('../controllers/interpretationController');
 const { gatherCycle, renderCycle } = require('./cycleContext');
+const { gatherSleep, renderSleep } = require('./sleepContext');
 const { ASSISTANT_SCHEMA, SYSTEM_PROMPT } = require('./assistantSchema');
 
 const MODEL = 'claude-opus-5';
@@ -153,13 +154,16 @@ const renderActionable = ({ planItems, professionals, products, interpretation }
  * cache and pays full price only for what is new. Nothing volatile (a timestamp, a message
  * id) may move above those breakpoints or the cache silently stops hitting.
  */
-const buildPrompt = async (userId) => {
-    const [profile, actionable, cycle] = await Promise.all([
+const buildPrompt = async (userId, { tzOffset = null } = {}) => {
+    const [profile, actionable, cycle, sleep] = await Promise.all([
         _gatherContext(userId),
         gatherActionable(userId),
         // Assistant-only: see the header of utils/cycleContext.js for why the
         // interpretation, which a clinician reviews, does not read it.
         gatherCycle(userId),
+        // Night by night, because `observed` only carries the fortnight's averages and
+        // "how was my sleep last night?" cannot be answered from an average.
+        gatherSleep(userId, { tzOffset }),
     ]);
 
     // `gatherContext` attaches `previous` — the last interpretation's summary and risks —
@@ -176,7 +180,7 @@ const buildPrompt = async (userId) => {
         profile.previous = null;
     }
 
-    return `${buildContext(profile)}\n\n${renderActionable(actionable)}${renderCycle(cycle)}`;
+    return `${buildContext(profile)}\n\n${renderActionable(actionable)}${renderCycle(cycle)}${renderSleep(sleep)}`;
 };
 
 /**
@@ -187,15 +191,16 @@ const buildPrompt = async (userId) => {
  * @param {string} args.message         what the person just typed
  * @param {Array<{role:string, text:string}>} args.history  prior turns, oldest first
  * @param {{data: Buffer, mediaType: string}} [args.image]  a photograph sent with the message
+ * @param {number|null} [args.tzOffset]  the phone's minutes west of UTC, so "last night" is theirs
  * @returns {Promise<{ok:boolean, data?:object, error?:string, usage?:object}>}
  */
-const ask = async ({ userId, message, history = [], image = null }) => {
+const ask = async ({ userId, message, history = [], image = null, tzOffset = null }) => {
     if (!isConfigured()) {
         return { ok: false, error: 'The assistant is not configured on this server.' };
     }
 
     try {
-        const context = await buildPrompt(userId);
+        const context = await buildPrompt(userId, { tzOffset });
 
         // Replayed turns carry only the text. The card was rendered from data the model can
         // see in the context anyway, and echoing serialised widgets back would spend a

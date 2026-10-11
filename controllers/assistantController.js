@@ -156,6 +156,9 @@ exports.chat = async (req, res) => {
             image: req.file
                 ? { data: fs.readFileSync(tempPath), mediaType: req.file.mimetype }
                 : null,
+            // A string when the message is multipart. `sleepContext` validates it and falls
+            // back to the newest registered device's offset when it is absent or nonsense.
+            tzOffset: req.body?.tzOffset ?? null,
         });
 
         if (!result.ok) {
