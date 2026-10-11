@@ -1,9 +1,15 @@
 const DailyMetrics = require('../models/DailyMetrics');
 const SleepPlan = require('../models/SleepPlan');
 const VitalAlert = require('../models/VitalAlert');
+const NutritionPlan = require('../models/NutritionPlan');
+const MealLog = require('../models/MealLog');
+const SleepSession = require('../models/SleepSession');
+const User = require('../models/userModel');
 const { recomputeDay } = require('../utils/healthSync');
 const { EFFORT_VERSION } = require('../utils/effort');
-const { buildReadout, weekStartOf, reasonsFor, recoveryTrend, BASELINE_DAYS } = require('../utils/dailyReadout');
+const {
+    buildReadout, weekStartOf, reasonsFor, recoveryTrend, lateMealFor, BASELINE_DAYS,
+} = require('../utils/dailyReadout');
 
 const DAY_MS = 86400000;
 
@@ -11,11 +17,13 @@ const DAY_MS = 86400000;
 const localDay = (ms, tzOffset) => new Date(ms - tzOffset * 60000).toISOString().slice(0, 10);
 
 /**
- * GET /api/readout?tzOffset= — the home screen's Sleep · Recovery · Effort readout.
+ * GET /api/readout?tzOffset= — the home screen's Sleep · Recovery · Effort readout, with Fuel.
  *
  * Database reads only, so the home screen can put it in its first-paint batch: one range of
- * `DailyMetrics` (29 days for the baselines), the sleep goal, and whether an urgent vital alert
- * is open. `utils/dailyReadout.js` decides what they mean.
+ * `DailyMetrics` (29 days for the baselines), the sleep goal, whether an urgent vital alert is
+ * open, the nutrition plan as last synced, today's meals and a weight. `utils/dailyReadout.js`
+ * decides what they mean. The plan's guidance is not re-synced here: the home screen's own
+ * nutrition read does that, and a model-free read must stay cheap.
  *
  * A day of this week rolled up before effort existed, or under older rules, carries no
  * `activity.effortVersion` or an older one. Those days are recomputed here, once each, so the
@@ -42,9 +50,12 @@ exports.getReadout = async (req, res) => {
             rows = await read();
         }
 
-        const [plan, urgent] = await Promise.all([
+        const [plan, urgent, nutritionPlan, meals, user] = await Promise.all([
             SleepPlan.findOne({ userId }).select('goalMinutes').lean(),
             VitalAlert.exists({ userId, isOpen: true, level: 'urgent' }),
+            NutritionPlan.findOne({ userId }).select('targets guidance mealsPerDay').lean(),
+            MealLog.find({ userId, day: today }).select('calories protein carbs fat analysis.alignment eatenAt').lean(),
+            User.findById(userId).select('weight observed.weightKg').lean(),
         ]);
 
         res.json(buildReadout({
@@ -53,6 +64,10 @@ exports.getReadout = async (req, res) => {
             hour,
             goalMinutes: plan?.goalMinutes ?? null,
             urgentAlert: Boolean(urgent),
+            meals,
+            nutritionPlan,
+            // What the trackers measured first, the onboarding answer second.
+            weightKg: user?.observed?.weightKg ?? (Number(user?.weight) || null),
         }));
     } catch (err) {
         console.error('❌ Building the readout failed:', err);
@@ -74,16 +89,21 @@ exports.getRecovery = async (req, res) => {
         const today = localDay(now, tzOffset);
         const from = localDay(now - (BASELINE_DAYS + 7) * DAY_MS, tzOffset);
 
-        const [rows, urgent] = await Promise.all([
+        const yesterday = localDay(now - DAY_MS, tzOffset);
+        const [rows, urgent, night, meals] = await Promise.all([
             DailyMetrics.find({ userId, day: { $gte: from } }).sort({ day: 1 }).lean(),
             VitalAlert.exists({ userId, isOpen: true, level: 'urgent' }),
+            // Last night: the longest sleep filed under today, the wake day.
+            SleepSession.findOne({ userId, day: today }).sort({ asleepMin: -1 }).select('startedAt').lean(),
+            MealLog.find({ userId, day: { $in: [yesterday, today] } }).select('eatenAt').lean(),
         ]);
         const readout = buildReadout({ rows, today, hour: 8, urgentAlert: Boolean(urgent) });
+        const lateMeal = night ? lateMealFor(meals, new Date(night.startedAt).getTime(), tzOffset) : null;
 
         res.json({
             day: today,
             recovery: readout.recovery,
-            reasons: reasonsFor(readout.recovery),
+            reasons: reasonsFor(readout.recovery, { lateMeal }),
             trend: recoveryTrend(rows, today, 7),
             effortTarget: readout.effort.target,
             targetReason: readout.effort.targetReason,

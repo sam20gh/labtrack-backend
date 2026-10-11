@@ -34,6 +34,8 @@
  * Blood oxygen is not one either: vital alerts already own it, with thresholds.
  */
 
+const { summariseDay } = require('./nutritionInsight');
+
 const BASELINE_DAYS = 28;
 const MIN_DAYS = 5;
 
@@ -242,6 +244,106 @@ const sleepFor = (rows, today, goalMinutes) => {
     };
 };
 
+/**
+ * Net energy per minute above rest, in METs: a moderate minute is about 4.5 METs and a vigorous
+ * one about 8 (Compendium of Physical Activities), less the 1 MET the base target already
+ * counts as resting. kcal/min = MET × 3.5 × kg / 200.
+ */
+const NET_MET = { moderate: 3.5, vigorous: 7 };
+const kcalPerMin = (met, kg) => (met * 3.5 * kg) / 200;
+const ALLOWANCE_MIN_KCAL = 50;
+const ALLOWANCE_MAX_KCAL = 600;
+
+/**
+ * Extra energy for a day more active than this person's usual.
+ *
+ * The calorie target already allows for a typical day's activity (its activity factor), so
+ * counting all of today's effort would count habitual exercise twice. What it does not know
+ * is that today was harder than usual: that difference, against the median of the 28 days
+ * before, is the allowance. It never goes negative — a quiet day is not a reason to eat less,
+ * and this screen will not say so. Null without a weight, without five earlier days, or when
+ * the difference is too small to mean anything.
+ */
+const allowanceFor = (rows, today, weightKg) => {
+    if (!finite(weightKg) || weightKg <= 0) return null;
+    const kcal = (r) => {
+        const a = r?.activity;
+        if (!finite(a?.effortMin)) return null;
+        return (a.moderateMin || 0) * kcalPerMin(NET_MET.moderate, weightKg)
+            + (a.vigorousMin || 0) * kcalPerMin(NET_MET.vigorous, weightKg);
+    };
+    const todayKcal = kcal(rows.find((r) => r.day === today));
+    if (todayKcal == null) return null;
+    const history = rows
+        .filter((r) => r.day < today && daysBetween(r.day, today) <= BASELINE_DAYS)
+        .map(kcal)
+        .filter((v) => v != null);
+    if (history.length < MIN_DAYS) return null;
+    const extra = Math.round((todayKcal - median(history)) / 10) * 10;
+    return extra >= ALLOWANCE_MIN_KCAL ? Math.min(ALLOWANCE_MAX_KCAL, extra) : null;
+};
+
+/**
+ * Fuel — today's meals against the plan, as a status line, not a score.
+ *
+ * Deliberately not a fourth ring (decided 2026-10-11). The rings fill themselves from the
+ * band; this fills only when somebody logs a meal, so a score would measure logging rather
+ * than eating, would be blank for everybody whose plan has no diet advice, and a ring that
+ * fills as you eat is a calorie ring. The figures are `summariseDay`'s, the nutrition
+ * dashboard's own, so the two cannot disagree.
+ *
+ * Null when nutrition has never been set up and nothing was logged today.
+ */
+const fuelFor = ({ meals = [], plan = null, rows = [], today, weightKg = null }) => {
+    if (!plan && !meals.length) return null;
+    const day = summariseDay(meals, plan);
+    const guidance = plan?.guidance ?? [];
+    return {
+        meals: meals.length,
+        mealsPerDay: plan?.mealsPerDay ?? null,
+        calories: Math.round(day.totals.calories),
+        target: finite(day.targets.calories) ? Math.round(day.targets.calories) : null,
+        protein: Math.round(day.totals.protein),
+        proteinTarget: finite(day.targets.protein) ? Math.round(day.targets.protein) : null,
+        // "On plan" is only ever said when the plan has diet advice to be on.
+        hasGuidance: guidance.length > 0,
+        onPlan: guidance.length && day.adherence.assessed
+            ? { assessed: day.adherence.assessed, aligned: day.adherence.aligned, partial: day.adherence.partial, offPlan: day.adherence.offPlan }
+            : null,
+        allowance: allowanceFor(rows, today, weightKg),
+    };
+};
+
+/** A meal this soon before sleep is worth naming on the Recovery screen. */
+const LATE_MEAL_MIN = 120;
+
+/**
+ * The latest meal logged within two hours before last night's sleep began, if any.
+ * A logged fact with a time on it, never a cause: the Recovery screen states it beside the
+ * signals and lets the person draw the line.
+ */
+const lateMealFor = (meals, sleepStartMs, tzOffset = 0) => {
+    if (!finite(sleepStartMs)) return null;
+    const late = (meals || [])
+        .map((m) => new Date(m.eatenAt).getTime())
+        .filter((t) => finite(t) && t <= sleepStartMs && sleepStartMs - t <= LATE_MEAL_MIN * 60000)
+        .sort((a, b) => b - a)[0];
+    if (late == null) return null;
+    return {
+        clock: new Date(late - tzOffset * 60000).toISOString().slice(11, 16),
+        minutesBefore: Math.round((sleepStartMs - late) / 60000),
+    };
+};
+
+/** One sentence on the plan's biggest gap today, for the evening. Only "more of", never "less". */
+const fuelGapFor = (fuel, hour) => {
+    if (!fuel?.hasGuidance || hour < 17 || fuel.meals < 2) return null;
+    if (finite(fuel.proteinTarget) && fuel.protein < 0.7 * fuel.proteinTarget) {
+        return `Today's meals have ${fuel.protein} g of protein; your plan's target is ${fuel.proteinTarget} g.`;
+    }
+    return null;
+};
+
 const capitalise = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The one heart signal furthest on the wrong side of usual, worded. */
@@ -262,19 +364,23 @@ const driverOf = (recovery) => {
  * Morning leads with the night and what it means for today; from noon it leads with the
  * day's effort. Nothing here names a condition or says how somebody feels.
  */
-const sentenceFor = ({ hour, sleep, recovery, effort, held }) => {
+const sentenceFor = ({ hour, sleep, recovery, effort, held, fuel = null }) => {
     if (held) return 'A reading is waiting for you in your notifications. Look at it before planning a hard day.';
 
     const week = `${effort.weekMinutes} of ${effort.weekTarget} this week.`;
 
     if (hour >= 12) {
+        // In the evening the plan's biggest gap replaces the week's tally: it is the one thing
+        // left today that the person can still act on.
+        const gap = fuelGapFor(fuel, hour);
+        const tail = gap ?? week;
         if (finite(effort.minutes) && effort.minutes >= effort.target) {
-            return `You've reached today's ${effort.target} effort minutes. ${week}`;
+            return `You've reached today's ${effort.target} effort minutes. ${tail}`;
         }
         if (finite(effort.minutes) && effort.minutes > 0) {
-            return `${effort.target - effort.minutes} effort minutes to go today. ${week}`;
+            return `${effort.target - effort.minutes} effort minutes to go today. ${tail}`;
         }
-        return `Aim for ${effort.target} effort minutes today. ${week}`;
+        return `Aim for ${effort.target} effort minutes today. ${tail}`;
     }
 
     const lead = !sleep?.score ? null
@@ -307,7 +413,7 @@ const sentenceFor = ({ hour, sleep, recovery, effort, held }) => {
  * temperature, a low sleep score. Never a cause. "Your resting heart rate is 6 bpm above your
  * usual" is a measurement; "you are coming down with something" would be a diagnosis.
  */
-const reasonsFor = (recovery) => {
+const reasonsFor = (recovery, { lateMeal = null } = {}) => {
     if (!recovery || recovery.score == null) return [];
     const out = [];
     for (const s of recovery.signals) {
@@ -322,7 +428,14 @@ const reasonsFor = (recovery) => {
         }
         if (s.key === 'sleep' && s.value < 60) out.push(`Last night's sleep scored ${s.value}.`);
     }
-    return out.length ? out : ['Everything measured is near your usual.'];
+    if (!out.length) out.push('Everything measured is near your usual.');
+    if (lateMeal) {
+        const gap = lateMeal.minutesBefore >= 60
+            ? `${Math.round(lateMeal.minutesBefore / 30) / 2} hours`.replace('1 hours', 'an hour')
+            : `${lateMeal.minutesBefore} minutes`;
+        out.push(`You logged a meal at ${lateMeal.clock}, ${gap} before your sleep began.`);
+    }
+    return out;
 };
 
 /**
@@ -349,20 +462,26 @@ const recoveryTrend = (rows, today, days = 7) => {
  * @param {number} [args.goalMinutes] `SleepPlan.goalMinutes`
  * @param {boolean} [args.urgentAlert] an urgent `VitalAlert` is open
  */
-const buildReadout = ({ rows = [], today, hour = 8, goalMinutes = null, urgentAlert = false }) => {
+const buildReadout = ({
+    rows = [], today, hour = 8, goalMinutes = null, urgentAlert = false,
+    meals = [], nutritionPlan = null, weightKg = null,
+}) => {
     const sleep = sleepFor(rows, today, goalMinutes);
     const recovery = recoveryFor(rows, today);
     const effort = effortFor(rows, today, recovery?.state);
+    const fuel = fuelFor({ meals, plan: nutritionPlan, rows, today, weightKg });
     const held = Boolean(urgentAlert);
 
     return {
         day: today,
-        // Earned like every home card: nothing to say about any ring is no readout at all.
-        live: Boolean(sleep || recovery || finite(effort.minutes)),
+        // Earned like every home card: nothing to say about any ring, and no fuel, is no
+        // readout at all. Fuel alone earns it — the card is the only nutrition on home.
+        live: Boolean(sleep || recovery || finite(effort.minutes) || fuel),
         sleep,
         recovery: recovery ? { ...recovery, held } : null,
         effort,
-        sentence: sentenceFor({ hour, sleep, recovery, effort, held }),
+        fuel,
+        sentence: sentenceFor({ hour, sleep, recovery, effort, held, fuel }),
     };
 };
 
@@ -380,5 +499,9 @@ module.exports = {
     sentenceFor,
     reasonsFor,
     recoveryTrend,
+    fuelFor,
+    allowanceFor,
+    lateMealFor,
+    fuelGapFor,
     buildReadout,
 };

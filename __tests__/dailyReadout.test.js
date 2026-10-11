@@ -339,6 +339,110 @@ describe('the recovery screen', () => {
     });
 });
 
+describe('fuel', () => {
+    const plan = (guidance = []) => ({ targets: { calories: 2100, protein: 120 }, guidance, mealsPerDay: 3 });
+    const meal = (over = {}) => ({ calories: 600, protein: 25, carbs: 70, fat: 20, eatenAt: new Date(T0), ...over });
+    const dietAdvice = [{ key: 'mediterranean', kind: 'pattern', label: 'Mediterranean', directive: 'Eat more fish' }];
+
+    test('nothing set up and nothing logged is no fuel at all', () => {
+        expect(readout.fuelFor({ meals: [], plan: null, today: TODAY })).toBeNull();
+    });
+
+    test('draws the nutrition dashboard\'s own totals', () => {
+        const f = readout.fuelFor({ meals: [meal(), meal({ calories: 640 })], plan: plan(), today: TODAY });
+        expect(f).toMatchObject({ meals: 2, calories: 1240, target: 2100, protein: 50, proteinTarget: 120 });
+    });
+
+    test('never says "on plan" when the plan has no diet advice', () => {
+        const aligned = meal({ analysis: { alignment: 'aligned' } });
+        expect(readout.fuelFor({ meals: [aligned], plan: plan(), today: TODAY }).onPlan).toBeNull();
+        expect(readout.fuelFor({ meals: [aligned], plan: plan(dietAdvice), today: TODAY }).onPlan)
+            .toMatchObject({ assessed: 1, aligned: 1 });
+    });
+
+    test('fuel alone earns the readout, because it is the only nutrition on home', () => {
+        const r = readout.buildReadout({ rows: [], today: TODAY, meals: [meal()], nutritionPlan: plan() });
+        expect(r.live).toBe(true);
+        expect(r.sleep).toBeNull();
+    });
+
+    describe('the allowance for a harder day than usual', () => {
+        const days = (todayMod, usualMod = 20) => [
+            ...Array.from({ length: 10 }, (_, i) => ({ day: ago(10 - i), activity: { effortMin: usualMod, moderateMin: usualMod, vigorousMin: 0 } })),
+            { day: TODAY, activity: { effortMin: todayMod, moderateMin: todayMod, vigorousMin: 0 } },
+        ];
+
+        test('is the energy above the usual day, not all of today\'s', () => {
+            // 60 moderate vs a usual 20, at 75 kg: 40 × 4.59 kcal ≈ 180.
+            expect(readout.allowanceFor(days(60), TODAY, 75)).toBe(180);
+        });
+
+        test('never goes negative: a quiet day is not a reason to eat less', () => {
+            expect(readout.allowanceFor(days(0), TODAY, 75)).toBeNull();
+        });
+
+        test('needs a weight and five earlier days', () => {
+            expect(readout.allowanceFor(days(60), TODAY, null)).toBeNull();
+            expect(readout.allowanceFor(days(60).slice(-4), TODAY, 75)).toBeNull();
+        });
+
+        test('is capped', () => {
+            expect(readout.allowanceFor(days(400), TODAY, 90)).toBe(600);
+        });
+    });
+
+    describe('the evening gap', () => {
+        const f = (over = {}) => ({ hasGuidance: true, meals: 2, protein: 50, proteinTarget: 120, ...over });
+
+        test('names protein short of the plan, in the evening, with two meals in', () => {
+            expect(readout.fuelGapFor(f(), 19)).toBe("Today's meals have 50 g of protein; your plan's target is 120 g.");
+        });
+
+        test('says nothing in the morning, with one meal, or with no diet advice', () => {
+            expect(readout.fuelGapFor(f(), 10)).toBeNull();
+            expect(readout.fuelGapFor(f({ meals: 1 }), 19)).toBeNull();
+            expect(readout.fuelGapFor(f({ hasGuidance: false }), 19)).toBeNull();
+        });
+
+        test('replaces the week\'s tally in the evening sentence', () => {
+            const rows = history({ heart: { hrvMs: 50, restingBpm: 58 }, activity: { effortMin: 25 } });
+            const r = readout.buildReadout({
+                rows, today: TODAY, hour: 19, nutritionPlan: plan(dietAdvice), meals: [meal(), meal()],
+            });
+            expect(r.sentence).toBe("You've reached today's 20 effort minutes. Today's meals have 50 g of protein; your plan's target is 120 g.");
+        });
+    });
+
+    describe('a meal before bed, on the Recovery screen', () => {
+        const sleepStart = Date.parse('2026-10-11T22:30:00Z');
+
+        test('names the latest meal within two hours, in the person\'s clock', () => {
+            const meals = [
+                { eatenAt: new Date(sleepStart - 150 * MIN) },
+                { eatenAt: new Date(sleepStart - 50 * MIN) },
+            ];
+            expect(readout.lateMealFor(meals, sleepStart, -60)).toEqual({ clock: '22:40', minutesBefore: 50 });
+        });
+
+        test('ignores a meal three hours before, or after sleep began', () => {
+            expect(readout.lateMealFor([{ eatenAt: new Date(sleepStart - 180 * MIN) }], sleepStart, 0)).toBeNull();
+            expect(readout.lateMealFor([{ eatenAt: new Date(sleepStart + 10 * MIN) }], sleepStart, 0)).toBeNull();
+        });
+
+        test('is stated as a fact beside the signals, never as the cause', () => {
+            const r = readout.recoveryFor(history({ heart: { hrvMs: 50, restingBpm: 58 }, sleep: { score: 80 } }), TODAY);
+            expect(readout.reasonsFor(r, { lateMeal: { clock: '22:40', minutesBefore: 50 } })).toEqual([
+                'Everything measured is near your usual.',
+                'You logged a meal at 22:40, 50 minutes before your sleep began.',
+            ]);
+            expect(readout.reasonsFor(r, { lateMeal: { clock: '21:30', minutesBefore: 90 } })[1])
+                .toBe('You logged a meal at 21:30, 1.5 hours before your sleep began.');
+            expect(readout.reasonsFor(r, { lateMeal: { clock: '21:30', minutesBefore: 60 } })[1])
+                .toBe('You logged a meal at 21:30, an hour before your sleep began.');
+        });
+    });
+});
+
 describe('wiring', () => {
     const DailyMetrics = require('../models/DailyMetrics');
     const HeartStream = require('../models/HeartStream');

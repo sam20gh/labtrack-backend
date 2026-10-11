@@ -142,4 +142,47 @@ const summariseWindow = (meals, targets = null, windowDays = 30) => {
     };
 };
 
-module.exports = { summariseWindow, weekdayProfile, goalProgress, totalsOf, byDay, mean, WEEKDAYS };
+/**
+ * One day's totals, remaining calories and plan adherence — the nutrition dashboard's figures.
+ * Here rather than in the controller so the home screen's Today readout draws the same numbers.
+ */
+const summariseDay = (meals, plan) => {
+    const totals = meals.reduce((acc, m) => ({
+        calories: acc.calories + (m.calories || 0),
+        protein: acc.protein + (m.protein || 0),
+        carbs: acc.carbs + (m.carbs || 0),
+        fat: acc.fat + (m.fat || 0),
+    }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+
+    const targets = plan?.targets || {};
+    const remaining = targets.calories != null
+        ? Math.max(0, Math.round(targets.calories - totals.calories))
+        : null;
+
+    // Counted, not averaged: "4 of 5 meals aligned" is something a person can act on, where
+    // a 78% score is not. `unassessed` meals are excluded so someone with no dietary
+    // guidance is never shown a zero as though they had failed at something.
+    const assessed = meals.filter((m) => m.analysis && m.analysis.alignment !== 'unassessed');
+    const aligned = assessed.filter((m) => m.analysis.alignment === 'aligned').length;
+    const partial = assessed.filter((m) => m.analysis.alignment === 'partial').length;
+    const offPlan = assessed.filter((m) => m.analysis.alignment === 'off_plan').length;
+
+    return {
+        totals,
+        targets,
+        remaining,
+        overBy: targets.calories != null && totals.calories > targets.calories
+            ? Math.round(totals.calories - targets.calories)
+            : 0,
+        adherence: {
+            assessed: assessed.length,
+            aligned,
+            partial,
+            offPlan,
+            /** Null rather than 0 when nothing was assessed — see above. */
+            score: assessed.length ? Math.round(((aligned + partial * 0.5) / assessed.length) * 100) : null,
+        },
+    };
+};
+
+module.exports = { summariseDay, summariseWindow, weekdayProfile, goalProgress, totalsOf, byDay, mean, WEEKDAYS };
