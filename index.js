@@ -165,6 +165,7 @@ app.use('/api/sleep', sleepRoutes);
 app.use('/api/cycle', cycleRoutes);
 app.use('/api/medications', medicationRoutes);
 app.use('/api/score', scoreRoutes);
+app.use('/api/readout', require('./routes/readoutRoutes'));
 app.use('/api/age', ageRoutes);
 app.use('/api/metrics', metricsRoutes);
 // Forecasts of a person's own metrics. The numbers are a regression, not a model — see

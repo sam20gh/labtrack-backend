@@ -69,6 +69,18 @@ const ActivityTotalsSchema = new mongoose.Schema({
     /** Workouts logged that day, and the score they contributed. */
     sessions: { type: Number, default: 0 },
     score: { type: Number, default: null },
+    /**
+     * Effort minutes — moderate counts 1, vigorous counts 2 — from `utils/effort.js`.
+     * Null when nothing measured the day. Absent (undefined) on a day rolled up before the
+     * field existed, which `readoutController` recomputes on read.
+     */
+    effortMin: { type: Number },
+    moderateMin: { type: Number },
+    vigorousMin: { type: Number },
+    /** `stream` | `sessions` | `both` | null — where the minutes came from. */
+    effortSource: { type: String },
+    /** `needs_age` when a stream could not be read for want of a birth date. */
+    effortNote: { type: String },
 }, { _id: false });
 
 /**

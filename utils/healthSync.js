@@ -26,6 +26,7 @@ const { classify } = require('./bloodPressure');
 const { scoreNight } = require('./sleepScore');
 const { scoreSession } = require('./activityScore');
 const { clusterSessions, mergeSessions, STITCH_GAP_MIN } = require('./sleepStitch');
+const { effortForDay, maxHrFromAge } = require('./effort');
 
 /** `YYYY-MM-DD` for an instant in a given timezone offset (minutes, as `getTimezoneOffset()`). */
 const localDay = (date, tzOffsetMinutes = 0) => {
@@ -690,14 +691,34 @@ const ingestDaySummaries = async (userId, rows = []) => {
  * recompute, makes it a pure function of that row and immune to sync ordering.
  */
 const recomputeDay = async (userId, day) => {
-    const [sessions, nights, samples, existing] = await Promise.all([
-        ActivitySession.find({ userId, day }).select('durationSec distanceM activeKcal effort scoreDelta').lean(),
+    const HeartStream = require('../models/HeartStream');
+    const User = require('../models/userModel');
+    const [sessions, nights, samples, existing, stream, user] = await Promise.all([
+        ActivitySession.find({ userId, day })
+            .select('type startedAt endedAt durationSec distanceM activeKcal avgBpm effort scoreDelta').lean(),
         SleepSession.find({ userId, day }).select('asleepMin inBedMin stages efficiency score').lean(),
         HeartRateSample.find({ userId, day }).select('bpm context').lean(),
         DailyMetrics.findOne({ userId, day }).select('heart.spreadSource').lean(),
+        HeartStream.findOne({ userId, day }).select('blocks').lean(),
+        User.findById(userId).select('dob').lean(),
     ]);
 
     const set = { recomputedAt: new Date() };
+
+    // Effort minutes and heart-rate zones, rebuilt from the stream and the workouts like
+    // everything else here. Required lazily for the reason `metricRollup` is below.
+    const { ageFrom } = require('./ageProfile');
+    const effort = effortForDay({
+        blocks: stream?.blocks ?? null,
+        sessions,
+        maxHr: maxHrFromAge(ageFrom(user?.dob)),
+    });
+    set['activity.effortMin'] = effort.effortMin;
+    set['activity.moderateMin'] = effort.moderateMin;
+    set['activity.vigorousMin'] = effort.vigorousMin;
+    set['activity.effortSource'] = effort.source;
+    set['activity.effortNote'] = effort.note;
+    if (effort.zoneMinutes) set['heart.zoneMinutes'] = effort.zoneMinutes;
 
     set['activity.sessions'] = sessions.length;
     if (sessions.length) {

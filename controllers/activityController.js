@@ -6,6 +6,7 @@ const PlanItem = require('../models/PlanItem');
 const User = require('../models/userModel');
 const { recomputeDay, localDay, resolveDay, normaliseType, absorbStoreTwins } = require('../utils/healthSync');
 const { ageFrom } = require('../utils/ageProfile');
+const { maxHrFromAge } = require('../utils/effort');
 const { computeTargets, deriveGuidance, explain } = require('../utils/activityTargets');
 const { scoreSession, scoreWindow, bandFor } = require('../utils/activityScore');
 const { breakdownByType, activeHours, comparePeriods } = require('../utils/activityInsight');
@@ -679,11 +680,7 @@ const weightFor = async (userId) => {
  * Shown as an estimate, and never used for an alert — vital alerts judge heart rate only at
  * rest (utils/vitalAlerts.js rule 2), and 175 on a hill is the hill.
  */
-const maxHrFor = (dob) => {
-    const age = ageFrom(dob);
-    if (age == null || age < 10) return null;
-    return Math.round(208 - 0.7 * age);
-};
+const maxHrFor = (dob) => maxHrFromAge(ageFrom(dob));
 
 exports.getLiveContext = async (req, res) => {
     try {
