@@ -81,6 +81,13 @@ const ActivityTotalsSchema = new mongoose.Schema({
     effortSource: { type: String },
     /** `needs_age` when a stream could not be read for want of a birth date. */
     effortNote: { type: String },
+    /**
+     * What counted, for the screen that explains the number: `{ bandMin, sessions: [{ id, type,
+     * durationMin, intensity, basis, effortMin }] }`. A handful of rows a day.
+     */
+    effortBreakdown: { type: mongoose.Schema.Types.Mixed },
+    /** `effort.EFFORT_VERSION` the figures were computed under; older days are redone on read. */
+    effortVersion: { type: Number },
 }, { _id: false });
 
 /**

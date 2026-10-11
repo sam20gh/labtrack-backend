@@ -2,6 +2,7 @@ const DailyMetrics = require('../models/DailyMetrics');
 const SleepPlan = require('../models/SleepPlan');
 const VitalAlert = require('../models/VitalAlert');
 const { recomputeDay } = require('../utils/healthSync');
+const { EFFORT_VERSION } = require('../utils/effort');
 const { buildReadout, weekStartOf, reasonsFor, recoveryTrend, BASELINE_DAYS } = require('../utils/dailyReadout');
 
 const DAY_MS = 86400000;
@@ -16,9 +17,9 @@ const localDay = (ms, tzOffset) => new Date(ms - tzOffset * 60000).toISOString()
  * `DailyMetrics` (29 days for the baselines), the sleep goal, and whether an urgent vital alert
  * is open. `utils/dailyReadout.js` decides what they mean.
  *
- * A day of this week rolled up before effort existed has no `activity.effortMin` key at all
- * (undefined, not null). Those days are recomputed here, once each, so the week's total is
- * right on the first open after the deploy rather than after a week of syncs.
+ * A day of this week rolled up before effort existed, or under older rules, carries no
+ * `activity.effortVersion` or an older one. Those days are recomputed here, once each, so the
+ * week's total is right on the first open after a deploy rather than after a week of syncs.
  */
 exports.getReadout = async (req, res) => {
     try {
@@ -34,7 +35,8 @@ exports.getReadout = async (req, res) => {
             .sort({ day: 1 }).lean();
 
         let rows = await read();
-        const stale = rows.filter((r) => r.day >= weekStart && r.activity?.effortMin === undefined);
+        // Days of this week rolled up before effort existed, or under older effort rules.
+        const stale = rows.filter((r) => r.day >= weekStart && r.activity?.effortVersion !== EFFORT_VERSION);
         if (stale.length) {
             for (const r of stale) await recomputeDay(r.userId, r.day);
             rows = await read();

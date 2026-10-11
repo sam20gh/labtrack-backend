@@ -71,14 +71,66 @@ describe('effort minutes', () => {
         };
         const day = effort.effortForDay({ blocks: streamOf([145, 145]), sessions: [session], maxHr });
         expect(day.effortMin).toBe(60);
-        expect(day.source).toBe('stream');
+        expect(day.breakdown.bandMin).toBe(0);
+        expect(day.breakdown.sessions[0]).toMatchObject({ basis: 'band', effortMin: 60 });
+    });
+
+    /**
+     * 2026-10-11, the real day that found this: a 30-minute swim logged by hand, the bracelet on
+     * the wrist reading 75–103 bpm throughout (42–57% of 179). The swim was dropped as "covered by
+     * the stream" and the day read 4 effort minutes. The person's rating decides a workout the
+     * band also saw, and the band is never the evidence in water.
+     */
+    describe('a swim logged by hand with the band on', () => {
+        const swimStart = T0 + 120 * MIN;
+        const wristInWater = Object.fromEntries(Array.from({ length: 24 }, (_, i) =>
+            [String(swimStart + i * 75000), [15, 15 * 85, 75, 103]]));
+        const swim = (effortRating) => ({
+            _id: 'swim', type: 'swimming', startedAt: new Date(swimStart), durationSec: 1800,
+            ...(effortRating ? { effort: effortRating } : {}),
+        });
+
+        test('rated Moderate, it counts 30 whatever the wrist read', () => {
+            const day = effort.effortForDay({ blocks: wristInWater, sessions: [swim(3)], maxHr: 179 });
+            expect(day.effortMin).toBe(30);
+            expect(day.breakdown.sessions[0]).toMatchObject({ basis: 'rating', intensity: 'moderate', effortMin: 30 });
+        });
+
+        test('rated Light, it is shown and not counted — the app labels 2 "Light"', () => {
+            const day = effort.effortForDay({ blocks: wristInWater, sessions: [swim(2)], maxHr: 179 });
+            expect(day.effortMin).toBe(0);
+            expect(day.breakdown.sessions[0]).toMatchObject({ basis: 'rating', intensity: 'light', effortMin: 0 });
+        });
+
+        test('unrated, the type decides, never the wrist underwater', () => {
+            const day = effort.effortForDay({ blocks: wristInWater, sessions: [swim(null)], maxHr: 179 });
+            expect(day.breakdown.sessions[0]).toMatchObject({ basis: 'type', intensity: 'moderate', effortMin: 30 });
+        });
+
+        test("the band's minutes inside the swim are not counted again outside it", () => {
+            const hard = Object.fromEntries(Object.keys(wristInWater).map((k) => [k, [15, 15 * 150, 150, 150]]));
+            const day = effort.effortForDay({ blocks: hard, sessions: [swim(3)], maxHr: 179 });
+            expect(day.breakdown.bandMin).toBe(0);
+            expect(day.effortMin).toBe(30);
+        });
+    });
+
+    test('the rating scale is the log form\'s: 1–2 light, 3 moderate, 4–5 vigorous', () => {
+        const at = (h) => new Date(T0 + h * 60 * MIN);
+        const rated = (r, h) => ({ type: 'walking', startedAt: at(h), durationSec: 600, effort: r });
+        const day = effort.effortForDay({
+            sessions: [rated(1, 1), rated(2, 2), rated(3, 3), rated(4, 4), rated(5, 5)], maxHr,
+        });
+        expect(day.breakdown.sessions.map((x) => x.intensity))
+            .toEqual(['light', 'light', 'moderate', 'vigorous', 'vigorous']);
+        expect(day.effortMin).toBe(10 + 20 + 20);
     });
 
     test('a workout outside the stream counts by heart rate, then rating, then type', () => {
         const at = (h) => new Date(T0 + h * 60 * MIN);
         const sessions = [
             { type: 'walking', startedAt: at(5), durationSec: 1800, avgBpm: 125 },  // moderate by HR
-            { type: 'walking', startedAt: at(6), durationSec: 1200, effort: 5 },    // vigorous by rating
+            { type: 'walking', startedAt: at(6), durationSec: 1200, effort: 5 },    // vigorous by rating (Maximum)
             { type: 'yoga', startedAt: at(7), durationSec: 3600 },                  // not counted
             { type: 'swimming', startedAt: at(8), durationSec: 600 },               // moderate by type
         ];
@@ -329,5 +381,6 @@ describe('wiring', () => {
         expect(body.sleep.score).toBe(82);
         const row = await DailyMetrics.findOne({ userId, day: today }).lean();
         expect(row.activity).toHaveProperty('effortMin', null);
+        expect(row.activity.effortVersion).toBe(effort.EFFORT_VERSION);
     });
 });

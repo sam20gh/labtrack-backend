@@ -226,6 +226,7 @@ const effortFor = (rows, today, recoveryState, weeklyTarget = WEEKLY_EFFORT_TARG
         steps: finite(row?.activity?.steps) ? row.activity.steps : null,
         source: row?.activity?.effortSource ?? null,
         note: row?.activity?.effortNote ?? null,
+        breakdown: row?.activity?.effortBreakdown ?? null,
     };
 };
 

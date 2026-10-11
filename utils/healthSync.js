@@ -26,7 +26,7 @@ const { classify } = require('./bloodPressure');
 const { scoreNight } = require('./sleepScore');
 const { scoreSession } = require('./activityScore');
 const { clusterSessions, mergeSessions, STITCH_GAP_MIN } = require('./sleepStitch');
-const { effortForDay, maxHrFromAge } = require('./effort');
+const { effortForDay, maxHrFromAge, EFFORT_VERSION } = require('./effort');
 
 /** `YYYY-MM-DD` for an instant in a given timezone offset (minutes, as `getTimezoneOffset()`). */
 const localDay = (date, tzOffsetMinutes = 0) => {
@@ -718,6 +718,8 @@ const recomputeDay = async (userId, day) => {
     set['activity.vigorousMin'] = effort.vigorousMin;
     set['activity.effortSource'] = effort.source;
     set['activity.effortNote'] = effort.note;
+    set['activity.effortBreakdown'] = effort.breakdown;
+    set['activity.effortVersion'] = EFFORT_VERSION;
     if (effort.zoneMinutes) set['heart.zoneMinutes'] = effort.zoneMinutes;
 
     set['activity.sessions'] = sessions.length;

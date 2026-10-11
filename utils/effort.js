@@ -97,13 +97,14 @@ const recordMinutes = (startsMs) => {
 const validTuple = (t) => Array.isArray(t) && t.length === 4 && t.every(finite) && t[0] > 0;
 
 /**
- * Minutes per zone and per intensity from one day's stream.
+ * The day's stream as classified records: when each starts and ends, the minutes it stands for,
+ * and its mean as a share of maximum heart rate.
  *
  * Each record is classified by its mean. A record holds fifteen readings, and each non-zero
  * reading stands for `recordMinutes / 15` minutes, so a record with half its readings missing
  * (the band slipping) counts half its span.
  */
-const fromStream = (blocks, maxHr) => {
+const streamRecords = (blocks, maxHr) => {
     const entries = Object.entries(blocks || {})
         .map(([key, tuple]) => [Number(key), tuple])
         .filter(([start, tuple]) => finite(start) && validTuple(tuple));
@@ -111,102 +112,176 @@ const fromStream = (blocks, maxHr) => {
 
     const span = recordMinutes(entries.map(([start]) => start));
     const perReading = span / READINGS_PER_RECORD;
+    return entries.map(([start, [n, sum]]) => ({
+        start,
+        end: start + span * 60000,
+        minutes: Math.min(n, READINGS_PER_RECORD) * perReading,
+        fraction: (sum / n) / maxHr,
+    }));
+};
+
+/** Moderate and vigorous minutes in a set of records. */
+const tally = (records) => {
+    let moderate = 0;
+    let vigorous = 0;
+    for (const r of records) {
+        const intensity = intensityOf(r.fraction);
+        if (intensity === 'moderate') moderate += r.minutes;
+        if (intensity === 'vigorous') vigorous += r.minutes;
+    }
+    return { moderate, vigorous };
+};
+
+/** Minutes per zone, from every record: the zones describe the heart, not the workouts. */
+const zonesOf = (records) => {
     const zones = [0, 0, 0, 0, 0];
+    for (const r of records) {
+        const zone = zoneOf(r.fraction);
+        if (zone >= 0) zones[zone] += r.minutes;
+    }
+    return zones.map((z) => Math.round(z));
+};
+
+/** Kept for callers and tests that want the whole stream read on its own. */
+const fromStream = (blocks, maxHr) => {
+    const records = streamRecords(blocks, maxHr);
+    if (!records) return null;
+    const { moderate, vigorous } = tally(records);
+    return { zoneMinutes: zonesOf(records), moderateMin: moderate, vigorousMin: vigorous };
+};
+
+/**
+ * Water: a wrist optical sensor reads badly underwater, so the band's heart rate is never the
+ * evidence for these. Matched loosely because unmapped store types arrive as words.
+ */
+const WATER = /swim|surf|water|div(e|ing)|paddl|snorkel|kayak|canoe/;
+
+/**
+ * The app's own effort scale (`app/activity/log.tsx`): 1 Very light, 2 Light, 3 Moderate,
+ * 4 High effort, 5 Maximum. Light is good for you and is not what the guideline counts.
+ */
+const intensityFromRating = (rating) => (rating >= 4 ? 'vigorous' : rating >= 3 ? 'moderate' : 'light');
+
+/**
+ * One workout's effort, and what decided it. Strongest evidence first:
+ *
+ *   heart_rate  the workout's own average heart rate (a watch recorded the session)
+ *   rating      the effort the person gave it — what they say about their own session
+ *   band        the bracelet's stream inside the workout's window (never for water)
+ *   type        the kind of workout, when nothing measured or rated it
+ *
+ * The person's rating outranks the band because a wrist sensor can be wrong (cold hands, a
+ * loose strap, water), and somebody who has said how hard it was should not be overruled by it.
+ */
+const judgeSession = (session, maxHr, inside) => {
+    const minutes = (session.durationSec || 0) / 60;
+    const type = String(session.type || '').toLowerCase();
+    let intensity;
+    let basis;
     let moderate = 0;
     let vigorous = 0;
 
-    for (const [, [n, sum]] of entries) {
-        const fraction = (sum / n) / maxHr;
-        const minutes = Math.min(n, READINGS_PER_RECORD) * perReading;
-        const zone = zoneOf(fraction);
-        if (zone >= 0) zones[zone] += minutes;
-        const intensity = intensityOf(fraction);
-        if (intensity === 'moderate') moderate += minutes;
-        if (intensity === 'vigorous') vigorous += minutes;
+    if (finite(session.avgBpm) && session.avgBpm > 0 && maxHr) {
+        intensity = intensityOf(session.avgBpm / maxHr);
+        basis = 'heart_rate';
+    } else if (finite(session.effort)) {
+        intensity = intensityFromRating(session.effort);
+        basis = 'rating';
+    } else if (inside.length && !WATER.test(type)) {
+        // Minute by minute, from the band: a session can be part warm-up, part hard.
+        ({ moderate, vigorous } = tally(inside));
+        basis = 'band';
+        intensity = vigorous > 0 ? 'vigorous' : moderate > 0 ? 'moderate' : 'light';
+    } else {
+        intensity = UNCOUNTED_TYPES.has(type) ? 'light' : VIGOROUS_TYPES.has(type) ? 'vigorous' : 'moderate';
+        basis = 'type';
+    }
+
+    if (basis !== 'band') {
+        if (intensity === 'moderate') moderate = minutes;
+        if (intensity === 'vigorous') vigorous = minutes;
     }
 
     return {
-        zoneMinutes: zones.map((z) => Math.round(z)),
-        moderateMin: moderate,
-        vigorousMin: vigorous,
-        covered: entries.map(([start]) => [start, start + span * 60000]),
+        id: session._id ? String(session._id) : null,
+        type: session.type || 'other',
+        durationMin: Math.round(minutes),
+        intensity,
+        basis,
+        moderate,
+        vigorous,
+        effortMin: Math.round(moderate + 2 * vigorous),
     };
-};
-
-/** Whether any stream record overlaps a workout, so the workout is not counted twice. */
-const coveredBy = (covered, startMs, endMs) =>
-    covered.some(([from, to]) => from < endMs && to > startMs);
-
-/** A workout the stream did not see. */
-const sessionIntensity = (session, maxHr) => {
-    // The person's own rating outranks a type: a gentle swim and a hard one are both "swimming".
-    if (finite(session.effort)) {
-        if (session.effort <= 1) return 'light';
-        return session.effort >= 4 ? 'vigorous' : 'moderate';
-    }
-    if (finite(session.avgBpm) && session.avgBpm > 0 && maxHr) return intensityOf(session.avgBpm / maxHr);
-    const type = String(session.type || '').toLowerCase();
-    if (UNCOUNTED_TYPES.has(type)) return 'light';
-    return VIGOROUS_TYPES.has(type) ? 'vigorous' : 'moderate';
-};
-
-const fromSessions = (sessions, maxHr, covered) => {
-    let moderate = 0;
-    let vigorous = 0;
-    let counted = 0;
-
-    for (const s of sessions || []) {
-        const minutes = (s.durationSec || 0) / 60;
-        if (minutes <= 0) continue;
-        const start = new Date(s.startedAt).getTime();
-        const end = s.endedAt ? new Date(s.endedAt).getTime() : start + minutes * 60000;
-        if (finite(start) && covered.length && coveredBy(covered, start, end)) continue;
-
-        counted += 1;
-        const intensity = sessionIntensity(s, maxHr);
-        if (intensity === 'moderate') moderate += minutes;
-        if (intensity === 'vigorous') vigorous += minutes;
-    }
-    return { moderateMin: moderate, vigorousMin: vigorous, counted };
 };
 
 /**
  * One day's effort.
  *
+ * Workouts are judged one by one (`judgeSession`); the band's records inside a workout's window
+ * belong to that workout and are never counted again outside it. What the band recorded outside
+ * every workout is the day's other effort — a brisk walk to the station nobody logged.
+ *
  * @param {object} args
  * @param {object} [args.blocks]   `HeartStream.blocks` for the day
  * @param {Array}  [args.sessions] the day's `ActivitySession` rows
  * @param {number|null} args.maxHr estimated maximum heart rate, or null without a birth date
- * @returns {{ effortMin, moderateMin, vigorousMin, zoneMinutes, source, note }}
+ * @returns {{ effortMin, moderateMin, vigorousMin, zoneMinutes, source, note, breakdown }}
  */
 const effortForDay = ({ blocks = null, sessions = [], maxHr = null }) => {
     const hasStream = Boolean(blocks && Object.keys(blocks).length);
-    const stream = fromStream(blocks, maxHr);
-    const worn = fromSessions(sessions, maxHr, stream?.covered ?? []);
+    const records = streamRecords(blocks, maxHr);
 
-    // A stream with no birth date to read it against: the workouts still count by type, and
-    // the note tells the screen why the band's own minutes do not.
+    // A stream with no birth date to read it against: workouts still count by rating and type,
+    // and the note tells the screen why the band's own minutes do not.
     const note = hasStream && !maxHr ? 'needs_age' : null;
 
-    if (!stream && !worn.counted) {
-        return { effortMin: null, moderateMin: null, vigorousMin: null, zoneMinutes: null, source: null, note };
+    const claimed = new Set();
+    const judged = [];
+    for (const s of sessions || []) {
+        const minutes = (s.durationSec || 0) / 60;
+        if (minutes <= 0) continue;
+        const start = new Date(s.startedAt).getTime();
+        const end = s.endedAt ? new Date(s.endedAt).getTime() : start + minutes * 60000;
+        const inside = finite(start) && records
+            ? records.filter((r) => !claimed.has(r) && r.start < end && r.end > start)
+            : [];
+        inside.forEach((r) => claimed.add(r));
+        judged.push(judgeSession(s, maxHr, inside));
     }
 
-    const moderate = (stream?.moderateMin ?? 0) + worn.moderateMin;
-    const vigorous = (stream?.vigorousMin ?? 0) + worn.vigorousMin;
-    const source = stream && worn.counted ? 'both' : stream ? 'stream' : 'sessions';
+    const outside = records ? tally(records.filter((r) => !claimed.has(r))) : null;
+
+    if (!records && !judged.length) {
+        return {
+            effortMin: null, moderateMin: null, vigorousMin: null, zoneMinutes: null,
+            source: null, note, breakdown: null,
+        };
+    }
+
+    const moderate = (outside?.moderate ?? 0) + judged.reduce((sum, j) => sum + j.moderate, 0);
+    const vigorous = (outside?.vigorous ?? 0) + judged.reduce((sum, j) => sum + j.vigorous, 0);
+    const source = records && judged.length ? 'both' : records ? 'stream' : 'sessions';
 
     return {
         effortMin: Math.round(moderate + 2 * vigorous),
         moderateMin: Math.round(moderate),
         vigorousMin: Math.round(vigorous),
-        zoneMinutes: stream?.zoneMinutes ?? null,
+        zoneMinutes: records ? zonesOf(records) : null,
         source,
         note,
+        breakdown: {
+            // Effort the band saw outside every workout; null when there was no band.
+            bandMin: outside ? Math.round(outside.moderate + 2 * outside.vigorous) : null,
+            sessions: judged.map(({ moderate: m, vigorous: v, ...rest }) => rest),
+        },
     };
 };
 
+/** Bump when the rules change, so days stored under the old ones are recomputed on read. */
+const EFFORT_VERSION = 2;
+
 module.exports = {
+    EFFORT_VERSION,
     MODERATE_PCT,
     VIGOROUS_PCT,
     ZONE_EDGES,
