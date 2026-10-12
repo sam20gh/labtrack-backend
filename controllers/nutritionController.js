@@ -9,7 +9,7 @@ const {
     computeTargets, deriveGuidance, explain,
 } = require('../utils/nutritionTargets');
 const {
-    analysePhoto, analyseDescription, toMealDraft,
+    analysePhoto, analyseDescription, analyseCorrection, toMealDraft,
     isConfigured, CONFIDENCE_THRESHOLD, ACCEPTED_MEDIA, MODEL,
 } = require('../utils/nutritionEngine');
 const imageStore = require('../utils/imageStore');
@@ -437,6 +437,96 @@ exports.estimateFromDescription = async (req, res) => {
     }
 };
 
+const MAX_CORRECTED_ITEMS = 20;
+
+/**
+ * Validate a correction from the review screen. Returns `{ error }` or the cleaned input.
+ * Blank rows are dropped rather than refused: an "Add an item" row the person never filled
+ * in is not a mistake worth a 400.
+ */
+const cleanCorrection = (body = {}) => {
+    const raw = Array.isArray(body.items) ? body.items : [];
+    const items = raw
+        .map((i) => ({
+            name: String(i?.name || '').trim().slice(0, 80),
+            quantity: String(i?.quantity || '').trim().slice(0, 40),
+        }))
+        .filter((i) => i.name.length > 0);
+    if (items.length === 0) return { error: 'Name at least one thing in the meal' };
+    if (items.length > MAX_CORRECTED_ITEMS) return { error: `At most ${MAX_CORRECTED_ITEMS} items` };
+    const name = String(body.name || '').trim().slice(0, 80) || null;
+    // The draft keeps where it came from: a corrected photo is still a photographed meal.
+    const source = ['photo', 'description'].includes(body.source) ? body.source : 'description';
+    return { items, name, source };
+};
+
+/**
+ * The totals are the sum of the rows, enforced here rather than trusted to the prompt. The
+ * review screen shows both, and a corrected yoghurt whose row says 2 g fat under a total
+ * that still carries the old 10 g is the error the person just fixed, back again.
+ */
+const sumItems = (draft) => {
+    if (!draft.items?.length) return draft;
+    const total = (k) => draft.items.reduce((sum, i) => sum + (i[k] || 0), 0);
+    return {
+        ...draft,
+        calories: total('calories'),
+        protein: total('protein'),
+        carbs: total('carbs'),
+        fat: total('fat'),
+    };
+};
+
+/**
+ * POST /api/nutrition/revise — re-estimate a draft the person corrected. Saves nothing.
+ *
+ * The review screen lets someone fix what the analyser identified ("fat-free, not full-fat")
+ * and asks for the figures again from their list. The response has the shape `/analyse`
+ * returns, so the screen swaps one draft for the other. The plan verdict and swap are
+ * re-judged too: they described the meal as misidentified, and keeping them would attach
+ * coaching about a full-fat yoghurt to a fat-free one.
+ */
+exports.reviseEstimate = async (req, res) => {
+    try {
+        if (!isConfigured()) {
+            return res.status(503).json({
+                message: 'Recalculating is unavailable. You can still edit the figures by hand.',
+                manualEntryAvailable: true,
+            });
+        }
+
+        const input = cleanCorrection(req.body);
+        if (input.error) return res.status(400).json({ message: input.error });
+
+        const plan = await planForAnalysis(req.auth.userId);
+        const result = await analyseCorrection(input.items, plan, input.name);
+
+        if (!result.ok) {
+            return res.status(502).json({ message: result.error, manualEntryAvailable: true });
+        }
+        if (!result.data.detected) {
+            return res.status(422).json({
+                message: "We couldn't work out those items. Check the names, or edit the figures by hand.",
+                manualEntryAvailable: true,
+            });
+        }
+
+        const draft = sumItems(toMealDraft(result.data, { source: input.source, model: result.model }));
+        // Recorded on the meal so how often the analyser is corrected can be counted later.
+        draft.analysis.corrected = true;
+
+        res.json({
+            draft,
+            verdict: verdictState(plan, draft),
+            needsConfirmation: (result.data.confidence ?? 0) < CONFIDENCE_THRESHOLD,
+            uncertainties: result.data.uncertainties || [],
+        });
+    } catch (error) {
+        console.error('❌ Error revising meal estimate:', error);
+        res.status(500).json({ message: 'Error recalculating meal', error: error.message });
+    }
+};
+
 /** POST /api/nutrition/meals — save a meal, whether typed or confirmed from a draft. */
 exports.createMeal = async (req, res) => {
     try {
@@ -857,3 +947,5 @@ exports.getStatus = (req, res) => {
 exports._summarise = summarise;
 exports._syncGuidance = syncGuidance;
 exports._localDay = localDay;
+exports._cleanCorrection = cleanCorrection;
+exports._sumItems = sumItems;

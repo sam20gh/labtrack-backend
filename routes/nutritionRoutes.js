@@ -29,9 +29,11 @@ router.get('/calendar', c.getCalendar);
 // even though it can end in a model call. `?refresh=1` forces a new set.
 router.get('/recommendations', c.getRecommendations);
 
-// Analysis returns a draft for review; neither route writes to the record.
+// Analysis returns a draft for review; none of these routes writes to the record.
+// `/revise` re-costs a draft the person corrected on the review screen.
 router.post('/analyse', upload.single('image'), c.analyseMealPhoto);
 router.post('/estimate', c.estimateFromDescription);
+router.post('/revise', c.reviseEstimate);
 
 router.get('/meals/:id', c.getMeal);
 router.post('/meals', c.createMeal);

@@ -160,6 +160,40 @@ const analyseDescription = async (description, plan) => {
     );
 };
 
+/**
+ * Re-cost a meal the person corrected on the review screen.
+ *
+ * The analyser is right most of the time and wrong in ways a photograph cannot settle: a
+ * pot of yoghurt looks the same full-fat and fat-free. The person can see the label and the
+ * model cannot, so their list is stated as fact, not as a hint. A prompt that offered it as
+ * context got "Greek yoghurt (assumed full-fat)" back, which is the mistake being corrected.
+ *
+ * Text only. The photograph is not re-sent: what was wrong is what the food *is*, which the
+ * person has now said, and re-uploading megabytes to re-read a portion they can also edit
+ * costs more than it buys.
+ */
+const correctionPrompt = (items, mealName) => {
+    const clean = (s, max) => String(s || '').replace(/["\r\n]+/g, ' ').trim().slice(0, max);
+    const lines = [
+        'The person has corrected what is in this meal. An earlier estimate got at least one item wrong.',
+        'Their list below is fact. Cost each item exactly as named and at exactly the portion given:',
+        'if they say "fat-free Greek yoghurt", every figure is that of a fat-free yoghurt, never of a',
+        'full-fat one. Do not add, remove, rename or merge items. Where a portion is blank, estimate a',
+        'typical one and say so in uncertainties. The meal totals must equal the sum of the items.',
+        '',
+        'Items:',
+        ...items.map((i) => `- ${clean(i.name, 80)} — ${clean(i.quantity, 40) || 'portion not given'}`),
+    ];
+    if (mealName) {
+        lines.push('', `They call the meal "${clean(mealName, 80)}". Use that as the name.`);
+    }
+    return lines.join('\n');
+};
+
+const analyseCorrection = async (items, plan, mealName) => {
+    return run([{ type: 'text', text: correctionPrompt(items, mealName) }], plan);
+};
+
 /** Reshape model output into the fields `MealLog` stores. Never writes; the caller confirms. */
 const toMealDraft = (data, { source, imageUrl = null, model = MODEL } = {}) => ({
     name: data.name,
@@ -194,6 +228,8 @@ const toMealDraft = (data, { source, imageUrl = null, model = MODEL } = {}) => (
 module.exports = {
     analysePhoto,
     analyseDescription,
+    analyseCorrection,
+    correctionPrompt,
     toMealDraft,
     buildGuidanceBlock,
     isConfigured,

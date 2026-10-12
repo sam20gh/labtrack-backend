@@ -55,6 +55,11 @@ const AnalysisSchema = new mongoose.Schema({
         fat: { type: Number },
     },
     model: { type: String },
+    /**
+     * The person corrected what the analyser identified and the figures were re-estimated
+     * from their list (`POST /nutrition/revise`). Counts how often the analyser is wrong.
+     */
+    corrected: { type: Boolean },
 }, { _id: false });
 
 const MealLogSchema = new mongoose.Schema({
