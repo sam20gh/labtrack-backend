@@ -228,7 +228,7 @@ const scoreActivity = ({ series = [], targets, days, reported, answeredAt } = {}
         return pillar(
             'activity', 'Activity', measured.value,
             `${measured.done.sessions} session${measured.done.sessions === 1 ? '' : 's'} and ` +
-            `${Math.round(measured.done.minutes)} active minutes over ${days} days.`,
+            `${Math.round(measured.done.minutes).toLocaleString('en-US')} active minutes over ${days} days.`,
             'observed',
             { components: measured.components, progress: measured.progress, activeDays: active },
         );
@@ -691,6 +691,17 @@ const computeScore = (input = {}) => {
  */
 const MOSTLY_OBSERVED = 50;
 
+/** "Averaging 24%…" → "averaging 24%…", leaving "LDL…" and "6 of 13…" as they are. */
+const lowerFirst = (text) => (/^[A-Z][a-z]/.test(text) ? text[0].toLowerCase() + text.slice(1) : text);
+
+/**
+ * The weakest pillar's detail is a fact about that pillar and never names it, so it has to be
+ * introduced. Appended bare, a 79 read "You are doing well. Averaging 24% of your target
+ * across 17 logged days." — praise for the 24%, about nothing the reader could identify.
+ */
+const lowestArea = (weakest) =>
+    `Your lowest area is ${weakest.label.toLowerCase()}: ${lowerFirst(weakest.detail)}`;
+
 const headlineFor = (value, band, scored, observedWeight) => {
     if (observedWeight < MOSTLY_OBSERVED) {
         return 'Mostly based on your answers so far. Connect a device or log a day to make this real.';
@@ -699,9 +710,9 @@ const headlineFor = (value, band, scored, observedWeight) => {
     if (band?.key === 'healthy') {
         return value >= 85
             ? 'You are doing well. Keep it up.'
-            : `You are doing well. ${weakest.detail}`;
+            : `You are doing well. ${lowestArea(weakest)}`;
     }
-    return `${weakest.detail} Worth a look.`;
+    return `${lowestArea(weakest)} Worth a look.`;
 };
 
 /**
@@ -729,6 +740,7 @@ const diffScores = (current, previous) => {
 };
 
 module.exports = {
+    _headlineFor: headlineFor,
     computeScore,
     diffScores,
     bandFor,

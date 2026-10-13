@@ -52,7 +52,7 @@ const Biomarker = require('../models/Biomarker');
 const TestResult = require('../models/testResultModel');
 const User = require('../models/userModel');
 const { evaluate } = require('../utils/biomarkerEvaluator');
-const { normaliseMeasurement } = require('../utils/unitNormaliser');
+const { normaliseMeasurement, checkPlausible, BIOMARKERS } = require('../utils/unitNormaliser');
 
 /**
  * Mis-slugged keys mapped back to the name the lab almost certainly printed.
@@ -157,6 +157,56 @@ const run = async (userId, apply, journal) => {
         console.log('\n  2. Mis-slugged — none');
     }
 
+    // ── 2b. Values not possible in their stored unit ──────────────────────────────────
+    // A 22 Sept 2026 report stored albumin 5.0 and total protein 8.0 as g/L — g/dL figures,
+    // flagged Low against 35–50 and 60–80. New uploads are now held for review by
+    // `checkPlausible`; this offers the same correction for rows already written, and only
+    // where exactly one accepted unit makes the value possible. Anything else is marked for
+    // review and taken out of range evaluation rather than guessed at.
+    for (const row of measurements) {
+        if (repairs.has(String(row._id))) continue;
+        const check = checkPlausible(row.name, row.value, row.unit, row.value);
+        if (!check) continue;
+        const def = BIOMARKERS[row.name];
+
+        if (!check.suggestion) {
+            repairs.set(String(row._id), {
+                flag: 'unknown', appliedRange: null, needsReview: true,
+                notes: `Held by scripts/repairBiomarkers.js — ${row.value} ${row.unit} is not a possible `
+                    + `${def.displayName} (${check.min}–${check.max} ${def.unit}) and no unit explains it.`,
+                _unitFix: 'held',
+            });
+            continue;
+        }
+
+        const evaluation = await evaluate({
+            userId: uid, name: row.name, value: check.suggestion.value, user, measuredAt: row.measuredAt,
+        });
+        repairs.set(String(row._id), {
+            value: check.suggestion.value,
+            unit: def.unit,
+            flag: evaluation.flag,
+            appliedRange: evaluation.appliedRange,
+            needsReview: false,
+            notes: `Repaired by scripts/repairBiomarkers.js — stored as ${row.value} ${row.unit}, which is not `
+                + `possible; read as ${check.suggestion.unit} (${check.suggestion.value} ${def.unit}).`,
+            _unitFix: 'converted',
+        });
+    }
+
+    const unitRows = measurements.filter((r) => repairs.get(String(r._id))?._unitFix);
+    if (unitRows.length) {
+        console.log(`\n  2b. Impossible in their unit — ${plural(unitRows.length, 'row')} (check against the report)`);
+        for (const r of unitRows) {
+            const fix = repairs.get(String(r._id));
+            console.log(fix._unitFix === 'converted'
+                ? `     ${r.name.padEnd(20)} ${day(r.measuredAt)}  ${r.value} ${r.unit} → ${fix.value} ${fix.unit}  flag: ${r.flag} → ${fix.flag}`
+                : `     ${r.name.padEnd(20)} ${day(r.measuredAt)}  ${r.value} ${r.unit} → held for review, flag: ${r.flag} → unknown`);
+        }
+    } else {
+        console.log('\n  2b. Impossible in their unit — none');
+    }
+
     /** How a row looks once repaired — the view every later phase reasons about. */
     const effective = (r) => ({ ...r, ...(repairs.get(String(r._id)) || {}) });
 
@@ -199,12 +249,35 @@ const run = async (userId, apply, journal) => {
     // point normalising a document that is about to be deleted.
     const dropped = new Set(drop.map((r) => String(r._id)));
     let repaired = 0;
-    for (const [id, fix] of repairs) {
+    for (const [id, { _unitFix, ...fix }] of repairs) {
         if (dropped.has(id)) continue;
         const row = measurements.find((r) => String(r._id) === id);
-        journal.push({ action: 'update', reason: 'mis-slugged', document: row });
+        journal.push({ action: 'update', reason: _unitFix ? 'implausible_unit' : 'mis-slugged', document: row });
         if (apply) await Biomarker.updateOne({ _id: row._id }, { $set: fix });
         repaired += 1;
+    }
+
+    // ── Same analyte more than once in one report ─────────────────────────────────────
+    // Reported, never deleted. The usual cause is a lab's "previous result" column read as a
+    // second measurement on the same date, which draws a trend between a report and itself.
+    // Which figure is current can only be read off the report, so this names the rows and
+    // leaves the decision to a person.
+    const perReport = new Map();
+    for (const r of measurements) {
+        if (dropped.has(String(r._id)) || !r.testResultId) continue;
+        const k = `${r.testResultId}|${effective(r).name}`;
+        if (!perReport.has(k)) perReport.set(k, []);
+        perReport.get(k).push(effective(r));
+    }
+    // A count and a percentage of the same cell type are two measurements, not one twice
+    const twice = [...perReport.values()]
+        .filter((g) => g.length > 1 && new Set(g.map((e) => e.unit || '')).size === 1);
+    if (twice.length) {
+        console.log(`\n  ⚠ ${plural(twice.length, 'analyte')} stored more than once from a single report — KEPT, check the report`);
+        for (const g of twice) {
+            console.log(`     ${String(g[0].name).padEnd(20)} ${day(g[0].measuredAt)}  report …${String(g[0].testResultId).slice(-4)}  `
+                + g.map((e) => `${e.value} ${e.unit || ''}`.trim()).join('  |  '));
+        }
     }
 
     // ── Provenance report ─────────────────────────────────────────────────────────────
@@ -245,6 +318,16 @@ const restore = async (file) => {
         (await Biomarker.find({ _id: { $in: journal.map((e) => e.document._id) } })
             .select('_id').lean()).map((r) => String(r._id)),
     );
+
+    // A unit correction rewrites a value in place, so its undo is a rewrite back. Unlike a
+    // re-insert this is not skipped when the row exists, which is the point: replacing a row
+    // with its own backup twice changes nothing.
+    const unitUndo = journal.filter((e) => e.action === 'update' && e.reason === 'implausible_unit'
+        && present.has(String(e.document._id)));
+    for (const e of unitUndo) {
+        await Biomarker.replaceOne({ _id: e.document._id }, e.document);
+        console.log(`     ↩ ${String(e.document.name).padEnd(28)} back to ${e.document.value} ${e.document.unit || ''}`);
+    }
 
     const missing = journal.filter((e) => !present.has(String(e.document._id)));
     if (!missing.length) {

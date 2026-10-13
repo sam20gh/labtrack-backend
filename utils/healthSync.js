@@ -652,7 +652,13 @@ const ingestDaySummaries = async (userId, rows = []) => {
         put('activity.steps', row.steps);
         put('activity.activeKcal', row.activeKcal);
         put('activity.restingKcal', row.restingKcal);
-        put('activity.exerciseMin', row.exerciseMin);
+        // A day holds 1,440 minutes. Bracelet builds before 2026-10-13 sent the V8's history
+        // counter, which is seconds, as minutes (3,925 on a 7,766-step day); a figure no day
+        // can contain is dropped rather than stored, and the fixed app's next full replay
+        // rewrites the day with the real one.
+        if (Number.isFinite(row.exerciseMin) && row.exerciseMin <= 1440) {
+            put('activity.exerciseMin', row.exerciseMin);
+        }
         put('activity.distanceM', row.distanceM);
         put('activity.floors', row.floors);
         put('heart.restingBpm', row.restingBpm);

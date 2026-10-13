@@ -311,6 +311,31 @@ const BIOMARKERS = {
     },
 };
 
+/**
+ * The widest values a living person can have, in the canonical unit. Not a reference range:
+ * a reading outside these limits is not "very low", it is a unit the report or the parser got
+ * wrong. A 22 Sept 2026 report arrived with albumin 5.0 and total protein 8.0 labelled g/L,
+ * which are g/dL figures (50 and 80 g/L), and both were flagged Low against 35–50 and 60–80.
+ *
+ * Only analytes whose common units differ by a factor that lands outside these limits are
+ * listed: a mislabelled vitamin D (30 ng/mL read as nmol/L) is still a possible value, so no
+ * limit can catch it, and pretending otherwise would hold back real deficient readings.
+ */
+const PLAUSIBLE = {
+    albumin: [10, 70],
+    total_protein: [25, 130],
+    haemoglobin: [3, 25],
+    haematocrit: [10, 75],
+    calcium: [0.8, 5],
+    creatinine: [10, 3000],
+    fasting_glucose: [0.5, 60],
+    total_cholesterol: [0.5, 30],
+    triglycerides: [0.05, 120],
+    urea: [0.3, 100],
+    uric_acid: [20, 1500],
+    bilirubin: [1.5, 1000],
+};
+
 /** Strip everything that varies between labs so aliases can be matched. */
 const slug = (value) => String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -438,10 +463,41 @@ const convert = (canonicalName, value, reportedUnit) => {
 };
 
 /**
+ * Is a converted value one a living person can have? When it is not, name the one other
+ * accepted unit that would make it possible, so the confirm screen can offer the fix.
+ *
+ * Never converts on its own: a guessed unit is still a guess, and a value outside the limits
+ * goes to the person (or the repair script's dry run) rather than into the record.
+ *
+ * @returns {null | { min:number, max:number, suggestion: null | { unit:string, value:number } }}
+ *   null when the value is possible or the analyte has no limits.
+ */
+const checkPlausible = (canonical, rawValue, reportedUnit, convertedValue) => {
+    const limits = PLAUSIBLE[canonical];
+    if (!limits || !Number.isFinite(convertedValue)) return null;
+    const [min, max] = limits;
+    if (convertedValue >= min && convertedValue <= max) return null;
+
+    const def = BIOMARKERS[canonical];
+    const raw = Number(rawValue);
+    const usedFactor = reportedUnit ? def.units[unitKey(reportedUnit)] : 1;
+    const fits = new Map();
+    for (const [unit, factor] of Object.entries(def.units)) {
+        if (typeof factor !== 'number' || factor === usedFactor || fits.has(factor)) continue;
+        const candidate = raw * factor;
+        if (candidate >= min && candidate <= max) fits.set(factor, { unit, value: Number(candidate.toFixed(6)) });
+    }
+    // Two different units that would both fit is not a suggestion, it is a coin toss
+    const suggestion = fits.size === 1 ? [...fits.values()][0] : null;
+    return { min, max, suggestion };
+};
+
+/**
  * Normalise one reported measurement.
  *
  * `needsReview` is set whenever the analyte or its unit was not recognised, so unrecognised
- * data reaches a human instead of being flagged against a range that may not apply.
+ * data reaches a human instead of being flagged against a range that may not apply. It is
+ * also set when the value is not physically possible in its stated unit (`PLAUSIBLE`).
  */
 const normaliseMeasurement = ({ name, value, unit, ...rest }) => {
     const canonical = redirectByUnit(resolveName(name), unit);
@@ -462,6 +518,30 @@ const normaliseMeasurement = ({ name, value, unit, ...rest }) => {
 
     const def = BIOMARKERS[canonical];
     const conversion = convert(canonical, value, unit);
+    const implausible = conversion.recognised
+        ? checkPlausible(canonical, value, unit, conversion.value)
+        : null;
+
+    if (implausible) {
+        const { min, max, suggestion } = implausible;
+        const stated = `${value} ${unit || def.unit}`;
+        return {
+            ...rest,
+            name: canonical,
+            displayName: def.displayName,
+            value: conversion.value,
+            unit: conversion.unit,
+            originalValue: conversion.converted ? Number(value) : undefined,
+            originalUnit: conversion.converted ? unit : undefined,
+            recognised: true,
+            needsReview: true,
+            plausible: false,
+            suggestedUnit: suggestion?.unit,
+            suggestedValue: suggestion?.value,
+            normalisationNote: `${stated} is not a possible ${def.displayName} (${min}–${max} ${def.unit}) — check the unit on the report`
+                + (suggestion ? `; in ${suggestion.unit} it would be ${suggestion.value} ${def.unit}` : ''),
+        };
+    }
 
     return {
         ...rest,
@@ -492,6 +572,8 @@ const listBiomarkers = () =>
 
 module.exports = {
     BIOMARKERS,
+    PLAUSIBLE,
+    checkPlausible,
     resolveName,
     redirectByUnit,
     convert,
