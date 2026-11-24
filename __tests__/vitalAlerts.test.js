@@ -70,8 +70,12 @@ beforeEach(async () => {
 
 const bpReading = (systolic, diastolic, at = hoursAgo(1), extra = {}) =>
     ({ metric: 'blood_pressure', measuredAt: at, systolic, diastolic, source: 'manual', ...extra });
+// A spot check by default, which alerts on its own. An automatic reading needs a second low
+// to back it (rule 8); those tests pass `context: 'automatic'` and say so.
 const spo2Reading = (spo2, at = hoursAgo(1), extra = {}) =>
-    ({ metric: 'spo2', measuredAt: at, spo2, source: 'bracelet', ...extra });
+    ({ metric: 'spo2', measuredAt: at, spo2, source: 'bracelet', context: 'manual', ...extra });
+const autoSpo2 = (spo2, at, externalId, extra = {}) =>
+    spo2Reading(spo2, at, { context: 'automatic', externalId, ...extra });
 const hrReading = (bpm, context = 'resting', at = hoursAgo(1), extra = {}) =>
     ({ metric: 'heart_rate', measuredAt: at, bpm, context, source: 'bracelet', ...extra });
 
@@ -278,8 +282,8 @@ describe('recording readings', () => {
     });
 
     it('folds a night of low oxygen into one episode and one card', async () => {
-        const night = [97, 93, 92, 93, 96].map((v, i) =>
-            spo2Reading(v, hoursAgo(8 - i), { externalId: `o${i}` }));
+        // Three lows in a row back each other up, so automatic readings alert too.
+        const night = [97, 93, 92, 93, 96].map((v, i) => autoSpo2(v, hoursAgo(8 - i), `o${i}`));
         await recordReadings(userId, night, { now: NOW });
 
         expect(await VitalAlert.countDocuments()).toBe(1);
@@ -406,13 +410,18 @@ describe('a reading the patient deletes', () => {
 describe('the write paths', () => {
     it('a bracelet sync records low oxygen and a high resting heart rate, and ignores a run', async () => {
         const recent = new Date(Date.now() - 30 * 60_000).toISOString();
+        const hourBefore = new Date(Date.now() - 90 * 60_000).toISOString();
         const res = mockRes();
         await wearables.sync({
             user: { id: String(userId) },
             body: {
                 platform: 'jstyle_bracelet',
                 tzOffset: 0,
-                spo2: [{ externalId: 's1', measuredAt: recent, spo2: 89 }],
+                // Two automatic lows an hour apart: confirmed, so they alert.
+                spo2: [
+                    { externalId: 's0', measuredAt: hourBefore, spo2: 92, context: 'automatic' },
+                    { externalId: 's1', measuredAt: recent, spo2: 89, context: 'automatic' },
+                ],
                 heart: [
                     { externalId: 'h1', measuredAt: recent, bpm: 118, context: 'resting' },
                     { externalId: 'h2', measuredAt: recent, bpm: 170, context: 'active' },
@@ -447,6 +456,84 @@ describe('the write paths', () => {
 /* ------------------------------------------------------------------ *
  * The clinician
  * ------------------------------------------------------------------ */
+
+describe('automatic oxygen readings need a second low', () => {
+    const minutesAgo = (m) => new Date(Date.now() - m * 60_000).toISOString();
+    const braceletSync = async (spo2) => {
+        const res = mockRes();
+        await wearables.sync({ user: { id: String(userId) }, body: { platform: 'jstyle_bracelet', tzOffset: 0, spo2 } }, res);
+        expect(res.status).not.toHaveBeenCalled();
+    };
+    const auto = (externalId, spo2, mins) => ({ externalId, measuredAt: minutesAgo(mins), spo2, context: 'automatic' });
+
+    it('confirms a low only with another low inside the window, never with itself', () => {
+        const a = autoSpo2(88, hoursAgo(3), 'a');
+        const b = autoSpo2(91, hoursAgo(2), 'b');
+        const lone = autoSpo2(87, hoursAgo(10), 'c');
+        const normal = autoSpo2(98, hoursAgo(9), 'd');
+        const far = autoSpo2(90, new Date(hoursAgo(10).getTime() - 91 * 60_000), 'e');
+        expect(table.confirmedSpo2([a, b, lone], [a, b, lone, normal, far]).map((r) => r.externalId))
+            .toEqual(['a', 'b']);
+        expect(table.confirmedSpo2([lone], [lone])).toEqual([]);
+    });
+
+    it('judges the neighbour on the clinician\'s scale', () => {
+        const copd = { spo2Scale: 'hypercapnic' };
+        const low = autoSpo2(84, hoursAgo(2), 'x');
+        expect(table.confirmedSpo2([low], [low, autoSpo2(90, hoursAgo(1), 'y')], copd)).toEqual([]);
+        expect(table.confirmedSpo2([low], [low, autoSpo2(85, hoursAgo(1), 'z')], copd)).toHaveLength(1);
+    });
+
+    it('does not alert a lone dip between two normal hours', async () => {
+        await recordReadings(userId, [
+            autoSpo2(98, hoursAgo(3), 'n1'), autoSpo2(87, hoursAgo(2), 'n2'), autoSpo2(99, hoursAgo(1), 'n3'),
+        ], { now: NOW });
+        expect(await VitalAlert.countDocuments()).toBe(0);
+        expect(await Notification.countDocuments()).toBe(0);
+        expect(pushSender.send).not.toHaveBeenCalled();
+    });
+
+    it('treats an unlabelled reading as automatic', async () => {
+        await recordReadings(userId, [spo2Reading(86, hoursAgo(1), { context: undefined, externalId: 'u' })], { now: NOW });
+        expect(await VitalAlert.countDocuments()).toBe(0);
+    });
+
+    it('confirms a low from an earlier sync when the next one brings its neighbour', async () => {
+        await braceletSync([auto('p1', 88, 120)]);
+        expect(await VitalAlert.countDocuments()).toBe(0);
+
+        await braceletSync([auto('p2', 90, 60)]);
+        const alert = await VitalAlert.findOne().lean();
+        expect(alert).toMatchObject({ metric: 'spo2', level: 'urgent', status: 'open', readingCount: 2 });
+        expect(alert.readings.map((r) => r.externalId)).toEqual(['p1', 'p2']);
+        expect(await Notification.countDocuments({ category: 'vitals' })).toBeGreaterThan(0);
+    });
+
+    it('lets a stored low lapse when the next reading comes back normal', async () => {
+        await braceletSync([auto('l1', 87, 120)]);
+        await braceletSync([auto('l2', 97, 60)]);
+        expect(await VitalAlert.countDocuments()).toBe(0);
+        expect(await Notification.countDocuments()).toBe(0);
+        // Still on the record the list draws.
+        expect(await MetricLog.countDocuments({ userId, kind: 'spo2' })).toBe(2);
+    });
+
+    it('alerts a spot check taken on purpose on its own', async () => {
+        await braceletSync([{ externalId: 'm1', measuredAt: minutesAgo(10), spo2: 88, context: 'manual' }]);
+        expect(await VitalAlert.countDocuments({ metric: 'spo2', isOpen: true })).toBe(1);
+    });
+
+    it('never reopens a closed case for a reading it already held', async () => {
+        await braceletSync([auto('r1', 88, 180), auto('r2', 90, 120)]);
+        await VitalAlert.updateOne({ metric: 'spo2' }, { $set: { isOpen: false, status: 'reviewed' } });
+
+        // A new low an hour after r2: r2 confirms it, but r2 belongs to the reviewed case.
+        await braceletSync([auto('r3', 89, 60)]);
+        const open = await VitalAlert.findOne({ isOpen: true }).lean();
+        expect(open.readings.map((r) => r.externalId)).toEqual(['r3']);
+        expect(await VitalAlert.countDocuments()).toBe(2);
+    });
+});
 
 describe('clinician review', () => {
     const doctor = (id = new mongoose.Types.ObjectId()) =>

@@ -66,6 +66,13 @@ const ReadingSchema = new mongoose.Schema({
      * record because somebody swiped it is not a thing a clinical record should allow.
      */
     withdrawnAt: { type: Date, default: null },
+    /**
+     * Why it was withdrawn. `deleted`: the patient deleted the entry. `unconfirmed`: a lone
+     * automatic SpO2 reading that no second low backed up, withdrawn by
+     * `scripts/withdrawLoneSpo2.js` (rule 8 of `utils/vitalAlerts.js`). Null on rows from
+     * before this field, all of which were deletions.
+     */
+    withdrawnReason: { type: String, enum: ['deleted', 'unconfirmed', null], default: null },
 }, { _id: false });
 
 const NotifiedSchema = new mongoose.Schema({

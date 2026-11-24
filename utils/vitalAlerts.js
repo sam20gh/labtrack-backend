@@ -54,6 +54,16 @@
  *    the product decision recorded on `MetricLog.method` is that an optical crisis reading
  *    raises a crisis. But the patient is told to re-measure, and the clinician sees the
  *    method.
+ * 8. **An automatic SpO2 reading needs a second one to back it.** The bracelet takes one
+ *    reading an hour, unattended, often asleep with the wrist under a pillow. A lone low
+ *    between two normal hours is the sensor, not the blood: oxygen does not fall from 100% to
+ *    87% and come back within the hour. So an automatic reading alerts only when another
+ *    out-of-range SpO2 reading lies within `SPO2_CONFIRM_WINDOW_MIN` of it
+ *    (`confirmedSpo2`). A `manual` reading, taken on purpose and sitting still, alerts on its
+ *    own. Found 2026-11-24: of one wearer's 16 readings at or below 91% in seven weeks, 15
+ *    were single hours between readings of 92–100%, and each had pushed a "seek care" card
+ *    through quiet hours. The cost is up to an hour's delay, because confirmation waits for
+ *    the next reading; a low that never gets a neighbour never alerts.
  */
 const bp = require('./bloodPressure');
 
@@ -177,6 +187,50 @@ const evaluate = (readings = [], targets = DEFAULT_TARGETS) =>
             return found ? { ...r, measuredAt: at, ...found } : null;
         })
         .filter(Boolean);
+
+/**
+ * How close a second low SpO2 reading has to be to confirm the first. See rule 8.
+ *
+ * The bracelet reads hourly, so 90 minutes reaches the hour either side and no further.
+ */
+const SPO2_CONFIRM_WINDOW_MIN = 90;
+
+/** An SpO2 reading nobody took on purpose: everything but `manual`, including unlabelled. */
+const needsConfirmation = (r) => r?.metric === 'spo2' && r.context !== 'manual';
+
+const sameReading = (a, b) => a === b
+    || (Boolean(a.externalId) && a.externalId === b.externalId)
+    || (!a.externalId && !b.externalId
+        && new Date(a.measuredAt).getTime() === new Date(b.measuredAt).getTime()
+        && Number(a.spo2) === Number(b.spo2));
+
+/**
+ * The SpO2 readings in `candidates` that another out-of-range SpO2 reading in `pool` backs up
+ * within `windowMin` either side. Rule 8. Pure.
+ *
+ * `pool` is every SpO2 reading the caller knows near the candidates, stored and incoming, and
+ * may include the candidates themselves; a reading never confirms itself. Out of range means
+ * out of range under `targets`, so on scale 2 a 90% neighbour confirms nothing.
+ *
+ * @param {object[]} candidates  `{ metric: 'spo2', measuredAt, spo2, externalId? }`
+ * @param {object[]} pool        the same shape
+ * @returns {object[]}           the confirmed candidates, unchanged
+ */
+const confirmedSpo2 = (candidates = [], pool = [], targets = DEFAULT_TARGETS,
+    windowMin = SPO2_CONFIRM_WINDOW_MIN) => {
+    const windowMs = windowMin * 60_000;
+    const lows = pool
+        .filter((r) => r?.metric === 'spo2' && evaluateOne(r, targets))
+        .map((r) => ({ r, at: new Date(r.measuredAt).getTime() }))
+        .filter(({ at }) => Number.isFinite(at));
+
+    return candidates.filter((c) => {
+        if (c?.metric !== 'spo2' || !evaluateOne(c, targets)) return false;
+        const at = new Date(c.measuredAt).getTime();
+        if (!Number.isFinite(at)) return false;
+        return lows.some(({ r, at: other }) => Math.abs(other - at) <= windowMs && !sameReading(r, c));
+    });
+};
 
 /** Whether a reading is recent enough to tell the patient about. */
 const isFresh = (measuredAt, now = new Date()) => {
@@ -373,6 +427,9 @@ module.exports = {
     reviewCopyFor,
     evaluate,
     evaluateOne,
+    SPO2_CONFIRM_WINDOW_MIN,
+    needsConfirmation,
+    confirmedSpo2,
     magnitude,
     severity,
     isFresh,

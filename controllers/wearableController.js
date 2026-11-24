@@ -203,6 +203,8 @@ exports.sync = async (req, res) => {
                 metric: 'spo2',
                 measuredAt: r?.measuredAt,
                 spo2: r?.spo2,
+                // `manual` alerts on its own; anything else waits for a second low.
+                context: r?.context === 'manual' ? 'manual' : 'automatic',
                 source: readingSource,
                 externalId: r?.externalId,
             })),

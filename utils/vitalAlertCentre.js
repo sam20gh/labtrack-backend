@@ -29,9 +29,11 @@ const User = require('../models/userModel');
 const Notification = require('../models/Notification');
 const VitalAlert = require('../models/VitalAlert');
 const VitalTarget = require('../models/VitalTarget');
+const MetricLog = require('../models/MetricLog');
 const { publish } = require('./notificationCentre');
 const {
-    evaluate, severity, isFresh, higherLevel, valueLabel, copyFor, reviewCopyFor,
+    evaluate, evaluateOne, severity, isFresh, higherLevel, valueLabel, copyFor, reviewCopyFor,
+    needsConfirmation, confirmedSpo2, SPO2_CONFIRM_WINDOW_MIN,
     LEVEL_RANK, METRIC_LABEL, METRIC_ROUTE, CATEGORY_FOR_LEVEL, DEFAULT_TARGETS,
 } = require('./vitalAlerts');
 
@@ -268,6 +270,82 @@ const notifyReviewed = async (alert, { patientMessage = null } = {}) => {
 };
 
 /**
+ * Keep the automatic SpO2 readings that a second low backs up. Rule 8 of `vitalAlerts.js`.
+ *
+ * Runs after the sync has stored its batch, so the stored rows include it. The bracelet
+ * sends whatever it has since the last sync, so a low's neighbour often arrives a sync later.
+ * The window is therefore re-read around every incoming reading, and a low stored earlier
+ * with no neighbour yet is confirmed by the one that has just arrived. Nothing records "held
+ * for confirmation": a low is simply judged again whenever a neighbour arrives, and a low that
+ * never gets a neighbour never alerts.
+ *
+ * Re-passing a stored reading is harmless while its episode is open, because readings are
+ * keyed. A stored reading already in a closed episode, reviewed or withdrawn, is left out:
+ * it was not sent by this sync, and must not reopen a case a clinician has closed.
+ *
+ * Everything that is not an automatic SpO2 reading passes through untouched.
+ */
+const confirmAutomaticSpo2 = async (userId, readings, targets) => {
+    const automatic = readings.filter(needsConfirmation);
+    if (!automatic.length) return readings;
+    const others = readings.filter((r) => !needsConfirmation(r));
+
+    const times = automatic.map((r) => new Date(r?.measuredAt).getTime()).filter(Number.isFinite);
+    if (!times.length) return others;
+    const windowMs = SPO2_CONFIRM_WINDOW_MIN * 60_000;
+    const from = times.reduce((a, b) => Math.min(a, b)) - windowMs;
+    const to = times.reduce((a, b) => Math.max(a, b)) + windowMs;
+
+    // Candidates reach a window either side of the batch, and their neighbours one further.
+    const stored = await MetricLog.find({
+        userId,
+        kind: 'spo2',
+        measuredAt: { $gte: new Date(from - windowMs), $lte: new Date(to + windowMs) },
+    }).select('measuredAt spo2 source externalId day').lean();
+
+    const incomingIds = new Set(automatic.map((r) => r.externalId).filter(Boolean));
+    const fallbackSource = automatic[0].source || null;
+    const fromStore = stored
+        .filter((row) => !row.externalId || !incomingIds.has(row.externalId))
+        .map((row) => ({
+            metric: 'spo2',
+            measuredAt: row.measuredAt,
+            spo2: row.spo2,
+            // The alert keys a reading on its source. Only the bracelet writes SpO2, and it
+            // is stored and alerted as `bracelet`; anything else takes this batch's label.
+            source: row.source === 'bracelet' ? 'bracelet' : fallbackSource,
+            externalId: row.externalId || null,
+            day: row.day,
+            stored: true,
+        }));
+
+    const pool = [...readings.filter((r) => r?.metric === 'spo2'), ...fromStore];
+    const inWindow = (r) => {
+        const at = new Date(r.measuredAt).getTime();
+        return at >= from && at <= to;
+    };
+    const confirmed = confirmedSpo2([...automatic, ...fromStore.filter(inWindow)], pool, targets);
+
+    const storedIds = confirmed.filter((r) => r.stored && r.externalId).map((r) => r.externalId);
+    const closed = new Set();
+    if (storedIds.length) {
+        const rows = await VitalAlert.find({
+            userId, metric: 'spo2', isOpen: false, 'readings.externalId': { $in: storedIds },
+        }).select('readings.externalId').lean();
+        for (const a of rows) for (const r of a.readings || []) closed.add(r.externalId);
+    }
+    const kept = confirmed
+        .filter((r) => !(r.stored && closed.has(r.externalId)))
+        .map(({ stored: _stored, ...r }) => r);
+
+    const lone = automatic.filter((r) => evaluateOne(r, targets)).length
+        - confirmed.filter((r) => !r.stored).length;
+    if (lone > 0) console.log(`🫁 SpO2 u=${userId}: ${lone} lone low reading(s) not alerted, awaiting a second`);
+
+    return [...others, ...kept];
+};
+
+/**
  * Evaluate readings a write path has just stored, and record any that are out of range.
  *
  * @param {string} userId
@@ -284,7 +362,8 @@ const recordReadings = async (userId, readings, options = {}) => {
         // a clinician can set (scale 2 and an expected low heart rate only ever remove
         // alerts), so a batch with nothing out of range under them costs no query at all.
         if (!evaluate(readings).length) return { alerts: [], notified: 0 };
-        const breaches = evaluate(readings, await targetsFor(userId));
+        const targets = await targetsFor(userId);
+        const breaches = evaluate(await confirmAutomaticSpo2(userId, readings, targets), targets);
         if (!breaches.length) return { alerts: [], notified: 0 };
 
         const tzOffset = Number(options.tzOffset) || 0;
@@ -339,8 +418,11 @@ const recordReadings = async (userId, readings, options = {}) => {
  * typo. A reviewed episode is not touched. Its review was made against the readings it
  * showed at the time, and changing those afterwards would make the review say something
  * it did not.
+ *
+ * `reason` is `deleted` for that, and `unconfirmed` for a lone automatic SpO2 reading taken
+ * back by `scripts/withdrawLoneSpo2.js`, so the portal can say which.
  */
-const withdrawReading = async (userId, { logId = null, externalId = null } = {}) => {
+const withdrawReading = async (userId, { logId = null, externalId = null, reason = 'deleted' } = {}) => {
     try {
         if (!logId && !externalId) return 0;
         const match = [];
@@ -353,7 +435,10 @@ const withdrawReading = async (userId, { logId = null, externalId = null } = {})
             for (const r of alert.readings) {
                 if ((logId && String(r.logId) === String(logId))
                     || (externalId && r.externalId === externalId)) {
-                    r.withdrawnAt = r.withdrawnAt || now;
+                    if (!r.withdrawnAt) {
+                        r.withdrawnAt = now;
+                        r.withdrawnReason = reason;
+                    }
                 }
             }
             if (alert.readings.every((r) => r.withdrawnAt)) {
